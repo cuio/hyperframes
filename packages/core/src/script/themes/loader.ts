@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { LoadedTheme, ThemeManifest } from "./manifest.js";
 import type { DesignTokens } from "../templates/types.js";
+import { loadThemeTemplates } from "./templateLoader.js";
 
 /**
  * Default search roots for disk themes. The order matters — later roots
@@ -102,6 +103,7 @@ export function materializeTheme(raw: unknown, folder: string): LoadedTheme | nu
     },
     designSystemDoc,
     referenceRenderPath,
+    templates: loadThemeTemplates(folder, m.id),
     source: `disk:${folder}`,
   };
 }

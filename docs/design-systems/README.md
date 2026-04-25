@@ -91,10 +91,78 @@ Hyperframes renders **HTML + GSAP**, not React + Remotion. The bridge:
 
 - **JSX is reference, not runtime.** Drop the JSX files into your theme folder (`docs/design-systems/<id>/`) so designers and the planner have the source of truth. The framework never executes them.
 - **`DESIGN_SYSTEM.md` is the spec the planner reads.** Claude design ships this alongside the JSX. The planner uses it as source-of-truth for palette, type hierarchy, motion physics, and any custom template specifications.
-- **Templates are HTML.** Per-theme template overrides ship at `<theme>/templates/<id>.html` (Mustache-style `{{prop}}` substitution + inline GSAP). Port from JSX manually or with a Claude Code agent — the JSX is the spec, the HTML is the production form. (Template-overrides subsystem coming in a follow-up PR; for now themes restyle existing templates via tokens + preferences.)
+- **Templates are HTML+GSAP.** Per-theme template overrides ship at `<theme>/templates/<id>.html` — see the "Theme-shipped templates" section below for the format. Port from JSX manually or with a Claude Code agent — the JSX is the spec, the HTML is the production form.
 - **Reference render** — `Dreamspace Explainer.html` (or whatever you've named yours) is the canonical look. Open in a browser to scrub the timeline and verify what "production quality" means for the theme.
 
-The porting workflow: Claude design generates a theme → drop into `docs/design-systems/<id>/` → write a `theme.json` → commit. The planner picks it up immediately. Templates can be ported lazily — your existing built-in templates carry the theme's palette + fonts via tokens until you replace them with theme-specific HTML.
+The porting workflow: Claude design generates a theme → drop into `docs/design-systems/<id>/` → write a `theme.json` → port templates lazily as the planner picks them. The framework's built-in templates remain as the safety net so themes only need to ship templates where they can offer a meaningfully better look.
+
+## Theme-shipped templates
+
+A theme can ship its own scene templates that the planner and assembler treat as first-class members of the template catalog. Drop HTML files under `<theme>/templates/`:
+
+```
+docs/design-systems/<theme-id>/templates/
+├── cold-open.html         ← required: the markup with {{prop}} substitution
+├── cold-open.json         ← optional: metadata + propsSchema sidecar
+├── manifesto.html
+└── manifesto.json
+```
+
+Templates register with namespaced ids: `<theme-id>__<basename>` (e.g. `dreamspace__cold-open` — double-underscore so the id is safe to drop into CSS class selectors). They sit alongside built-in template ids in the planner's catalog, so the AI can pick them by name.
+
+### Template HTML format
+
+The template engine is a tight Mustache subset. Four primitives:
+
+| Syntax | Meaning |
+|---|---|
+| `{{prop}}` | HTML-escaped value lookup. Dot paths supported (`{{tokens.colors.bg}}`). |
+| `{{prop\|raw}}` | Unescaped — only for trusted markup. |
+| `{{prop\|json}}` | `JSON.stringify`-safe for embedding inside `<script>`. |
+| `{{#each items}}…{{this}}…{{/each}}` | Iterate an array. Inside the body, `{{this}}` is the item, `{{this.label}}` works on object items, `{{@index}}` is the 0-based position. |
+
+**Always-available context** (the framework injects these regardless of props):
+
+- `{{scene_id}}` — the stable id (`s01`, `s02`, ...)
+- `{{template_id}}` — the namespaced template id
+- `{{duration}}` — total scene duration in seconds (formatted to 2dp)
+- `{{is_hook}}` — boolean
+- `{{audio_src}}` — path to the synthesized narration WAV
+- `{{tokens.colors.*}}`, `{{tokens.fonts.*}}`, `{{tokens.motion.*}}` — full token tree
+- Aliases `{{colors.*}}`, `{{fonts.*}}`, `{{motion.*}}` for shorthand
+
+**Required structure**: the root element must be `<div class="scene scene-{{template_id}}" id="{{scene_id}}" data-composition-id="{{scene_id}}" data-start="0" data-duration="{{duration}}">…</div>`. The framework relies on these data attributes to wire the timeline.
+
+**Animations**: include an inline `<script>` that builds a paused GSAP timeline and registers it on `window.__timelines['{{scene_id}}']`. Use the theme's `tokens.motion.ease` so the motion physics match the rest of the theme. **Never use `repeat: -1`** — the deterministic capture engine seeks to exact frames, so all repeats must be finite (compute via `Math.ceil(TOTAL / cycleDur) - 1`).
+
+### Template metadata sidecar
+
+The `<basename>.json` file declares planner-facing metadata. Everything is optional but the more you provide, the smarter the planner picks:
+
+```json
+{
+  "description": "Brand reveal hero with concentric rings + tagline cascade",
+  "whenToUse": ["Opening scene of a video", "Episode intro / brand reveal"],
+  "durationRange": { "min": 4, "max": 6 },
+  "hookOnly": true,
+  "propsSchema": {
+    "type": "object",
+    "properties": {
+      "wordmark": { "type": "string", "description": "..." }
+    },
+    "required": ["wordmark"]
+  },
+  "exampleProps": { "wordmark": "dreamspace" }
+}
+```
+
+If the sidecar is absent, the template still loads with a permissive default schema and a generic description — but the planner won't know when to pick it, so always ship the sidecar for production templates.
+
+### Where the templates live in the runtime
+
+When the studio API plans a script, it calls `resolveTemplateRegistry(projectDir)` which returns `[...BUILTIN_TEMPLATES, ...activeTheme.templates]`. That registry is passed to `planScript()` as `availableTemplates` (it shows up in the planner's tool catalog) AND to `assembleMaster()` as `templates` (so scene resolution finds the theme-shipped renderer).
+
+The studio's SSR cache-watcher invalidates on file changes under `docs/design-systems/`, so dropping a new template HTML and regenerating picks it up without restart.
 
 ## Cost notes
 
@@ -109,4 +177,4 @@ Iterative re-plans inside the 5-minute cache TTL pay ~10% of input cost on the c
 
 ## Currently shipped
 
-- **dreamspace** — see `dreamspace/` for the full handoff (Remotion+Babel JSX reference, design system doc, reference render).
+- **dreamspace** — full handoff in `dreamspace/` (Remotion+Babel JSX reference + `DESIGN_SYSTEM.md` + `reference.html`). Ships one Hyperframes template: `dreamspace__cold-open` (T1) — port the rest as needed.

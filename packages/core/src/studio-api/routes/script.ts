@@ -17,6 +17,7 @@ import {
   loadResearch,
   resolveActiveTheme,
   resolveProjectTokens,
+  resolveTemplateRegistry,
   ScriptPlannerError,
   DESIGN_ART_TEMPLATE,
   RESEARCH_TEMPLATE,
@@ -87,6 +88,12 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       // themes so the planner can borrow concepts per scene without the
       // cost of loading every theme's full design doc.
       const activeTheme = resolveActiveTheme(project.dir, designBrief);
+      // Theme-shipped templates show up in the planner's catalog so the
+      // AI can pick `<theme-id>__<basename>` ids alongside built-ins.
+      const availableTemplates = resolveTemplateRegistry(project.dir, designBrief);
+      // Condensed peer-theme list lets the planner borrow concepts from
+      // other installed themes (atmospheres, transitions, palettes) per
+      // scene without dragging their full design docs into context.
       const allThemes = listAvailableThemes(project.dir);
       const otherThemes = allThemes
         .filter((t) => t.id !== activeTheme.id)
@@ -110,6 +117,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         themeDesignSystemDoc: activeTheme.designSystemDoc ?? undefined,
         themePreferences: activeTheme.preferences,
         availableThemes: otherThemes,
+        availableTemplates,
       });
       // Second-pass hook critic. Defaults on; the user can set
       // improveHook: false to skip the extra LLM round-trip when iterating.
@@ -515,8 +523,15 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         return c.json({ error: "forbidden outFile path" }, 403);
       }
 
-      const tokens = resolveProjectTokens(project.dir, loadDesignBrief(project.dir));
-      const result = assembleMaster(planned, { projectDir: project.dir, outFile, tokens });
+      const briefForAssemble = loadDesignBrief(project.dir);
+      const tokens = resolveProjectTokens(project.dir, briefForAssemble);
+      const templates = resolveTemplateRegistry(project.dir, briefForAssemble);
+      const result = assembleMaster(planned, {
+        projectDir: project.dir,
+        outFile,
+        tokens,
+        templates,
+      });
       return c.json({ ok: true, planned, result });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

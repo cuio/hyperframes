@@ -42,6 +42,7 @@ export {
   parseDesignBriefToTokens,
   resolveProjectTokens,
   resolveActiveTheme,
+  resolveTemplateRegistry,
   listAvailableThemes,
 } from "./designTokens.js";
 export {

@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BUILTIN_TEMPLATES, DEFAULT_TOKENS, type DesignTokens } from "./templates/index.js";
+import type { Template } from "./templates/types.js";
 import { defaultAtmosphereForTemplate, renderAtmosphere } from "./atmosphere/index.js";
 import { TRANSITION_DURATIONS, defaultTransitionForTemplate } from "./transitions/index.js";
 import { getLoadedThemeByName } from "./themes/index.js";
@@ -17,6 +18,14 @@ export interface AssembleOptions {
   height?: number;
   /** Optional custom GSAP CDN URL. */
   gsapUrl?: string;
+  /**
+   * Full template registry used for scene rendering. Defaults to
+   * BUILTIN_TEMPLATES; the studio API passes the union of built-ins +
+   * active-theme templates so theme-shipped templates render alongside
+   * built-ins. Templates here must include any id the planned script
+   * references — unknown ids are silently skipped.
+   */
+  templates?: readonly Template[];
 }
 
 export interface AssembleResult {
@@ -58,8 +67,9 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     transitionInMs: number;
   }> = [];
 
+  const templates = opts.templates ?? BUILTIN_TEMPLATES;
   for (const scene of planned.scenes) {
-    const tpl = BUILTIN_TEMPLATES.find((t) => t.id === scene.template);
+    const tpl = templates.find((t) => t.id === scene.template);
     if (!tpl) continue;
     const sceneTotal = sceneTotalDuration(scene);
     const audioStartOffset = scene.audio?.leadInSeconds ?? 0;
