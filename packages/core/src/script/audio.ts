@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileExtensionForFormat, synthesize, type SynthesizeOptions } from "../elevenlabs/index.js";
 import type { PlannedScene, PlannedScript, Script } from "./types.js";
+import type { CostEventSink } from "../telemetry/cost.js";
 
 export interface SynthesizeScriptOptions {
   apiKey: string;
@@ -34,6 +35,13 @@ export interface SynthesizeScriptOptions {
   leadInSeconds?: number;
   /** Called whenever a scene's audio is generated or reused. */
   onScene?(event: { scene: PlannedScene; cached: boolean; skipped: boolean }): void;
+  /**
+   * Cost telemetry sink. Fires once per scene that hits ElevenLabs (cache
+   * hits and visual-only scenes are NOT billed and do NOT fire). The
+   * details record voiceId + character count; cost is computed from the
+   * loaded rate table by CostLogger.
+   */
+  onCostEvent?: CostEventSink;
 }
 
 const CACHE_DIRNAME = ".hyperframes-cache/voice";
@@ -142,11 +150,13 @@ export async function synthesizeScript(
       cached = true;
       audioDurationSeconds = cacheEntry.durationSeconds;
     } else {
+      const synthStart = Date.now();
       const { bytes } = await synthesize(opts.apiKey, scene.text, voiceId, {
         modelId,
         outputFormat,
         ...opts.voiceSettings,
       });
+      const synthMs = Date.now() - synthStart;
       mkdirSync(dirname(absPath), { recursive: true });
       writeFileSync(absPath, bytes);
       audioDurationSeconds = await opts.probeDurationSeconds(absPath);
@@ -158,6 +168,12 @@ export async function synthesizeScript(
         audioPath: relativePath,
         durationSeconds: audioDurationSeconds,
       };
+      opts.onCostEvent?.(
+        "elevenlabs.synthesize",
+        { kind: "elevenlabs", voiceId, characters: scene.text.length },
+        synthMs,
+        { sceneId: scene.id, modelId, format: outputFormat, audioBytes: bytes.byteLength },
+      );
     }
 
     // Scene window = lead-in + audio + tail-pad. Voiceover never gets clipped

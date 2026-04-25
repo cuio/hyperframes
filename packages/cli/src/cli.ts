@@ -50,6 +50,8 @@ const subCommands = {
   validate: () => import("./commands/validate.js").then((m) => m.default),
   snapshot: () => import("./commands/snapshot.js").then((m) => m.default),
   capture: () => import("./commands/capture.js").then((m) => m.default),
+  costs: () => import("./commands/costs.js").then((m) => m.default),
+  ops: () => import("./commands/ops.js").then((m) => m.default),
 };
 
 const main = defineCommand({

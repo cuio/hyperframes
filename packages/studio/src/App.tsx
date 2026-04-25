@@ -5,6 +5,7 @@ import { TimelineEditorNotice } from "./components/nle/TimelineEditorNotice";
 import { SourceEditor } from "./components/editor/SourceEditor";
 import { LeftSidebar } from "./components/sidebar/LeftSidebar";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
+import { CostBadge } from "./components/CostBadge";
 import { RenderQueue } from "./components/renders/RenderQueue";
 import { useRenderQueue } from "./components/renders/useRenderQueue";
 import { CompositionThumbnail, VideoThumbnail, usePlayerStore } from "./player";
@@ -1335,9 +1336,10 @@ export function StudioApp() {
     >
       {/* Header bar */}
       <div className="flex items-center justify-between h-10 px-3 bg-neutral-900 border-b border-neutral-800 flex-shrink-0">
-        {/* Left: project switcher */}
+        {/* Left: project switcher + cost badge */}
         <div className="flex items-center gap-2">
           <ProjectSwitcher currentId={projectId} />
+          <CostBadge projectId={projectId} />
         </div>
         {/* Right: toolbar buttons */}
         <div className="flex items-center gap-1.5">

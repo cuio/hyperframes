@@ -188,3 +188,18 @@ export {
   isBlockItem,
   isComponentItem,
 } from "./registry/index.js";
+
+// ── Telemetry / cost monitoring ────────────────────────────────────────────
+export {
+  CostLogger,
+  computeCost,
+  timed,
+  logFireAndForget,
+  loggerSink,
+  DEFAULT_RATES,
+  loadRates,
+  rateForModel,
+} from "./telemetry/cost.js";
+export type { CostEntry, CostEventSink, CostOp, CostRates } from "./telemetry/cost.js";
+export { OpsLogger, opsFireAndForget } from "./telemetry/ops.js";
+export type { OpEntry, OpLevel, OpsLoggerOptions } from "./telemetry/ops.js";

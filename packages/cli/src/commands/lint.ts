@@ -36,9 +36,28 @@ export default defineCommand({
     },
   },
   async run({ args }) {
+    const lintStart = Date.now();
     try {
       const project = resolveProject(args.dir);
       const lintResult = lintProject(project);
+      try {
+        const { OpsLogger } = await import("@hyperframes/core");
+        const ops = new OpsLogger(project.dir);
+        await ops.log({
+          op: "lint.run",
+          level: lintResult.totalErrors > 0 ? "warn" : "info",
+          ok: lintResult.totalErrors === 0,
+          message: `${lintResult.totalErrors} errors, ${lintResult.totalWarnings} warnings across ${lintResult.results.length} files`,
+          wallMs: Date.now() - lintStart,
+          meta: {
+            errors: lintResult.totalErrors,
+            warnings: lintResult.totalWarnings,
+            infos: lintResult.totalInfos,
+          },
+        });
+      } catch {
+        // Ops logging is best-effort; never block a lint.
+      }
 
       if (args.json) {
         const allFindings = lintResult.results.flatMap((r) => r.result.findings);

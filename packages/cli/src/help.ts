@@ -69,7 +69,11 @@ const GROUPS: Group[] = [
   },
   {
     title: "Settings",
-    commands: [["telemetry", "Manage anonymous usage telemetry"]],
+    commands: [
+      ["telemetry", "Manage anonymous usage telemetry"],
+      ["costs", "Show production cost (Anthropic, ElevenLabs, render) for a project"],
+      ["ops", "Show the project's operations log (plan, synth, render, lint)"],
+    ],
   },
 ];
 
