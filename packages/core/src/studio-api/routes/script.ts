@@ -83,8 +83,19 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       const artDirection = loadDesignArt(project.dir) ?? undefined;
       // Resolve the active theme so the planner gets the theme's full DNA
       // (DESIGN_SYSTEM.md + preferred atmospheres / transitions / icons),
-      // not just a colour palette.
+      // not just a colour palette. Also pass a condensed list of OTHER
+      // themes so the planner can borrow concepts per scene without the
+      // cost of loading every theme's full design doc.
       const activeTheme = resolveActiveTheme(project.dir, designBrief);
+      const allThemes = listAvailableThemes(project.dir);
+      const otherThemes = allThemes
+        .filter((t) => t.id !== activeTheme.id)
+        .map((t) => ({
+          id: t.id,
+          description: t.description,
+          atmospheres: t.preferences.atmospheres,
+          transitions: t.preferences.transitions,
+        }));
       let script = await planScript(text, {
         apiKey,
         model: body.model,
@@ -98,6 +109,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         themeName: activeTheme.name,
         themeDesignSystemDoc: activeTheme.designSystemDoc ?? undefined,
         themePreferences: activeTheme.preferences,
+        availableThemes: otherThemes,
       });
       // Second-pass hook critic. Defaults on; the user can set
       // improveHook: false to skip the extra LLM round-trip when iterating.
