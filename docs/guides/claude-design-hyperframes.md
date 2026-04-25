@@ -1,8 +1,3 @@
----
-name: claude-design-hyperframes
-description: Use when running inside Claude Design specifically. Produces a valid, brand-accurate HyperFrames video draft using pre-valid skeletons. For Claude Code / Cursor / Codex, use the `hyperframes` skill instead.
----
-
 # Claude Design + HyperFrames (Template-First)
 
 Your medium is **HyperFrames compositions**: plain HTML + CSS + a paused GSAP timeline. The CLI (`npx hyperframes render index.html`) turns the HTML into an MP4. You author the HTML -- the user renders locally.

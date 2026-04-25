@@ -779,4 +779,54 @@ export const gsapRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = [
     }
     return findings;
   },
+
+  // gsap_animates_video_dimensions — wrap the video instead.
+  // Animating width/height/top/left (and CSS transforms x/y) directly on a
+  // <video> element causes Chromium to stop pushing frames or tank the
+  // compositor — a known footgun documented in the upstream Common Mistakes
+  // guide. The fix is to put the <video> inside a non-timed wrapper <div>
+  // and animate the wrapper instead. The video fills the wrapper at 100%.
+  ({ tags, scripts }) => {
+    const findings: HyperframeLintFinding[] = [];
+    const videoIdToTag = new Map<string, OpenTag>();
+    for (const tag of tags) {
+      if (tag.name !== "video") continue;
+      const id = readAttr(tag.raw, "id");
+      if (id) videoIdToTag.set(id, tag);
+    }
+    if (videoIdToTag.size === 0 || scripts.length === 0) return findings;
+
+    const DIM_PROPS = new Set(["width", "height", "top", "left", "x", "y"]);
+
+    for (const script of scripts) {
+      const gsapWindows = extractGsapWindows(script.content);
+      for (const win of gsapWindows) {
+        // Only direct id-selector matches — class/attribute selectors might
+        // legitimately wrap a video and we don't want false positives there.
+        const sel = win.targetSelector.trim();
+        if (!sel.startsWith("#")) continue;
+        const id = sel.slice(1);
+        const videoTag = videoIdToTag.get(id);
+        if (!videoTag) continue;
+
+        const animatedDims = win.properties.filter((p) => DIM_PROPS.has(p));
+        if (animatedDims.length === 0) continue;
+
+        findings.push({
+          code: "gsap_animates_video_dimensions",
+          severity: "error",
+          message:
+            `GSAP animates ${animatedDims.join(", ")} on <video id="${id}">. ` +
+            `Chromium can stop pushing frames or drop the compositor when a <video>'s box is animated directly.`,
+          elementId: id,
+          selector: sel,
+          fixHint:
+            `Wrap the <video> in a non-timed <div id="${id}-wrapper"> ` +
+            `and animate the wrapper instead — let the video fill it at 100% via CSS.`,
+          snippet: truncateSnippet(win.raw),
+        });
+      }
+    }
+    return findings;
+  },
 ];
