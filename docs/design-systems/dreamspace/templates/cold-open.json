@@ -1,0 +1,34 @@
+{
+  "description": "Brand reveal hero with 4 concentric orbital rings drawing in, a cyan dot orbiting the highlighted ring, a gradient-clipped wordmark, and a row of tagline words staggering in. Use as the opening scene of an episode.",
+  "whenToUse": [
+    "Opening scene of a video — episode intro / brand reveal",
+    "Cold-open replacement for hook-bigtext when the brand is the protagonist",
+    "When the script's first sentence introduces the brand by name"
+  ],
+  "durationRange": { "min": 4, "max": 6 },
+  "hookOnly": true,
+  "propsSchema": {
+    "type": "object",
+    "properties": {
+      "eyebrow": {
+        "type": "string",
+        "description": "Small mono uppercase line above the wordmark. 2-6 words. Sets context."
+      },
+      "wordmark": {
+        "type": "string",
+        "description": "The brand name (or hero word) — rendered huge with paper→accent gradient. Keep under 14 characters for the gradient to read."
+      },
+      "tagline_words": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "3-7 short words that stagger in below the wordmark. Each word must be its own array entry — the stagger fires per item."
+      }
+    },
+    "required": ["wordmark"]
+  },
+  "exampleProps": {
+    "eyebrow": "a Space and Time creation",
+    "wordmark": "dreamspace",
+    "tagline_words": ["Write", "an", "app.", "Render", "onchain."]
+  }
+}

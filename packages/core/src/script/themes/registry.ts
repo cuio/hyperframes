@@ -22,6 +22,7 @@ const BUILTIN: LoadedTheme[] = [
     },
     designSystemDoc: null,
     referenceRenderPath: null,
+    templates: [],
     source: "builtin",
   },
   {
@@ -37,6 +38,7 @@ const BUILTIN: LoadedTheme[] = [
     },
     designSystemDoc: null,
     referenceRenderPath: null,
+    templates: [],
     source: "builtin",
   },
   {
@@ -59,6 +61,7 @@ const BUILTIN: LoadedTheme[] = [
     },
     designSystemDoc: null,
     referenceRenderPath: null,
+    templates: [],
     source: "builtin",
   },
 ];

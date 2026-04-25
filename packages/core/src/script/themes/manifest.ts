@@ -1,4 +1,4 @@
-import type { DesignTokens } from "../templates/types.js";
+import type { DesignTokens, Template } from "../templates/types.js";
 
 /**
  * On-disk theme manifest. Drop a folder under docs/design-systems/<id>/
@@ -68,6 +68,13 @@ export interface LoadedTheme {
   designSystemDoc: string | null;
   /** Absolute path to the reference render file, if present. */
   referenceRenderPath: string | null;
+  /**
+   * Theme-shipped templates loaded from <theme>/templates/*.html. Each
+   * carries a namespaced id like `<theme-id>.<basename>` so it can sit in
+   * the same registry as built-in templates without colliding. The planner
+   * sees them in the tool catalog when this theme is the active theme.
+   */
+  templates: Template[];
   /**
    * Where the theme came from: "builtin" for the TypeScript constants,
    * "disk:<absolute-folder>" for a discovered manifest. Used for

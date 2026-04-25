@@ -2,6 +2,7 @@ import { callStructuredTool, AnthropicError, DEFAULT_ANTHROPIC_MODEL } from "../
 import type { ToolDefinition } from "../anthropic/index.js";
 import { RETENTION_PLAYBOOK } from "./playbook.js";
 import { BUILTIN_TEMPLATES } from "./templates/index.js";
+import type { Template } from "./templates/types.js";
 import { BUILTIN_CHARTS } from "./charts/index.js";
 import { ATMOSPHERE_IDS } from "./atmosphere/index.js";
 import { TRANSITION_IDS } from "./transitions/index.js";
@@ -67,6 +68,13 @@ export interface PlanOptions {
     transitions?: string[];
     icons?: string[];
   };
+  /**
+   * Full list of templates the planner is allowed to pick from. Defaults to
+   * BUILTIN_TEMPLATES; callers pass the union of built-ins + active-theme
+   * shipped templates (via resolveTemplateRegistry) so theme-shipped
+   * templates show up in the catalog and pass validation alongside built-ins.
+   */
+  availableTemplates?: readonly Template[];
 }
 
 export type ScriptFidelity = "verbatim" | "split-merge" | "refine";
@@ -92,9 +100,12 @@ interface PlanToolInput {
   }>;
 }
 
-function buildToolDefinition(maxSceneDuration: number): ToolDefinition {
-  const templateEnum = BUILTIN_TEMPLATES.map((t) => t.id);
-  const templateCatalog = BUILTIN_TEMPLATES.map((t) => ({
+function buildToolDefinition(
+  maxSceneDuration: number,
+  templates: readonly Template[] = BUILTIN_TEMPLATES,
+): ToolDefinition {
+  const templateEnum = templates.map((t) => t.id);
+  const templateCatalog = templates.map((t) => ({
     id: t.id,
     description: t.description,
     whenToUse: t.whenToUse,
@@ -252,7 +263,8 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     throw new ScriptPlannerError("Script is empty");
   }
 
-  const tool = buildToolDefinition(opts.maxSceneDuration ?? 9);
+  const templateRegistry = opts.availableTemplates ?? BUILTIN_TEMPLATES;
+  const tool = buildToolDefinition(opts.maxSceneDuration ?? 9, templateRegistry);
   const user = buildUserMessage(rawScript, opts);
 
   const sections: string[] = [RETENTION_PLAYBOOK, fidelityRule(opts.fidelity ?? "split-merge")];
@@ -364,7 +376,7 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     result = retried;
   }
 
-  let issues = collectSchemaIssues(result.scenes);
+  let issues = collectSchemaIssues(result.scenes, templateRegistry);
   if (issues.length > 0) {
     const corrective =
       `${system}\n\n# REQUIRED CORRECTIONS — fix and re-emit\n\n` +
@@ -376,10 +388,10 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     if (!Array.isArray(result?.scenes) || result.scenes.length === 0) {
       throw new ScriptPlannerError("Planner returned no scenes after schema-correction retry");
     }
-    issues = collectSchemaIssues(result.scenes);
+    issues = collectSchemaIssues(result.scenes, templateRegistry);
   }
 
-  const validIds = new Set(BUILTIN_TEMPLATES.map((t) => t.id));
+  const validIds = new Set(templateRegistry.map((t) => t.id));
   const validAtmoIds = new Set(ATMOSPHERE_IDS);
   const validTransitionIds = new Set<string>(TRANSITION_IDS);
   const scenes: SceneRef[] = result.scenes.map((scene, i) => {
@@ -771,13 +783,16 @@ interface SchemaIssue {
  * validator — that's intentional. We only flag classes of error the planner
  * can reasonably fix on retry.
  */
-function collectSchemaIssues(scenes: PlanToolInput["scenes"]): SchemaIssue[] {
+function collectSchemaIssues(
+  scenes: PlanToolInput["scenes"],
+  templates: readonly Template[] = BUILTIN_TEMPLATES,
+): SchemaIssue[] {
   const issues: SchemaIssue[] = [];
   for (let i = 0; i < scenes.length; i++) {
     const s = scenes[i];
     if (!s) continue;
     const sceneId = s.id || `s${String(i + 1).padStart(2, "0")}`;
-    const tpl = BUILTIN_TEMPLATES.find((t) => t.id === s.template);
+    const tpl = templates.find((t) => t.id === s.template);
     if (!tpl) continue; // unknown template handled elsewhere as a hard error
     const props = (s.props ?? {}) as Record<string, unknown>;
     const required =

@@ -9,7 +9,8 @@ import {
   type LoadedTheme,
   type ThemeSearchRoots,
 } from "./themes/index.js";
-import type { DesignTokens } from "./templates/types.js";
+import { BUILTIN_TEMPLATES } from "./templates/index.js";
+import type { DesignTokens, Template } from "./templates/types.js";
 
 /**
  * Walk up from this module's location until we hit a directory containing
@@ -244,6 +245,21 @@ export function listAvailableThemes(projectDir?: string): LoadedTheme[] {
   return loadThemeRegistry(searchRootsFor(projectDir));
 }
 
+/**
+ * Resolve the union of built-in templates plus the active theme's own
+ * shipped templates. The planner uses this as its catalog and the
+ * assembler uses this for template lookup. Disk-shipped templates carry
+ * namespaced ids (`<theme-id>.<basename>`) so they can never shadow a
+ * built-in by accident — both can coexist.
+ */
+export function resolveTemplateRegistry(
+  projectDir: string,
+  briefOverride?: string | null,
+): Template[] {
+  const active = resolveActiveTheme(projectDir, briefOverride);
+  return [...BUILTIN_TEMPLATES, ...active.templates];
+}
+
 function fallbackTheme(): LoadedTheme {
   return {
     id: "default",
@@ -254,6 +270,7 @@ function fallbackTheme(): LoadedTheme {
     preferences: { atmospheres: [], transitions: [], icons: [] },
     designSystemDoc: null,
     referenceRenderPath: null,
+    templates: [],
     source: "builtin",
   };
 }

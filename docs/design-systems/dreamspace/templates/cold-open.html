@@ -1,0 +1,89 @@
+<div class="scene scene-{{template_id}}" id="{{scene_id}}" data-composition-id="{{scene_id}}" data-start="0" data-duration="{{duration}}">
+  <style>
+    #{{scene_id}}.scene-{{template_id}} { background: {{tokens.colors.bg}}; color: {{tokens.colors.fg}}; position: absolute; inset: 0; overflow: hidden; font-family: {{tokens.fonts.body}}; }
+    #{{scene_id}} .ds-cold-rings { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #{{scene_id}} .ds-cold-rings circle.ds-ring { fill: none; }
+    #{{scene_id}} .ds-cold-stack { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; z-index: 2; }
+    #{{scene_id}} .ds-cold-eyebrow { font-family: {{tokens.fonts.mono}}; font-size: 16px; letter-spacing: 0.32em; text-transform: uppercase; color: {{tokens.colors.accent}}; opacity: 0; transform: translateY(12px); }
+    #{{scene_id}} .ds-cold-wordmark { font-family: {{tokens.fonts.display}}; font-size: 200px; font-weight: 400; line-height: 0.95; letter-spacing: -0.04em; background: linear-gradient(180deg, {{tokens.colors.fg}} 0%, {{tokens.colors.fg}} 60%, {{tokens.colors.accent}} 130%); -webkit-background-clip: text; background-clip: text; color: transparent; opacity: 0; transform: translateY(30px); }
+    #{{scene_id}} .ds-cold-tagline { display: flex; gap: 14px; margin-top: 8px; }
+    #{{scene_id}} .ds-cold-tagline .ds-tag-word { font-family: {{tokens.fonts.display}}; font-size: 30px; font-weight: 400; color: {{tokens.colors.fg}}; letter-spacing: -0.01em; opacity: 0; transform: translateY(14px); }
+  </style>
+
+  <svg class="ds-cold-rings" viewBox="-500 -500 1000 1000" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+    <g class="ds-ring-group" data-r="180" data-rot-end="25">
+      <circle class="ds-ring" cx="0" cy="0" r="180" stroke="{{tokens.colors.subtle}}" stroke-width="0.8" stroke-opacity="0.45" stroke-dasharray="1131" stroke-dashoffset="1131" />
+    </g>
+    <g class="ds-ring-group ds-ring-highlight" data-r="280" data-rot-end="33">
+      <circle class="ds-ring" cx="0" cy="0" r="280" stroke="{{tokens.colors.accent}}" stroke-width="1.4" stroke-opacity="0.9" stroke-dasharray="1759" stroke-dashoffset="1759" />
+      <circle class="ds-ring-orbit" cx="280" cy="0" r="6" fill="{{tokens.colors.accent2}}" opacity="0" />
+    </g>
+    <g class="ds-ring-group" data-r="380" data-rot-end="41">
+      <circle class="ds-ring" cx="0" cy="0" r="380" stroke="{{tokens.colors.subtle}}" stroke-width="0.8" stroke-opacity="0.45" stroke-dasharray="2388" stroke-dashoffset="2388" />
+    </g>
+    <g class="ds-ring-group" data-r="480" data-rot-end="49">
+      <circle class="ds-ring" cx="0" cy="0" r="480" stroke="{{tokens.colors.subtle}}" stroke-width="0.8" stroke-opacity="0.45" stroke-dasharray="3016" stroke-dashoffset="3016" />
+    </g>
+  </svg>
+
+  <div class="ds-cold-stack">
+    <div class="ds-cold-eyebrow">{{eyebrow}}</div>
+    <div class="ds-cold-wordmark">{{wordmark}}</div>
+    <div class="ds-cold-tagline">{{#each tagline_words}}<span class="ds-tag-word">{{this}}</span>{{/each}}</div>
+  </div>
+
+  <script>
+    (function(){
+      var s = document.getElementById('{{scene_id}}');
+      if (!window.gsap || !s) return;
+      var tl = window.gsap.timeline({ paused: true });
+      var dur = {{duration}};
+
+      // Ring reveals — staggered, easeOutQuart per the design system spec.
+      var groups = s.querySelectorAll('.ds-ring-group');
+      groups.forEach(function(g, i){
+        var ring = g.querySelector('.ds-ring');
+        var dash = parseFloat(ring.getAttribute('stroke-dasharray'));
+        tl.to(ring, { strokeDashoffset: 0, duration: 1.4, ease: 'power4.out' }, 0.2 + i * 0.18);
+        // Continuous slow rotation. Finite repeat math derived from scene
+        // duration so the deterministic capture engine can seek the timeline.
+        var rotEnd = parseFloat(g.getAttribute('data-rot-end')) || 25;
+        var perCycle = Math.max(0.5, dur);
+        tl.to(g, { rotation: rotEnd, transformOrigin: '50% 50%', duration: perCycle, ease: 'none' }, 0);
+      });
+
+      // Highlight ring's orbit dot — fades in then orbits via onUpdate.
+      var orbit = s.querySelector('.ds-ring-orbit');
+      if (orbit) {
+        tl.to(orbit, { opacity: 1, duration: 0.6, ease: 'power3.out' }, 0.5);
+        var orbitState = { theta: 0 };
+        tl.to(orbitState, {
+          theta: 0.6 * dur,
+          duration: dur,
+          ease: 'none',
+          onUpdate: function(){
+            var x = 280 * Math.cos(orbitState.theta - 1.2);
+            var y = 280 * Math.sin(orbitState.theta - 1.2);
+            orbit.setAttribute('cx', x.toFixed(2));
+            orbit.setAttribute('cy', y.toFixed(2));
+          }
+        }, 0);
+      }
+
+      // Eyebrow — fade + 12px slide.
+      var eb = s.querySelector('.ds-cold-eyebrow');
+      tl.to(eb, { opacity: 1, y: 0, duration: 0.7, ease: 'power3.out' }, 0.2);
+
+      // Wordmark — hero entrance with easeOutQuart, longer slide.
+      var wm = s.querySelector('.ds-cold-wordmark');
+      tl.to(wm, { opacity: 1, y: 0, duration: 0.9, ease: 'power4.out' }, 0.5);
+
+      // Tagline words — per-word stagger.
+      var words = s.querySelectorAll('.ds-cold-tagline .ds-tag-word');
+      tl.to(words, { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out', stagger: 0.12 }, 1.4);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines['{{scene_id}}'] = tl;
+    })();
+  </script>
+</div>

@@ -17,6 +17,7 @@ import {
   loadResearch,
   resolveActiveTheme,
   resolveProjectTokens,
+  resolveTemplateRegistry,
   ScriptPlannerError,
   DESIGN_ART_TEMPLATE,
   RESEARCH_TEMPLATE,
@@ -85,6 +86,9 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       // (DESIGN_SYSTEM.md + preferred atmospheres / transitions / icons),
       // not just a colour palette.
       const activeTheme = resolveActiveTheme(project.dir, designBrief);
+      // Theme-shipped templates show up in the planner's catalog so the
+      // AI can pick `<theme-id>.<basename>` ids alongside built-ins.
+      const availableTemplates = resolveTemplateRegistry(project.dir, designBrief);
       let script = await planScript(text, {
         apiKey,
         model: body.model,
@@ -98,6 +102,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         themeName: activeTheme.name,
         themeDesignSystemDoc: activeTheme.designSystemDoc ?? undefined,
         themePreferences: activeTheme.preferences,
+        availableTemplates,
       });
       // Second-pass hook critic. Defaults on; the user can set
       // improveHook: false to skip the extra LLM round-trip when iterating.
@@ -503,8 +508,15 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         return c.json({ error: "forbidden outFile path" }, 403);
       }
 
-      const tokens = resolveProjectTokens(project.dir, loadDesignBrief(project.dir));
-      const result = assembleMaster(planned, { projectDir: project.dir, outFile, tokens });
+      const briefForAssemble = loadDesignBrief(project.dir);
+      const tokens = resolveProjectTokens(project.dir, briefForAssemble);
+      const templates = resolveTemplateRegistry(project.dir, briefForAssemble);
+      const result = assembleMaster(planned, {
+        projectDir: project.dir,
+        outFile,
+        tokens,
+        templates,
+      });
       return c.json({ ok: true, planned, result });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
