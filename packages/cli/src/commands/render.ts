@@ -652,8 +652,9 @@ async function logRenderCost(
   job: RenderJob | undefined,
 ): Promise<void> {
   try {
-    const { CostLogger } = await import("@hyperframes/core");
+    const { CostLogger, OpsLogger } = await import("@hyperframes/core");
     const logger = new CostLogger(projectDir);
+    const ops = new OpsLogger(projectDir);
     let outputBytes = 0;
     try {
       outputBytes = statSync(outputPath).size;
@@ -683,6 +684,18 @@ async function logRenderCost(
         outputPath,
       },
     );
+    await ops.log({
+      op: "render",
+      message: `${options.format.toUpperCase()} ${options.fps}fps ${options.quality} → ${outputPath} (${(outputBytes / 1_048_576).toFixed(1)}MB)`,
+      wallMs: elapsedMs,
+      meta: {
+        outputPath,
+        format: options.format,
+        quality: options.quality,
+        fps: options.fps,
+        hdr: options.hdr,
+      },
+    });
   } catch (err) {
     // Cost logging must never block a render. Surface as a warning only.
     console.warn("[costs] failed to log render cost:", err);

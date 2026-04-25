@@ -201,3 +201,5 @@ export {
   rateForModel,
 } from "./telemetry/cost.js";
 export type { CostEntry, CostEventSink, CostOp, CostRates } from "./telemetry/cost.js";
+export { OpsLogger, opsFireAndForget } from "./telemetry/ops.js";
+export type { OpEntry, OpLevel, OpsLoggerOptions } from "./telemetry/ops.js";

@@ -27,6 +27,7 @@ import {
 } from "../../script/index.js";
 import { validateAgainstSchema } from "../../script/themes/validateProps.js";
 import { CostLogger, loggerSink } from "../../telemetry/cost.js";
+import { OpsLogger, opsFireAndForget } from "../../telemetry/ops.js";
 
 interface PlanBody {
   text?: string;
@@ -106,6 +107,8 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           atmospheres: t.preferences.atmospheres,
           transitions: t.preferences.transitions,
         }));
+      const ops = new OpsLogger(project.dir);
+      const opsStart = Date.now();
       const costSink = loggerSink(new CostLogger(project.dir));
       let script = await planScript(text, {
         apiKey,
@@ -158,8 +161,16 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         }
       }
       writeJson(join(project.dir, SCRIPT_FILE), script);
+      opsFireAndForget(ops, {
+        op: "script.plan",
+        message: `${script.scenes.length} scenes${hookSwapped ? " (hook swapped)" : ""}`,
+        wallMs: Date.now() - opsStart,
+        meta: { sceneCount: script.scenes.length, hookSwapped, fidelity: body.fidelity },
+      });
       return c.json({ ok: true, script, hookSwapped, hookReasoning });
     } catch (err) {
+      const opsLogger = new OpsLogger(project.dir);
+      void opsLogger.logError("script.plan", err);
       if (err instanceof ScriptPlannerError) {
         return c.json({ error: err.message }, 502);
       }
@@ -388,6 +399,8 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       /* allow empty body */
     }
 
+    const variantsOps = new OpsLogger(project.dir);
+    const variantsStart = Date.now();
     try {
       const variantSink = loggerSink(new CostLogger(project.dir));
       const variants = await planSceneVariants(
@@ -403,8 +416,15 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           research: loadResearch(project.dir) ?? undefined,
         },
       );
+      opsFireAndForget(variantsOps, {
+        op: "script.variants",
+        message: `${variants.length} variants for ${sceneId}`,
+        wallMs: Date.now() - variantsStart,
+        meta: { sceneId, count: variants.length },
+      });
       return c.json({ ok: true, variants });
     } catch (err) {
+      void variantsOps.logError("script.variants", err, { sceneId });
       const msg = err instanceof Error ? err.message : String(err);
       return c.json({ error: msg }, err instanceof ScriptPlannerError ? 502 : 500);
     }
@@ -581,6 +601,8 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       );
     }
 
+    const generateOps = new OpsLogger(project.dir);
+    const generateStart = Date.now();
     try {
       const generateSink = loggerSink(new CostLogger(project.dir));
       const planned = await synthesizeScript(script, {
@@ -608,8 +630,15 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         tokens,
         templates,
       });
+      opsFireAndForget(generateOps, {
+        op: "script.generate",
+        message: `${planned.scenes.length} scenes synthesized → ${outFile}`,
+        wallMs: Date.now() - generateStart,
+        meta: { sceneCount: planned.scenes.length, outFile },
+      });
       return c.json({ ok: true, planned, result });
     } catch (err) {
+      void generateOps.logError("script.generate", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });
