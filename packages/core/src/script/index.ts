@@ -38,7 +38,22 @@ export { BUILTIN_TEMPLATES, getTemplate, DEFAULT_TOKENS } from "./templates/inde
 export type { Template, TemplateRenderContext, DesignTokens } from "./templates/index.js";
 export { RETENTION_PLAYBOOK } from "./playbook.js";
 export { loadDesignBrief } from "./designBrief.js";
-export { parseDesignBriefToTokens, resolveProjectTokens } from "./designTokens.js";
+export {
+  parseDesignBriefToTokens,
+  resolveProjectTokens,
+  resolveActiveTheme,
+  listAvailableThemes,
+} from "./designTokens.js";
+export {
+  loadThemeRegistry,
+  getLoadedThemeByName,
+  getDefaultLoadedTheme,
+  discoverThemeRoots,
+  loadThemesFromRoot,
+  type LoadedTheme,
+  type ThemeManifest,
+  type ThemeSearchRoots,
+} from "./themes/index.js";
 export { THEMES, DEFAULT_THEME, getThemeByName, HACKERNOON_FT, DATA_DRIFT_DARK } from "./themes.js";
 export { BUILTIN_CHARTS, getChart } from "./charts/index.js";
 export type { ChartDef, ChartContext } from "./charts/index.js";

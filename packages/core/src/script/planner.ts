@@ -49,6 +49,24 @@ export interface PlanOptions {
    *                    but core claims and numbers must be preserved exactly.
    */
   fidelity?: ScriptFidelity;
+  /**
+   * Active theme metadata. When supplied, the planner gets a richer brief:
+   *   - `themeDesignSystemDoc` is appended to the system prompt so the
+   *     planner reads the theme's full design DNA (palette rules, type
+   *     hierarchy, motion physics, custom templates spec).
+   *   - `themePreferences` biases atmosphere / transition / icon picks
+   *     toward what the theme's designer intended.
+   *   - `themeName` shows up in the planner's reasoning hints so it can
+   *     name the theme in its overallReasoning.
+   * Resolved upstream by `resolveActiveTheme(projectDir)`.
+   */
+  themeName?: string;
+  themeDesignSystemDoc?: string;
+  themePreferences?: {
+    atmospheres?: string[];
+    transitions?: string[];
+    icons?: string[];
+  };
 }
 
 export type ScriptFidelity = "verbatim" | "split-merge" | "refine";
@@ -251,6 +269,44 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     sections.push(
       `# Art direction — DESIGN-ART.md\n\n${opts.artDirection.trim()}\n\n## How to apply\n\n- Match the mood specified above. If "urgent investigative", lean on\n  hard cuts, accent3 (warning/amber) for outliers, dense type.\n- Honor pacing rules. If scenes should be ≤4s, bias toward shorter\n  durationHints. If "no fades", set transition: "cut".\n- Reference DESIGN-ART motifs in your reasoning ("Per art direction\n  motif: red horizontal rule…").`,
     );
+  }
+  if (opts.themeDesignSystemDoc?.trim()) {
+    // Theme-shipped design system doc — full DNA from the theme's author.
+    // The planner treats this as the source of truth when it conflicts
+    // with generic playbook guidance.
+    sections.push(
+      `# Active theme — ${opts.themeName ?? "(unnamed)"} design system\n\n` +
+        `The user has selected a theme that ships with a full design-system doc.\n` +
+        `Treat the rules below as the SOURCE OF TRUTH when they conflict with\n` +
+        `generic playbook guidance — the theme's author intended this look.\n\n` +
+        opts.themeDesignSystemDoc.trim(),
+    );
+  }
+  if (
+    opts.themePreferences &&
+    (opts.themePreferences.atmospheres?.length ||
+      opts.themePreferences.transitions?.length ||
+      opts.themePreferences.icons?.length)
+  ) {
+    const lines: string[] = [`# Theme preferences (bias toward these picks)`];
+    if (opts.themePreferences.atmospheres?.length) {
+      lines.push(
+        `- Preferred atmospheres for this theme: ${opts.themePreferences.atmospheres.join(", ")}. ` +
+          `Use these unless a scene's content demands something else, and name the theme in your reasoning when you pick one.`,
+      );
+    }
+    if (opts.themePreferences.transitions?.length) {
+      lines.push(
+        `- Preferred transitions for this theme: ${opts.themePreferences.transitions.join(", ")}.`,
+      );
+    }
+    if (opts.themePreferences.icons?.length) {
+      lines.push(
+        `- Theme highlights these icons in concept-callout: ${opts.themePreferences.icons.join(", ")}. ` +
+          `Use them when items match semantically.`,
+      );
+    }
+    sections.push(lines.join("\n"));
   }
   if (opts.research?.trim()) {
     sections.push(
