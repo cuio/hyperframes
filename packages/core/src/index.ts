@@ -188,3 +188,15 @@ export {
   isBlockItem,
   isComponentItem,
 } from "./registry/index.js";
+
+// ── Telemetry / cost monitoring ────────────────────────────────────────────
+export {
+  CostLogger,
+  computeCost,
+  timed,
+  logFireAndForget,
+  DEFAULT_RATES,
+  loadRates,
+  rateForModel,
+} from "./telemetry/cost.js";
+export type { CostEntry, CostOp, CostRates } from "./telemetry/cost.js";
