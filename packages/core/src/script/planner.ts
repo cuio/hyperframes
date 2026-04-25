@@ -1,5 +1,5 @@
 import { callStructuredTool, AnthropicError, DEFAULT_ANTHROPIC_MODEL } from "../anthropic/index.js";
-import type { ToolDefinition } from "../anthropic/index.js";
+import type { SystemSegment, ToolDefinition } from "../anthropic/index.js";
 import { RETENTION_PLAYBOOK } from "./playbook.js";
 import { BUILTIN_TEMPLATES } from "./templates/index.js";
 import { BUILTIN_CHARTS } from "./charts/index.js";
@@ -67,6 +67,23 @@ export interface PlanOptions {
     transitions?: string[];
     icons?: string[];
   };
+  /**
+   * Condensed list of OTHER themes the project could borrow concepts from.
+   * Each entry is a tiny summary (id + 1-line description + preferences) —
+   * stays under ~50 tokens per theme so the AI can reason about
+   * cross-pollination without bloating the cache key.
+   *
+   * Per-scene mixing: the planner can set scene.props.theme to any id from
+   * this list, and the assembler will use that theme's tokens for just
+   * that scene. Or the planner can pull individual atmospheres /
+   * transitions from a peer theme without switching the whole palette.
+   */
+  availableThemes?: Array<{
+    id: string;
+    description?: string;
+    atmospheres?: string[];
+    transitions?: string[];
+  }>;
 }
 
 export type ScriptFidelity = "verbatim" | "split-merge" | "refine";
@@ -89,6 +106,7 @@ interface PlanToolInput {
     reasoning?: string;
     transition?: SceneTransition;
     background?: string;
+    themeOverride?: string;
   }>;
 }
 
@@ -184,6 +202,11 @@ function buildToolDefinition(maxSceneDuration: number): ToolDefinition {
                 description:
                   "Optional inbound transition. Omit to accept the per-template default (cut for hooks, fade for most others). Never repeat the same non-cut transition twice in a row.",
               },
+              themeOverride: {
+                type: "string",
+                description:
+                  "Optional per-scene theme override. Set to one of the available theme ids (see 'Other themes available for cross-pollination' in the system prompt) to render JUST this scene with that theme's palette + fonts. Use sparingly — for moments where a different aesthetic earns the cut. The scene's props are stored under props.theme.",
+              },
               reasoning: {
                 type: "string",
                 description:
@@ -253,28 +276,36 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
   }
 
   const tool = buildToolDefinition(opts.maxSceneDuration ?? 9);
-  const user = buildUserMessage(rawScript, opts);
+  const baseUser = buildUserMessage(rawScript, opts);
 
-  const sections: string[] = [RETENTION_PLAYBOOK, fidelityRule(opts.fidelity ?? "split-merge")];
-  if (opts.designBrief?.trim()) {
-    sections.push(
-      `# Visual identity — project DESIGN.md\n\n${opts.designBrief.trim()}\n\n## How to apply this brief\n\n- Every scene's reasoning MUST reference at least one specific element\n  from the brief (a color, a font, a motion principle, a chart-style cue).\n- Pick chart colors deliberately: map the brief's "primary" palette role\n  to props.color = "primary", "secondary" role to "secondary", etc.\n- Set props.watermark to the brief's author byline if mentioned. Set\n  props.source to citation lines from RESEARCH.md when relevant.\n- Type hierarchy: hook scenes use the brief's display font; data\n  numbers use the mono font; body uses the body font.`,
-    );
-  } else {
-    sections.push(
-      `# No DESIGN.md supplied\n\nDefault aesthetic is HackerNoon FT (cream + red + Georgia serif). Use\nclassic data-journalism hierarchy: bold serif title, italic subtitle,\nred accent for the focal data point, source line bottom-left.`,
-    );
-  }
-  if (opts.artDirection?.trim()) {
-    sections.push(
-      `# Art direction — DESIGN-ART.md\n\n${opts.artDirection.trim()}\n\n## How to apply\n\n- Match the mood specified above. If "urgent investigative", lean on\n  hard cuts, accent3 (warning/amber) for outliers, dense type.\n- Honor pacing rules. If scenes should be ≤4s, bias toward shorter\n  durationHints. If "no fades", set transition: "cut".\n- Reference DESIGN-ART motifs in your reasoning ("Per art direction\n  motif: red horizontal rule…").`,
-    );
-  }
+  // Build the system prompt as cache-controlled segments. Order: most
+  // stable → most volatile, with cache_control breakpoints at each
+  // boundary. After the first call all segments up to the last
+  // breakpoint hit are read from cache (~10% of input cost). This is
+  // the dominant cost lever for users who iterate (re-plan, retry,
+  // hook critic, generate variants).
+  //
+  // Cache breakpoints (Anthropic API max 4):
+  //   1. Playbook (most stable) — every video, every project hits this.
+  //   2. Theme design-system doc + preferences (per theme) — same theme reuses.
+  //   3. Project DESIGN.md / DESIGN-ART.md / RESEARCH.md (per project) — same project reuses.
+  //   4. Fidelity rule + theme overrides + cinematography corrections (per call).
+  //
+  // The retry path appends to the USER message instead of system so the
+  // cached prefix stays identical and the retry hits cache too.
+  const system: SystemSegment[] = [];
+
+  // ── Block 1: Playbook (stable across all videos) ────────────────────
+  system.push({
+    type: "text",
+    text: RETENTION_PLAYBOOK,
+    cache_control: { type: "ephemeral" },
+  });
+
+  // ── Block 2: Theme DNA (stable per theme) ───────────────────────────
+  const themeBlockParts: string[] = [];
   if (opts.themeDesignSystemDoc?.trim()) {
-    // Theme-shipped design system doc — full DNA from the theme's author.
-    // The planner treats this as the source of truth when it conflicts
-    // with generic playbook guidance.
-    sections.push(
+    themeBlockParts.push(
       `# Active theme — ${opts.themeName ?? "(unnamed)"} design system\n\n` +
         `The user has selected a theme that ships with a full design-system doc.\n` +
         `Treat the rules below as the SOURCE OF TRUTH when they conflict with\n` +
@@ -291,45 +322,100 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     const lines: string[] = [`# Theme preferences (bias toward these picks)`];
     if (opts.themePreferences.atmospheres?.length) {
       lines.push(
-        `- Preferred atmospheres for this theme: ${opts.themePreferences.atmospheres.join(", ")}. ` +
-          `Use these unless a scene's content demands something else, and name the theme in your reasoning when you pick one.`,
+        `- Preferred atmospheres: ${opts.themePreferences.atmospheres.join(", ")}. ` +
+          `Use these unless a scene's content demands something else; name the theme in your reasoning.`,
       );
     }
     if (opts.themePreferences.transitions?.length) {
-      lines.push(
-        `- Preferred transitions for this theme: ${opts.themePreferences.transitions.join(", ")}.`,
-      );
+      lines.push(`- Preferred transitions: ${opts.themePreferences.transitions.join(", ")}.`);
     }
     if (opts.themePreferences.icons?.length) {
       lines.push(
-        `- Theme highlights these icons in concept-callout: ${opts.themePreferences.icons.join(", ")}. ` +
-          `Use them when items match semantically.`,
+        `- Theme highlights these icons in concept-callout: ${opts.themePreferences.icons.join(", ")}.`,
       );
     }
-    sections.push(lines.join("\n"));
+    themeBlockParts.push(lines.join("\n"));
+  }
+  if (opts.availableThemes?.length) {
+    // Condensed multi-theme awareness — lets the planner BORROW concepts
+    // from other themes (atmospheres, transitions, palettes) per scene
+    // without dragging the full design doc of every theme into context.
+    const others = opts.availableThemes.filter((t) => t.id !== (opts.themeName ?? ""));
+    if (others.length) {
+      const lines: string[] = [
+        `# Other themes available for cross-pollination`,
+        `These themes are also installed. You may BORROW concepts from them on a`,
+        `per-scene basis (set scene.props.theme to a theme id, OR pick atmospheres /`,
+        `transitions from their preferences while keeping the active theme's tokens).`,
+        `Cite the theme by id in your reasoning when you borrow.`,
+        ``,
+      ];
+      for (const t of others.slice(0, 8)) {
+        const prefs = [
+          t.atmospheres?.length ? `atmos: ${t.atmospheres.join("/")}` : null,
+          t.transitions?.length ? `trans: ${t.transitions.join("/")}` : null,
+        ].filter(Boolean);
+        lines.push(
+          `- **${t.id}** — ${t.description ?? ""} ${prefs.length ? `[${prefs.join(", ")}]` : ""}`.trim(),
+        );
+      }
+      themeBlockParts.push(lines.join("\n"));
+    }
+  }
+  if (themeBlockParts.length > 0) {
+    system.push({
+      type: "text",
+      text: themeBlockParts.join("\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+  }
+
+  // ── Block 3: Project files (stable per project) ─────────────────────
+  const projectBlockParts: string[] = [];
+  if (opts.designBrief?.trim()) {
+    projectBlockParts.push(
+      `# Visual identity — project DESIGN.md\n\n${opts.designBrief.trim()}\n\n## How to apply this brief\n\n- Every scene's reasoning MUST reference at least one specific element\n  from the brief (a color, a font, a motion principle, a chart-style cue).\n- Pick chart colors deliberately: map the brief's "primary" palette role\n  to props.color = "primary", "secondary" role to "secondary", etc.\n- Set props.watermark to the brief's author byline if mentioned. Set\n  props.source to citation lines from RESEARCH.md when relevant.\n- Type hierarchy: hook scenes use the brief's display font; data\n  numbers use the mono font; body uses the body font.`,
+    );
+  } else {
+    projectBlockParts.push(
+      `# No DESIGN.md supplied\n\nDefault aesthetic is HackerNoon FT (cream + red + Georgia serif). Use\nclassic data-journalism hierarchy: bold serif title, italic subtitle,\nred accent for the focal data point, source line bottom-left.`,
+    );
+  }
+  if (opts.artDirection?.trim()) {
+    projectBlockParts.push(
+      `# Art direction — DESIGN-ART.md\n\n${opts.artDirection.trim()}\n\n## How to apply\n\n- Match the mood specified above. If "urgent investigative", lean on\n  hard cuts, accent3 (warning/amber) for outliers, dense type.\n- Honor pacing rules. If scenes should be ≤4s, bias toward shorter\n  durationHints. If "no fades", set transition: "cut".\n- Reference DESIGN-ART motifs in your reasoning.`,
+    );
   }
   if (opts.research?.trim()) {
-    sections.push(
+    projectBlockParts.push(
       `# Research — RESEARCH.md\n\n${opts.research.trim()}\n\n## How to apply\n\n- Every numerical claim in the script must correspond to a line here.\n- Populate chart-scene props.source from "Key sources" section.\n- Use "Quotes" verbatim (with attribution) for quote scene templates.\n- Honor "Counterpoints / caveats" — surface them in the analysis act.\n- NEVER invent numbers, dates, names, or sources. If the script\n  references a fact not in RESEARCH.md, flag it via meta.warnings.\n- Any item under "Don't claim" must NOT appear in any scene text.`,
     );
   }
-  const system = sections.join("\n\n");
+  if (projectBlockParts.length > 0) {
+    system.push({
+      type: "text",
+      text: projectBlockParts.join("\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+  }
 
-  // First-pass call. If the planner emits scenes that fail schema checks
-  // (chart-scene without chart.type, missing required template props, etc.)
-  // we run one corrective retry with the validation errors injected into
-  // the system prompt — this turns a 90% success rate into ~99% at the
-  // cost of one extra LLM round-trip on the failing case.
-  const callPlanner = async (sys: string): Promise<PlanToolInput> => {
+  // ── Block 4: Fidelity rule (per-call, no cache_control) ─────────────
+  system.push({
+    type: "text",
+    text: fidelityRule(opts.fidelity ?? "split-merge"),
+  });
+
+  // First-pass call. If the planner emits scenes that fail schema checks,
+  // we retry once with the validation errors injected into the USER
+  // message (NOT the system) so the cached system prefix stays valid and
+  // the retry also hits cache.
+  const callPlanner = async (userMsg: string): Promise<PlanToolInput> => {
     try {
       const { result: r } = await callStructuredTool<PlanToolInput>(opts.apiKey, {
         model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
-        system: sys,
-        user,
+        system,
+        user: userMsg,
         tool,
-        // 8192 because the playbook now carries cinematography + hook-layering
-        // + asset library docs that eat into the per-call budget. A 12-scene
-        // plan with full reasoning + props can land at ~6k output tokens.
         maxTokens: 8192,
         temperature: opts.temperature ?? 0.7,
       });
@@ -342,14 +428,11 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     }
   };
 
-  let result = await callPlanner(system);
+  let result = await callPlanner(baseUser);
 
   if (!Array.isArray(result?.scenes) || result.scenes.length === 0) {
-    // Most common cause: the model hit max_tokens before completing the
-    // tool call, so the JSON arrived truncated. Surface the diagnostic so
-    // the caller can act, and try ONE more time with a tighter reminder.
     const retried = await callPlanner(
-      system +
+      baseUser +
         "\n\n# CRITICAL\n" +
         "Your previous response did not include a `scenes` array. You MUST\n" +
         "call the plan_video tool with at least 2 scenes. If your reasoning\n" +
@@ -366,8 +449,12 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
 
   let issues = collectSchemaIssues(result.scenes);
   if (issues.length > 0) {
+    // Append correction to USER message (NOT system) so the cached system
+    // prefix stays valid — the retry hits cache for the entire playbook +
+    // theme + project blocks, paying full price only on the deltas.
     const corrective =
-      `${system}\n\n# REQUIRED CORRECTIONS — fix and re-emit\n\n` +
+      baseUser +
+      `\n\n# REQUIRED CORRECTIONS — fix and re-emit\n\n` +
       `Your previous output had these schema violations. Re-emit the FULL\n` +
       `plan with these fixed; do not change correct scenes' template, props,\n` +
       `or text — preserve them verbatim.\n\n` +
@@ -396,6 +483,18 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
       props.background = scene.background;
     } else if (typeof props.background === "string" && !validAtmoIds.has(props.background)) {
       delete props.background;
+    }
+    // Per-scene theme override — only accepted if the named theme is in
+    // the availableThemes list the caller passed (or matches the active
+    // theme name, which is a no-op).
+    if (typeof scene.themeOverride === "string") {
+      const themeIdSet = new Set([
+        opts.themeName ?? "",
+        ...(opts.availableThemes?.map((t) => t.id) ?? []),
+      ]);
+      if (themeIdSet.has(scene.themeOverride)) {
+        props.theme = scene.themeOverride;
+      }
     }
     const transition: SceneTransition | undefined =
       typeof scene.transition === "string" && validTransitionIds.has(scene.transition)
