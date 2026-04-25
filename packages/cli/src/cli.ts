@@ -52,6 +52,7 @@ const subCommands = {
   capture: () => import("./commands/capture.js").then((m) => m.default),
   costs: () => import("./commands/costs.js").then((m) => m.default),
   ops: () => import("./commands/ops.js").then((m) => m.default),
+  images: () => import("./commands/images.js").then((m) => m.default),
 };
 
 const main = defineCommand({

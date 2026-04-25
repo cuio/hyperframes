@@ -203,3 +203,31 @@ export {
 export type { CostEntry, CostEventSink, CostOp, CostRates } from "./telemetry/cost.js";
 export { OpsLogger, opsFireAndForget } from "./telemetry/ops.js";
 export type { OpEntry, OpLevel, OpsLoggerOptions } from "./telemetry/ops.js";
+
+// ── Image pipeline (manual-metadata, sharp-based) ──────────────────────────
+export {
+  emptyManifest,
+  readManifest,
+  writeManifest,
+  manifestPath,
+  pickId,
+  findById,
+  upsertEntry,
+  removeEntry,
+  MANIFEST_PATH,
+  processImage,
+  DEFAULT_MAX_LONG_EDGE,
+  ingestImage,
+  ingestImages,
+  ensureManifest,
+} from "./images/index.js";
+export type {
+  ImageEntry,
+  ImageFocal,
+  ImageManifest,
+  ImageRole,
+  ProcessedImage,
+  ProcessOptions,
+  IngestOptions,
+  IngestResult,
+} from "./images/index.js";

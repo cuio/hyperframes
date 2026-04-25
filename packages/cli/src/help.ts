@@ -65,6 +65,7 @@ const GROUPS: Group[] = [
         "script",
         "Turn a written script into a video: AI scene planner + ElevenLabs TTS + master HTML",
       ],
+      ["images", "Manage image assets used by the visual director"],
     ],
   },
   {

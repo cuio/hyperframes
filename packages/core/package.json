@@ -126,7 +126,8 @@
     "prepublishOnly": "echo skip"
   },
   "dependencies": {
-    "@chenglou/pretext": "^0.0.5"
+    "@chenglou/pretext": "^0.0.5",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/jsdom": "^28.0.0",
