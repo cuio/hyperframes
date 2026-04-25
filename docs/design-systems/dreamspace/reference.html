@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Dreamspace · Launch explainer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  :root {
+    --ink:        oklch(0.13 0.02 270);
+    --ink-2:      oklch(0.18 0.025 275);
+    --ink-3:      oklch(0.24 0.03 275);
+    --paper:      oklch(0.97 0.005 280);
+    --dim:        oklch(0.72 0.01 280);
+    --dim-2:      oklch(0.50 0.02 280);
+    --rule:       oklch(0.32 0.02 275);
+    --uv:         oklch(0.72 0.18 295);
+    --uv-deep:    oklch(0.55 0.20 290);
+    --cyan:       oklch(0.82 0.13 200);
+    --amber:      oklch(0.82 0.13 75);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #0a0a14;
+    color: var(--paper);
+    font-family: "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  #root { width: 100vw; height: 100vh; }
+  .display { font-family: "Space Grotesk", system-ui, sans-serif; letter-spacing: -0.02em; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+  /* Subtle starfield background */
+  .stars {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(2px 2px at 12% 22%, rgba(255,255,255,0.6), transparent 50%),
+      radial-gradient(1.5px 1.5px at 78% 14%, rgba(255,255,255,0.45), transparent 50%),
+      radial-gradient(1px 1px at 33% 67%, rgba(255,255,255,0.55), transparent 50%),
+      radial-gradient(1.5px 1.5px at 88% 78%, rgba(200,180,255,0.6), transparent 50%),
+      radial-gradient(1px 1px at 55% 40%, rgba(255,255,255,0.4), transparent 50%),
+      radial-gradient(1px 1px at 18% 85%, rgba(255,255,255,0.4), transparent 50%),
+      radial-gradient(1.5px 1.5px at 65% 88%, rgba(180,220,255,0.5), transparent 50%),
+      radial-gradient(1px 1px at 92% 35%, rgba(255,255,255,0.45), transparent 50%);
+    pointer-events: none;
+  }
+  .grain::after {
+    content:""; position: absolute; inset: 0; pointer-events: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' seed='5'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    mix-blend-mode: overlay; opacity: 0.5;
+  }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- Hyperframes-style composition metadata: this whole HTML doc is the composition -->
+  <div id="composition-meta" data-composition-id="dreamspace-explainer" data-width="1920" data-height="1080" data-duration="30" hidden></div>
+
+  <script type="text/babel" src="animations.jsx"></script>
+  <script type="text/babel" src="dreamspace.jsx"></script>
+</body>
+</html>

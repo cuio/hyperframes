@@ -271,7 +271,10 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
         system: sys,
         user,
         tool,
-        maxTokens: 4096,
+        // 8192 because the playbook now carries cinematography + hook-layering
+        // + asset library docs that eat into the per-call budget. A 12-scene
+        // plan with full reasoning + props can land at ~6k output tokens.
+        maxTokens: 8192,
         temperature: opts.temperature ?? 0.7,
       });
       return r;
@@ -286,7 +289,23 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
   let result = await callPlanner(system);
 
   if (!Array.isArray(result?.scenes) || result.scenes.length === 0) {
-    throw new ScriptPlannerError("Planner returned no scenes");
+    // Most common cause: the model hit max_tokens before completing the
+    // tool call, so the JSON arrived truncated. Surface the diagnostic so
+    // the caller can act, and try ONE more time with a tighter reminder.
+    const retried = await callPlanner(
+      system +
+        "\n\n# CRITICAL\n" +
+        "Your previous response did not include a `scenes` array. You MUST\n" +
+        "call the plan_video tool with at least 2 scenes. If your reasoning\n" +
+        "fields would push you over the token budget, write shorter\n" +
+        "reasonings (1 sentence is fine) but every scene must be present.",
+    );
+    if (!Array.isArray(retried?.scenes) || retried.scenes.length === 0) {
+      throw new ScriptPlannerError(
+        "Planner returned no scenes after a retry. Likely causes: (1) the script is too short to plan — needs at least one full sentence; (2) the playbook + design files together exceeded the model's input budget; (3) the model truncated mid-tool-call. Try a longer script, or trim DESIGN.md / DESIGN-ART.md / RESEARCH.md.",
+      );
+    }
+    result = retried;
   }
 
   let issues = collectSchemaIssues(result.scenes);

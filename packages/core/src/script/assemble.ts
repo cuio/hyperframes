@@ -130,7 +130,7 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     <script src="${opts.gsapUrl ?? DEFAULT_GSAP}"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
@@ -304,7 +304,7 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     </style>
   </head>
   <body>
-    <div class="hf-stage" id="hf-root" data-composition-id="hf-root" data-root="true" data-start="0" data-duration="${total.toFixed(2)}">
+    <div class="hf-stage" id="hf-root" data-composition-id="hf-root" data-root="true" data-start="0" data-duration="${total.toFixed(2)}" data-width="${width}" data-height="${height}">
       <!-- Persistent atmosphere layer behind every scene -->
       <div class="hf-atmosphere" aria-hidden="true">
         <div class="hf-grid-bg"></div>
@@ -346,19 +346,28 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
         root.to({}, { duration: TOTAL }, 0);
 
         // ── Atmosphere: orbs drift slowly across the full duration so the
-        // background always feels alive. Independent of scene visibility.
+        // background always feels alive. Repeat counts are FINITE — the
+        // hyperframes capture engine seeks to exact frame times and would
+        // hang on infinite tweens. Each orb gets enough yoyo cycles to
+        // cover the whole composition.
         var orbA = document.getElementById('hf-orb-a');
         var orbB = document.getElementById('hf-orb-b');
+        var cycleA = Math.max(20, TOTAL / 4);
+        var cycleB = Math.max(24, TOTAL / 4);
         if (orbA) {
           window.gsap.to(orbA, {
-            x: 600, y: 200, duration: Math.max(20, TOTAL),
-            yoyo: true, repeat: -1, ease: 'sine.inOut',
+            x: 600, y: 200, duration: cycleA,
+            yoyo: true,
+            repeat: Math.max(1, Math.ceil(TOTAL / cycleA) - 1),
+            ease: 'sine.inOut',
           });
         }
         if (orbB) {
           window.gsap.to(orbB, {
-            x: -500, y: -250, duration: Math.max(24, TOTAL),
-            yoyo: true, repeat: -1, ease: 'sine.inOut', delay: 1.2,
+            x: -500, y: -250, duration: cycleB,
+            yoyo: true,
+            repeat: Math.max(1, Math.ceil(TOTAL / cycleB) - 1),
+            ease: 'sine.inOut', delay: 1.2,
           });
         }
         // Persistent decorations: rails draw in once at start.

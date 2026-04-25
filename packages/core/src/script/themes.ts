@@ -54,9 +54,45 @@ export const DATA_DRIFT_DARK: DesignTokens = {
   },
 };
 
+/**
+ * Dreamspace explainer aesthetic — deep ink-violet bg, oklch-anchored UV /
+ * cyan / amber accents, Space Grotesk display + JetBrains Mono chrome +
+ * Inter body. Hex approximations of the oklch tokens defined in the
+ * Dreamspace design handoff (see docs/design-systems/dreamspace.md).
+ *
+ * Use this theme as a base for explainer-style videos; it pairs naturally
+ * with aurora / cosmic-dust / radial-pulse atmospheres and the layered
+ * hook (eyebrow + title + subtext) flow.
+ */
+export const DREAMSPACE: DesignTokens = {
+  colors: {
+    bg: "#0d0d18",
+    fg: "#f6f6f8",
+    surface: "#15151f",
+    accent: "#a78bfa",
+    accent2: "#5cd5e7",
+    accent3: "#e8b46e",
+    muted: "#aeaeb4",
+    subtle: "#3a3a48",
+  },
+  fonts: {
+    display: "'Space Grotesk', 'Inter', sans-serif",
+    body: "'Inter', system-ui, sans-serif",
+    mono: "'JetBrains Mono', ui-monospace, monospace",
+  },
+  motion: {
+    // easeOutQuart maps to GSAP's power4.out — matches the spec's hero
+    // entrance feel for counters and big text.
+    ease: "power4.out",
+    enterMs: 600,
+    staggerMs: 180,
+  },
+};
+
 export const THEMES: Record<string, DesignTokens> = {
   "hackernoon-ft": HACKERNOON_FT,
   "data-drift-dark": DATA_DRIFT_DARK,
+  dreamspace: DREAMSPACE,
 };
 
 export const DEFAULT_THEME = "hackernoon-ft";
