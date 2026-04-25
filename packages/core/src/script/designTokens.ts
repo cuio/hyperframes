@@ -1,8 +1,43 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DEFAULT_TOKENS } from "./templates/tokens.js";
 import { getThemeByName } from "./themes.js";
+import {
+  getLoadedThemeByName,
+  loadThemeRegistry,
+  type LoadedTheme,
+  type ThemeSearchRoots,
+} from "./themes/index.js";
 import type { DesignTokens } from "./templates/types.js";
+
+/**
+ * Walk up from this module's location until we hit a directory containing
+ * docs/design-systems/ — that's the repo root for disk-theme discovery.
+ * Returns null when not running in the workspace (e.g. published package
+ * install), in which case disk themes are skipped silently.
+ */
+function findRepoRoot(): string | null {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    let cur = here;
+    for (let i = 0; i < 8; i++) {
+      if (existsSync(join(cur, "docs", "design-systems"))) return cur;
+      const parent = resolve(cur, "..");
+      if (parent === cur) return null;
+      cur = parent;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const REPO_ROOT = findRepoRoot();
+
+function searchRootsFor(projectDir?: string): ThemeSearchRoots {
+  return { repoRoot: REPO_ROOT ?? undefined, projectDir };
+}
 
 /**
  * Heuristic parser for DESIGN.md → DesignTokens. Looks for a "Colors" section
@@ -142,8 +177,32 @@ export function resolveProjectTokens(
   projectDir: string,
   briefOverride?: string | null,
 ): DesignTokens {
-  let base: DesignTokens = DEFAULT_TOKENS;
-  // Step 2: explicit theme name in hyperframes.json swaps the base.
+  return resolveActiveTheme(projectDir, briefOverride).tokens;
+}
+
+/**
+ * Resolve the FULL active theme for a project — tokens, design-system doc,
+ * preferences, font URLs. Composition order:
+ *   1. Built-in default theme.
+ *   2. hyperframes.json `design.theme` — looked up via the disk-aware
+ *      registry (so a project can pick up a theme dropped under
+ *      docs/design-systems/<id>/ or <project>/themes/<id>/ without code
+ *      changes).
+ *   3. DESIGN.md — overlays the resolved theme's tokens with hex codes
+ *      the parser actually finds.
+ *
+ * Callers that only need the palette can use resolveProjectTokens; the
+ * planner uses resolveActiveTheme so it can append the theme's
+ * DESIGN_SYSTEM.md to its system prompt and bias picks toward the
+ * theme's preferred atmospheres / transitions / icons.
+ */
+export function resolveActiveTheme(projectDir: string, briefOverride?: string | null): LoadedTheme {
+  const roots = searchRootsFor(projectDir);
+  const registry = loadThemeRegistry(roots);
+  let active: LoadedTheme =
+    registry.find((t) => t.id === "hackernoon-ft") ?? registry[0] ?? fallbackTheme();
+
+  // Step 2: explicit theme name in hyperframes.json swaps the active theme.
   const configPath = join(projectDir, "hyperframes.json");
   if (existsSync(configPath)) {
     try {
@@ -152,16 +211,49 @@ export function resolveProjectTokens(
       };
       const themeName = json?.design?.theme;
       if (typeof themeName === "string") {
-        const themed = getThemeByName(themeName);
-        if (themed) base = themed;
+        const named = getLoadedThemeByName(themeName, roots);
+        if (named) active = named;
+        else {
+          // Back-compat: fall back to the legacy TS-only theme registry
+          // for ids that haven't been migrated to disk format yet.
+          const legacy = getThemeByName(themeName);
+          if (legacy) active = { ...active, tokens: legacy, id: themeName, name: themeName };
+        }
       }
     } catch {
       /* ignore — fall through */
     }
   }
-  // Step 3: parse DESIGN.md (or supplied brief) over the base.
+
+  // Step 3: DESIGN.md overlay only ever touches tokens — preferences and
+  // designSystemDoc come from the named theme.
   if (briefOverride && briefOverride.trim()) {
-    return parseDesignBriefToTokens(briefOverride, base);
+    return { ...active, tokens: parseDesignBriefToTokens(briefOverride, active.tokens) };
   }
-  return base;
+  return active;
+}
+
+/**
+ * List every theme the loader can see for a given project — built-ins
+ * plus disk themes from the repo's docs/design-systems/ AND the project's
+ * own themes/ directory. Used by the studio's theme picker and the
+ * `/themes` API endpoint so callers don't need to know about repoRoot
+ * discovery.
+ */
+export function listAvailableThemes(projectDir?: string): LoadedTheme[] {
+  return loadThemeRegistry(searchRootsFor(projectDir));
+}
+
+function fallbackTheme(): LoadedTheme {
+  return {
+    id: "default",
+    name: "Default",
+    description: "",
+    tokens: DEFAULT_TOKENS,
+    fonts: { googleFonts: [] },
+    preferences: { atmospheres: [], transitions: [], icons: [] },
+    designSystemDoc: null,
+    referenceRenderPath: null,
+    source: "builtin",
+  };
 }

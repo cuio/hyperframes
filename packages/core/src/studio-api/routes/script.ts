@@ -12,8 +12,10 @@ import {
   synthesizeScript,
   assembleMaster,
   loadDesignBrief,
+  listAvailableThemes,
   loadDesignArt,
   loadResearch,
+  resolveActiveTheme,
   resolveProjectTokens,
   ScriptPlannerError,
   DESIGN_ART_TEMPLATE,
@@ -79,6 +81,10 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       const designBrief = loadDesignBrief(project.dir) ?? undefined;
       const research = loadResearch(project.dir) ?? undefined;
       const artDirection = loadDesignArt(project.dir) ?? undefined;
+      // Resolve the active theme so the planner gets the theme's full DNA
+      // (DESIGN_SYSTEM.md + preferred atmospheres / transitions / icons),
+      // not just a colour palette.
+      const activeTheme = resolveActiveTheme(project.dir, designBrief);
       let script = await planScript(text, {
         apiKey,
         model: body.model,
@@ -89,6 +95,9 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         designBrief,
         artDirection,
         research,
+        themeName: activeTheme.name,
+        themeDesignSystemDoc: activeTheme.designSystemDoc ?? undefined,
+        themePreferences: activeTheme.preferences,
       });
       // Second-pass hook critic. Defaults on; the user can set
       // improveHook: false to skip the extra LLM round-trip when iterating.
@@ -130,6 +139,74 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
+  });
+
+  // List every theme the loader can see — built-ins + disk-discovered.
+  // Used by the studio's theme picker in the Script tab.
+  api.get("/themes", async (c) => {
+    const project = await adapter.resolveProject(c.req.query("project") ?? "");
+    const projectDir = project?.dir;
+    const all = listAvailableThemes(projectDir);
+    return c.json({
+      themes: all.map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        bg: t.tokens.colors.bg,
+        accent: t.tokens.colors.accent,
+        accent2: t.tokens.colors.accent2,
+        hasDesignSystemDoc: !!t.designSystemDoc,
+        hasReferenceRender: !!t.referenceRenderPath,
+        preferences: t.preferences,
+        source: t.source,
+      })),
+    });
+  });
+
+  // Report which theme a single project will resolve to right now.
+  api.get("/projects/:id/theme", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const designBrief = loadDesignBrief(project.dir) ?? undefined;
+    const active = resolveActiveTheme(project.dir, designBrief);
+    return c.json({
+      id: active.id,
+      name: active.name,
+      description: active.description,
+      bg: active.tokens.colors.bg,
+      accent: active.tokens.colors.accent,
+      accent2: active.tokens.colors.accent2,
+      preferences: active.preferences,
+      source: active.source,
+      hasDesignBriefOverlay: !!designBrief,
+    });
+  });
+
+  // Set the active theme by writing design.theme into hyperframes.json.
+  // Studio calls this when the user picks from the theme dropdown.
+  api.put("/projects/:id/theme", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: { theme?: string };
+    try {
+      body = (await c.req.json()) as { theme?: string };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const themeId = body.theme?.trim();
+    if (!themeId) return c.json({ error: "theme is required" }, 400);
+    const configPath = join(project.dir, "hyperframes.json");
+    let json: Record<string, unknown> = {};
+    if (existsSync(configPath)) {
+      try {
+        json = JSON.parse(readFileSync(configPath, "utf-8"));
+      } catch {
+        return c.json({ error: "hyperframes.json is malformed" }, 500);
+      }
+    }
+    json.design = { ...(json.design as object | undefined), theme: themeId };
+    writeFileSync(configPath, JSON.stringify(json, null, 2) + "\n");
+    return c.json({ ok: true, theme: themeId });
   });
 
   // Scaffold templates: create RESEARCH.md / DESIGN-ART.md if missing.

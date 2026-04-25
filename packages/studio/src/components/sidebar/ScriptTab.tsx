@@ -54,6 +54,21 @@ interface KeyStatus {
   source: KeySource;
 }
 
+interface ThemeSummary {
+  id: string;
+  name: string;
+  description: string;
+  bg: string;
+  accent: string;
+  accent2: string;
+  hasDesignSystemDoc: boolean;
+  hasReferenceRender: boolean;
+  source: string;
+}
+interface ActiveThemeInfo extends ThemeSummary {
+  hasDesignBriefOverlay: boolean;
+}
+
 interface BusyState {
   kind: "idle" | "loading" | "planning" | "generating";
   message?: string;
@@ -85,6 +100,9 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   } | null>(null);
   const [scaffolding, setScaffolding] = useState(false);
   const [captionsVisible, setCaptionsVisible] = useState<boolean>(readStoredCaptionsVisible);
+  const [themes, setThemes] = useState<ThemeSummary[] | null>(null);
+  const [activeTheme, setActiveTheme] = useState<ActiveThemeInfo | null>(null);
+  const [themeBusy, setThemeBusy] = useState(false);
 
   const loadAnthropicKeyStatus = useCallback(async () => {
     try {
@@ -105,6 +123,41 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
       /* ignore */
     }
   }, [projectId]);
+
+  const loadThemes = useCallback(async () => {
+    try {
+      const [allRes, activeRes] = await Promise.all([
+        fetch(`/api/themes?project=${encodeURIComponent(projectId)}`),
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/theme`),
+      ]);
+      if (allRes.ok) {
+        const data = (await allRes.json()) as { themes: ThemeSummary[] };
+        setThemes(data.themes);
+      }
+      if (activeRes.ok) {
+        setActiveTheme((await activeRes.json()) as ActiveThemeInfo);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [projectId]);
+
+  const setProjectTheme = useCallback(
+    async (themeId: string) => {
+      setThemeBusy(true);
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/theme`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ theme: themeId }),
+        });
+        if (res.ok) await loadThemes();
+      } finally {
+        setThemeBusy(false);
+      }
+    },
+    [projectId, loadThemes],
+  );
 
   const loadFilesStatus = useCallback(async () => {
     try {
@@ -221,7 +274,8 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     void loadExistingScript();
     void loadDefaultVoice();
     void loadFilesStatus();
-  }, [loadAnthropicKeyStatus, loadExistingScript, loadDefaultVoice, loadFilesStatus]);
+    void loadThemes();
+  }, [loadAnthropicKeyStatus, loadExistingScript, loadDefaultVoice, loadFilesStatus, loadThemes]);
 
   const saveAnthropicKey = useCallback(async () => {
     const value = keyDraft.trim();
@@ -368,6 +422,55 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
             className="h-7 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-neutral-700"
           />
         </div>
+        {themes && themes.length > 0 && (
+          <div className="flex gap-2 items-center flex-wrap">
+            <label className="text-[10px] text-neutral-500">Theme</label>
+            <select
+              value={activeTheme?.id ?? ""}
+              onChange={(e) => void setProjectTheme(e.target.value)}
+              disabled={themeBusy}
+              className="h-7 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 focus:outline-none focus:border-neutral-700 cursor-pointer disabled:opacity-40"
+              title={
+                activeTheme?.description ||
+                "Pick the visual theme for this project (writes design.theme into hyperframes.json)"
+              }
+            >
+              {themes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {t.hasDesignSystemDoc ? " ✦" : ""}
+                </option>
+              ))}
+            </select>
+            {activeTheme && (
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="inline-block h-3 w-3 rounded-sm border border-neutral-700"
+                  style={{ background: activeTheme.bg }}
+                  title={`bg ${activeTheme.bg}`}
+                />
+                <span
+                  className="inline-block h-3 w-3 rounded-sm border border-neutral-700"
+                  style={{ background: activeTheme.accent }}
+                  title={`accent ${activeTheme.accent}`}
+                />
+                <span
+                  className="inline-block h-3 w-3 rounded-sm border border-neutral-700"
+                  style={{ background: activeTheme.accent2 }}
+                  title={`accent2 ${activeTheme.accent2}`}
+                />
+              </div>
+            )}
+            {activeTheme?.hasDesignBriefOverlay && (
+              <span
+                className="text-[9px] uppercase tracking-wider text-amber-400/80"
+                title="DESIGN.md is overlaying token values on top of this theme"
+              >
+                + DESIGN.md
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex gap-2 items-center flex-wrap">
           <label className="text-[10px] text-neutral-500">Fidelity</label>
           <select

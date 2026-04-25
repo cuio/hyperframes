@@ -1,0 +1,42 @@
+{
+  "$schema": "../theme.schema.json",
+  "id": "dreamspace",
+  "name": "Dreamspace",
+  "description": "Deep ink-violet bg with UV/cyan/amber accents. Space Grotesk display, JetBrains Mono chrome, Inter body. Cinematic explainer aesthetic.",
+  "tokens": {
+    "colors": {
+      "bg": "#0d0d18",
+      "fg": "#f6f6f8",
+      "surface": "#15151f",
+      "accent": "#a78bfa",
+      "accent2": "#5cd5e7",
+      "accent3": "#e8b46e",
+      "muted": "#aeaeb4",
+      "subtle": "#3a3a48"
+    },
+    "fonts": {
+      "display": "'Space Grotesk', 'Inter', sans-serif",
+      "body": "'Inter', system-ui, sans-serif",
+      "mono": "'JetBrains Mono', ui-monospace, monospace"
+    },
+    "motion": {
+      "ease": "power4.out",
+      "enterMs": 600,
+      "staggerMs": 180
+    }
+  },
+  "fonts": {
+    "googleFonts": [
+      "Space Grotesk:wght@300;400;500;600;700",
+      "JetBrains Mono:wght@300;400;500",
+      "Inter:wght@400;500"
+    ]
+  },
+  "preferences": {
+    "atmospheres": ["aurora", "cosmic-dust", "radial-pulse", "flow-lines"],
+    "transitions": ["fade", "zoom-in", "zoom-out"],
+    "icons": ["sparkle", "bolt", "network", "target", "shield", "globe"]
+  },
+  "designSystemDoc": "DESIGN_SYSTEM.md",
+  "referenceRender": "reference.html"
+}
