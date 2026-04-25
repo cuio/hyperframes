@@ -6,8 +6,15 @@ export type {
   PlannedScene,
   PlannedScript,
 } from "./types.js";
-export { planScript, ScriptPlannerError } from "./planner.js";
-export type { PlanOptions } from "./planner.js";
+export { planScript, planSceneVariants, ScriptPlannerError } from "./planner.js";
+export type { PlanOptions, VariantOptions } from "./planner.js";
+export {
+  loadDesignArt,
+  loadResearch,
+  loadScriptMd,
+  DESIGN_ART_TEMPLATE,
+  RESEARCH_TEMPLATE,
+} from "./projectFiles.js";
 export { synthesizeScript } from "./audio.js";
 export type { SynthesizeScriptOptions } from "./audio.js";
 export { assembleMaster } from "./assemble.js";

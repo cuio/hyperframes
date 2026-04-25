@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useState } from "react";
+import { VariantsModal } from "./VariantsModal";
 
 interface ScriptTabProps {
   projectId: string;
@@ -12,10 +13,18 @@ interface SceneRef {
   hook?: boolean;
   voiceId?: string;
   durationHint?: number;
+  reasoning?: string;
 }
 
 interface Script {
-  meta: { title?: string; voiceId?: string; audience?: string; tone?: string };
+  meta: {
+    title?: string;
+    voiceId?: string;
+    audience?: string;
+    tone?: string;
+    overallReasoning?: string;
+    warnings?: string[];
+  };
   scenes: SceneRef[];
 }
 
@@ -43,6 +52,8 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [defaultVoiceId, setDefaultVoiceId] = useState<string | null>(null);
+  const [expandedScene, setExpandedScene] = useState<string | null>(null);
+  const [variantSceneId, setVariantSceneId] = useState<string | null>(null);
 
   const loadAnthropicKeyStatus = useCallback(async () => {
     try {
@@ -242,7 +253,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
             disabled={!text.trim() || planning || generating || needsAnthropicKey}
             className="ml-auto h-7 px-3 rounded-md text-[11px] font-medium border border-studio-accent/40 bg-studio-accent/10 text-studio-accent hover:bg-studio-accent/15 disabled:opacity-40"
           >
-            {planning ? "Planning…" : "Plan with AI"}
+            {planning ? "Planning…" : script ? "Re-plan with AI" : "Plan with AI"}
           </button>
         </div>
         {error && <div className="text-[10px] text-red-400">{error}</div>}
@@ -281,27 +292,147 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
               <span className="text-amber-400">none — pick one in Voices tab</span>
             )}
           </div>
+          {script.meta.overallReasoning && (
+            <div className="mb-2 text-[10px] text-neutral-400 italic leading-relaxed border-l-2 border-studio-accent/40 pl-2">
+              {script.meta.overallReasoning}
+            </div>
+          )}
+          {script.meta.warnings && script.meta.warnings.length > 0 && (
+            <div className="mb-2 rounded-md border border-amber-900/40 bg-amber-950/30 px-2 py-1.5">
+              <div className="text-[9px] uppercase tracking-wider text-amber-400 mb-1">
+                Planner warnings
+              </div>
+              <ul className="text-[10px] text-amber-200/80 space-y-0.5">
+                {script.meta.warnings.map((w, i) => (
+                  <li key={i}>· {w}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="flex flex-col gap-1.5">
             {script.scenes.map((scene) => (
-              <div
+              <SceneCard
                 key={scene.id}
-                className="rounded-md border border-neutral-800 bg-neutral-900/60 px-2 py-1.5"
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-mono text-neutral-500">{scene.id}</span>
-                  <span className="text-[10px] text-studio-accent">{scene.template}</span>
-                  {scene.hook && (
-                    <span className="text-[9px] uppercase tracking-wider text-amber-400">hook</span>
-                  )}
-                </div>
-                {scene.text && (
-                  <div className="text-[11px] text-neutral-300 mt-1 line-clamp-2">{scene.text}</div>
-                )}
-              </div>
+                scene={scene}
+                expanded={expandedScene === scene.id}
+                onToggle={() => setExpandedScene((prev) => (prev === scene.id ? null : scene.id))}
+                onVariants={() => setVariantSceneId(scene.id)}
+              />
             ))}
+          </div>
+        </div>
+      )}
+      {variantSceneId &&
+        script &&
+        (() => {
+          const target = script.scenes.find((s) => s.id === variantSceneId);
+          if (!target) return null;
+          return (
+            <VariantsModal
+              projectId={projectId}
+              sceneId={target.id}
+              sceneText={target.text}
+              currentTemplate={target.template}
+              onClose={() => setVariantSceneId(null)}
+              onPick={(variant) => {
+                setScript((prev) => {
+                  if (!prev) return prev;
+                  return {
+                    ...prev,
+                    scenes: prev.scenes.map((s) =>
+                      s.id === variant.id
+                        ? {
+                            ...s,
+                            template: variant.template,
+                            props: variant.props,
+                            reasoning: variant.reasoning,
+                          }
+                        : s,
+                    ),
+                  };
+                });
+              }}
+            />
+          );
+        })()}
+    </div>
+  );
+});
+
+interface SceneCardProps {
+  scene: SceneRef;
+  expanded: boolean;
+  onToggle: () => void;
+  onVariants: () => void;
+}
+
+function SceneCard({ scene, expanded, onToggle, onVariants }: SceneCardProps) {
+  const chartType =
+    scene.template === "chart-scene" && scene.props
+      ? (() => {
+          const chart = (scene.props as Record<string, unknown>).chart;
+          if (chart && typeof chart === "object" && "type" in chart) {
+            const t = (chart as Record<string, unknown>).type;
+            return typeof t === "string" ? t : null;
+          }
+          return null;
+        })()
+      : null;
+  return (
+    <div className="rounded-md border border-neutral-800 bg-neutral-900/60 overflow-hidden">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left px-2 py-1.5 hover:bg-neutral-800/40 transition-colors"
+      >
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] font-mono text-neutral-500">{scene.id}</span>
+          <span className="text-[10px] text-studio-accent">{scene.template}</span>
+          {chartType && (
+            <span className="text-[9px] font-mono text-neutral-400">→ {chartType}</span>
+          )}
+          {scene.hook && (
+            <span className="text-[9px] uppercase tracking-wider text-amber-400">hook</span>
+          )}
+          <span className="ml-auto text-[10px] text-neutral-600">{expanded ? "−" : "+"}</span>
+        </div>
+        {scene.text && (
+          <div className={`text-[11px] text-neutral-300 mt-1 ${expanded ? "" : "line-clamp-2"}`}>
+            {scene.text}
+          </div>
+        )}
+      </button>
+      {expanded && (
+        <div className="border-t border-neutral-800 px-2 py-2 bg-neutral-950/40">
+          {scene.reasoning ? (
+            <>
+              <div className="text-[9px] uppercase tracking-wider text-neutral-500 mb-1">
+                Why this visual
+              </div>
+              <div className="text-[10px] text-neutral-400 leading-relaxed italic">
+                {scene.reasoning}
+              </div>
+            </>
+          ) : (
+            <div className="text-[10px] text-neutral-600 italic">
+              (No reasoning provided — re-plan or fetch variants.)
+            </div>
+          )}
+          <div className="mt-2 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onVariants();
+              }}
+              className="h-6 px-2 rounded-md text-[10px] font-medium border border-studio-accent/40 bg-studio-accent/10 text-studio-accent hover:bg-studio-accent/20 transition-colors"
+              title="Generate 3 alternative visual treatments and pick one"
+            >
+              ⟳ Variants
+            </button>
           </div>
         </div>
       )}
     </div>
   );
-});
+}

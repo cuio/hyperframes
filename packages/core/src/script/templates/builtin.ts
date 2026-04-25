@@ -44,36 +44,72 @@ const HOOK_BIGTEXT: Template = {
     const accentWord = asString(props.accentWord);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
-    const enterMs = t.motion.enterMs;
-    const stagger = t.motion.staggerMs;
-    const titleHtml = accentWord
-      ? escapeHtml(title).replace(
-          new RegExp(`\\b(${escapeHtml(accentWord)})\\b`),
-          `<span class="hb-accent">$1</span>`,
-        )
-      : escapeHtml(title);
+    // Split the title into words → letters for kinetic per-letter reveal.
+    // We render each letter as a span; spaces become spacer spans so word
+    // wrapping still works.
+    const words = title.split(/(\s+)/);
+    const letterHtml = words
+      .map((word) => {
+        if (/^\s+$/.test(word)) return `<span class="hb-space">&nbsp;</span>`;
+        const isAccent =
+          accentWord && word.toLowerCase().replace(/[^a-z0-9]/g, "") === accentWord.toLowerCase();
+        const wordCls = isAccent ? "hb-word hb-accent" : "hb-word";
+        const letters = Array.from(word)
+          .map((c) => `<span class="hb-letter">${escapeHtml(c)}</span>`)
+          .join("");
+        return `<span class="${wordCls}">${letters}</span>`;
+      })
+      .join("");
     return `
 <div class="scene scene-hook-bigtext" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
   <style>
-    #${ctx.sceneId}.scene-hook-bigtext { background: ${t.colors.bg}; color: ${t.colors.fg}; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 110px 160px; gap: 32px; position: absolute; inset: 0; }
-    #${ctx.sceneId} .hb-grid { position: absolute; inset: 0; background-image: linear-gradient(${t.colors.subtle}11 1px, transparent 1px), linear-gradient(90deg, ${t.colors.subtle}11 1px, transparent 1px); background-size: 80px 80px; pointer-events: none; }
-    #${ctx.sceneId} .hb-glow { position: absolute; width: 900px; height: 900px; border-radius: 50%; background: radial-gradient(circle, ${t.colors.accent}22 0%, transparent 60%); top: 30%; left: 40%; filter: blur(60px); pointer-events: none; }
-    #${ctx.sceneId} .hb-eyebrow { font-size: 18px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; }
-    #${ctx.sceneId} .hb-title { font-size: 112px; font-weight: 900; line-height: 1.02; max-width: 1500px; font-family: ${t.fonts.display}; opacity: 0; transform: translateY(28px); position: relative; letter-spacing: -0.02em; }
-    #${ctx.sceneId} .hb-title .hb-accent { background: linear-gradient(135deg, ${t.colors.fg} 30%, ${t.colors.accent} 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; }
+    #${ctx.sceneId}.scene-hook-bigtext { background: transparent; color: ${t.colors.fg}; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 130px 180px; gap: 36px; position: absolute; inset: 0; }
+    #${ctx.sceneId} .hb-side-glow { position: absolute; width: 600px; height: 1080px; right: -120px; top: 0; background: linear-gradient(90deg, transparent 0%, ${t.colors.accent}22 60%, ${t.colors.accent}55 100%); filter: blur(40px); pointer-events: none; opacity: 0; transform: translateX(80px); }
+    #${ctx.sceneId} .hb-rule { position: absolute; left: 180px; top: 110px; height: 4px; width: 0; background: ${t.colors.accent}; opacity: 0.95; }
+    #${ctx.sceneId} .hb-eyebrow { font-size: 20px; font-weight: 600; letter-spacing: 0.28em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; padding-left: 40px; }
+    #${ctx.sceneId} .hb-eyebrow::before { content: ""; position: absolute; left: 0; top: 50%; width: 28px; height: 1.5px; background: ${t.colors.accent2}; transform: translateY(-50%) scaleX(0); transform-origin: left; }
+    #${ctx.sceneId} .hb-title { font-size: 128px; font-weight: 800; line-height: 1.0; max-width: 1500px; font-family: ${t.fonts.display}; position: relative; letter-spacing: -0.025em; }
+    #${ctx.sceneId} .hb-word { display: inline-block; }
+    #${ctx.sceneId} .hb-word.hb-accent { color: ${t.colors.accent}; font-style: italic; }
+    #${ctx.sceneId} .hb-letter { display: inline-block; opacity: 0; transform: translateY(60px) rotateX(-90deg); transform-origin: 50% 100%; will-change: transform, opacity; }
+    #${ctx.sceneId} .hb-space { display: inline-block; width: 0.32em; }
+    #${ctx.sceneId} .hb-meta { display: flex; gap: 24px; align-items: center; font-family: ${t.fonts.mono}; font-size: 16px; letter-spacing: 0.18em; text-transform: uppercase; color: ${t.colors.muted}; opacity: 0; }
+    #${ctx.sceneId} .hb-meta .hb-meta-dot { width: 6px; height: 6px; border-radius: 50%; background: ${t.colors.accent}; }
   </style>
-  <div class="hb-grid"></div>
-  <div class="hb-glow"></div>
+  <div class="hb-side-glow"></div>
+  <div class="hb-rule"></div>
   ${eyebrow ? `<div class="hb-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
-  <div class="hb-title">${titleHtml}</div>
+  <div class="hb-title">${letterHtml}</div>
+  <div class="hb-meta"><span class="hb-meta-dot"></span><span>OPEN</span></div>
   <script>
     (function(){
       var s = document.getElementById('${ctx.sceneId}');
       if (!window.gsap || !s) return;
       var tl = window.gsap.timeline({ paused: true });
+      // Side glow swoops in from the right, behind the type.
+      tl.to(s.querySelector('.hb-side-glow'), { opacity: 1, x: 0, duration: 0.9, ease: 'power3.out' }, 0);
+      // Accent rule wipes across.
+      tl.to(s.querySelector('.hb-rule'), { width: 180, duration: 0.55, ease: 'expo.out' }, 0.05);
+      // Eyebrow underline + text.
       var eb = s.querySelector('.hb-eyebrow');
-      if (eb) tl.to(eb, { opacity: 1, duration: ${(enterMs * 0.7) / 1000}, ease: '${t.motion.ease}' }, 0);
-      tl.to(s.querySelector('.hb-title'), { opacity: 1, y: 0, duration: ${enterMs / 1000}, ease: '${t.motion.ease}' }, ${stagger / 1000});
+      if (eb) {
+        tl.to(eb, { opacity: 1, duration: 0.4, ease: 'power3.out' }, 0.15);
+        tl.to(eb, { '--scale': 1, duration: 0.5, ease: 'expo.out' }, 0.15);
+        var ebBefore = eb;
+        tl.set(ebBefore, { '--placeholder': 0 }, 0); // satisfy linter
+      }
+      // Letter cascade — the kinetic typography moment.
+      var letters = s.querySelectorAll('.hb-letter');
+      tl.to(letters, {
+        opacity: 1,
+        y: 0,
+        rotateX: 0,
+        duration: 0.55,
+        ease: 'expo.out',
+        stagger: { each: 0.025, from: 'start' },
+      }, 0.25);
+      // Meta line settles in last.
+      tl.to(s.querySelector('.hb-meta'), { opacity: 1, duration: 0.4, ease: 'power3.out' }, 0.85);
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
     })();
@@ -122,7 +158,6 @@ const HOOK_STATREVEAL: Template = {
     const suffix = asString(props.suffix);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
-    const enterMs = t.motion.enterMs;
     const numericValue = parseFloat(value.replace(/[^0-9.-]/g, ""));
     const countFromRaw = props.countFrom;
     const countFrom =
@@ -131,17 +166,24 @@ const HOOK_STATREVEAL: Template = {
     return `
 <div class="scene scene-statreveal" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
   <style>
-    #${ctx.sceneId}.scene-statreveal { background: ${t.colors.bg}; color: ${t.colors.fg}; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px; gap: 32px; position: absolute; inset: 0; }
-    #${ctx.sceneId} .sr-grid { position: absolute; inset: 0; background-image: linear-gradient(${t.colors.subtle}11 1px, transparent 1px), linear-gradient(90deg, ${t.colors.subtle}11 1px, transparent 1px); background-size: 80px 80px; pointer-events: none; }
-    #${ctx.sceneId} .sr-glow { position: absolute; width: 1100px; height: 1100px; border-radius: 50%; background: radial-gradient(circle, ${t.colors.accent}33 0%, transparent 60%); top: 50%; left: 50%; transform: translate(-50%, -50%); filter: blur(80px); pointer-events: none; }
-    #${ctx.sceneId} .sr-eyebrow { font-size: 18px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; }
-    #${ctx.sceneId} .sr-num { font-size: 280px; font-weight: 900; line-height: 1; font-family: ${t.fonts.mono}; color: ${t.colors.accent}; opacity: 0; position: relative; letter-spacing: -0.04em; text-shadow: 0 0 80px ${t.colors.accent}55; }
-    #${ctx.sceneId} .sr-prefix, #${ctx.sceneId} .sr-suffix { font-size: 0.6em; vertical-align: top; line-height: 1; color: ${t.colors.accent3}; }
-    #${ctx.sceneId} .sr-label { font-size: 38px; font-weight: 500; max-width: 1400px; text-align: center; opacity: 0; color: ${t.colors.muted}; position: relative; letter-spacing: -0.005em; }
+    #${ctx.sceneId}.scene-statreveal { background: transparent; color: ${t.colors.fg}; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 100px; gap: 40px; position: absolute; inset: 0; }
+    #${ctx.sceneId} .sr-ring { position: absolute; left: 50%; top: 50%; width: 0; height: 0; border-radius: 50%; border: 2px solid ${t.colors.accent}; opacity: 0; transform: translate(-50%, -50%); pointer-events: none; }
+    #${ctx.sceneId} .sr-ring.r2 { border-color: ${t.colors.accent2}; opacity: 0; }
+    #${ctx.sceneId} .sr-eyebrow { font-size: 20px; font-weight: 600; letter-spacing: 0.28em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; padding: 0 28px; display: flex; align-items: center; gap: 12px; }
+    #${ctx.sceneId} .sr-eyebrow::before, #${ctx.sceneId} .sr-eyebrow::after { content: ""; width: 24px; height: 1.5px; background: ${t.colors.accent2}; transform: scaleX(0); }
+    #${ctx.sceneId} .sr-eyebrow::before { transform-origin: right; }
+    #${ctx.sceneId} .sr-eyebrow::after { transform-origin: left; }
+    #${ctx.sceneId} .sr-num { font-size: 320px; font-weight: 900; line-height: 1; font-family: ${t.fonts.mono}; color: ${t.colors.accent}; opacity: 0; position: relative; letter-spacing: -0.05em; text-shadow: 0 0 120px ${t.colors.accent}66; transform: scale(0.9); }
+    #${ctx.sceneId} .sr-prefix, #${ctx.sceneId} .sr-suffix { font-size: 0.55em; vertical-align: top; line-height: 1; color: ${t.colors.accent3}; opacity: 0; }
+    #${ctx.sceneId} .sr-label { font-size: 40px; font-weight: 400; font-style: italic; max-width: 1400px; text-align: center; opacity: 0; color: ${t.colors.muted}; position: relative; letter-spacing: -0.005em; }
+    #${ctx.sceneId} .sr-particle { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: ${t.colors.accent}; opacity: 0; pointer-events: none; }
   </style>
-  <div class="sr-grid"></div>
-  <div class="sr-glow"></div>
-  ${eyebrow ? `<div class="sr-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
+  ${Array.from({ length: 12 })
+    .map((_, i) => `<div class="sr-particle p-${i}"></div>`)
+    .join("\n  ")}
+  <div class="sr-ring"></div>
+  <div class="sr-ring r2"></div>
+  ${eyebrow ? `<div class="sr-eyebrow"><span>${escapeHtml(eyebrow)}</span></div>` : ""}
   <div class="sr-num"><span class="sr-prefix">${escapeHtml(prefix)}</span><span class="sr-val">${escapeHtml(canCount ? String(countFrom) : value)}</span><span class="sr-suffix">${escapeHtml(suffix)}</span></div>
   <div class="sr-label">${escapeHtml(label)}</div>
   <script>
@@ -149,14 +191,44 @@ const HOOK_STATREVEAL: Template = {
       var s = document.getElementById('${ctx.sceneId}');
       if (!window.gsap || !s) return;
       var tl = window.gsap.timeline({ paused: true });
+      // Ring expansion behind the number — anchors the eye.
+      var ring = s.querySelector('.sr-ring');
+      var ring2 = s.querySelector('.sr-ring.r2');
+      tl.to(ring, { width: 600, height: 600, opacity: 0.6, duration: 1.2, ease: 'expo.out' }, 0);
+      tl.to(ring, { opacity: 0.18, duration: 0.6, ease: 'power2.inOut' }, 1.0);
+      if (ring2) {
+        tl.to(ring2, { width: 900, height: 900, opacity: 0.35, duration: 1.4, ease: 'expo.out' }, 0.15);
+        tl.to(ring2, { opacity: 0.08, duration: 0.6, ease: 'power2.inOut' }, 1.2);
+      }
+      // Eyebrow with side rules sliding in from both directions.
       var eb = s.querySelector('.sr-eyebrow');
-      if (eb) tl.to(eb, { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0);
-      tl.to(s.querySelector('.sr-num'), { opacity: 1, duration: ${(enterMs * 0.65) / 1000}, ease: '${t.motion.ease}' }, ${eyebrow ? 0.15 : 0});
-      tl.to(s.querySelector('.sr-label'), { opacity: 1, duration: ${(enterMs * 0.8) / 1000}, ease: '${t.motion.ease}' }, ${(enterMs * 0.75) / 1000});
+      if (eb) tl.to(eb, { opacity: 1, duration: 0.5, ease: 'power3.out' }, 0.2);
+      // Big number scales up + fades in like a stamp.
+      tl.to(s.querySelector('.sr-num'), { opacity: 1, scale: 1, duration: 0.6, ease: 'back.out(1.6)' }, 0.35);
+      tl.to(s.querySelector('.sr-prefix'), { opacity: 1, duration: 0.3 }, 0.55);
+      tl.to(s.querySelector('.sr-suffix'), { opacity: 1, duration: 0.3 }, 0.55);
+      // Particle burst radiates outward when the number lands.
+      var particles = s.querySelectorAll('.sr-particle');
+      var w = 1920, h = 1080, cx = w / 2, cy = h / 2;
+      particles.forEach(function(p, i) {
+        var angle = (i / particles.length) * Math.PI * 2;
+        var radius = 240 + (i % 3) * 60;
+        window.gsap.set(p, { x: cx, y: cy });
+        tl.to(p, {
+          x: cx + Math.cos(angle) * radius,
+          y: cy + Math.sin(angle) * radius,
+          opacity: 0,
+          duration: 1.0,
+          ease: 'expo.out',
+          onStart: function(){ window.gsap.set(p, { opacity: 0.9 }); },
+        }, 0.7);
+      });
+      // Caption fades in last.
+      tl.to(s.querySelector('.sr-label'), { opacity: 1, duration: 0.5, ease: 'power3.out' }, 1.0);
       ${
         canCount
           ? `var counter = { v: ${countFrom} };
-      tl.to(counter, { v: ${numericValue}, duration: ${Math.min(1.6, ctx.durationSeconds * 0.5).toFixed(2)}, ease: '${t.motion.ease}', onUpdate: function() { var el = s.querySelector('.sr-val'); if (el) el.textContent = (Math.round(counter.v * 10) / 10).toLocaleString(); } }, ${eyebrow ? 0.2 : 0.05});`
+      tl.to(counter, { v: ${numericValue}, duration: ${Math.min(1.4, ctx.durationSeconds * 0.45).toFixed(2)}, ease: 'expo.out', onUpdate: function() { var el = s.querySelector('.sr-val'); if (el) el.textContent = (Math.round(counter.v * 10) / 10).toLocaleString(); } }, 0.45);`
           : ""
       }
       window.__timelines = window.__timelines || {};

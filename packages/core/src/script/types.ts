@@ -26,6 +26,8 @@ export interface SceneRef {
   durationHint?: number;
   /** How this scene transitions in. Default "cut". */
   transition?: SceneTransition;
+  /** Planner's justification for choosing this template + props. Shown in UI. */
+  reasoning?: string;
 }
 
 export interface ScriptMeta {
@@ -39,6 +41,13 @@ export interface ScriptMeta {
   targetDurationSeconds?: number;
   /** Brand/design hint (used by Phase 4 design system). */
   design?: string;
+  /** Planner's high-level explanation of the visual approach. Shown in UI. */
+  overallReasoning?: string;
+  /**
+   * Soft warnings the planner surfaces (e.g. "claim '$10bn' not in
+   * RESEARCH.md", "no DESIGN.md present"). Shown in the Studio Script tab.
+   */
+  warnings?: string[];
 }
 
 export interface Script {
@@ -55,7 +64,16 @@ export interface PlannedScene extends SceneRef {
     path: string;
     durationSeconds: number;
     contentHash: string;
+    /** Seconds to wait inside the scene window before the audio begins. */
+    leadInSeconds: number;
+    /** Seconds of silence after the audio ends, still within the scene window. */
+    tailPadSeconds: number;
   };
+  /**
+   * Total length of this scene on the master timeline, including lead-in and
+   * tail-pad. The assembler uses this for scene visibility windows.
+   */
+  totalDurationSeconds?: number;
 }
 
 export interface PlannedScript {
