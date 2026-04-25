@@ -134,18 +134,32 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body {
-        width: ${width}px;
-        height: ${height}px;
+        width: 100vw;
+        height: 100vh;
         overflow: hidden;
         background: ${tokens.colors.bg};
         color: ${tokens.colors.fg};
         font-family: ${tokens.fonts.body};
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
+      /* The stage keeps its native pixel size (so per-scene layouts stay
+         pixel-perfect for the renderer). When the viewport is smaller than
+         the canvas — preview embeds, narrow browser windows — CSS transform
+         scales the rendered output to fit while preserving layout. The
+         producer launches Puppeteer at viewport === canvas so scale is
+         exactly 1 during real renders and this is a no-op there. */
       .hf-stage {
         position: relative;
         width: ${width}px;
         height: ${height}px;
         overflow: hidden;
+        flex-shrink: 0;
+        transform-origin: center center;
+        /* Both operands must be lengths so calc() yields a unitless number;
+           scale() rejects raw lengths. length / length = number. */
+        transform: scale(min(calc(100vw / ${width}px), calc(100vh / ${height}px)));
       }
       .scene {
         position: absolute;
