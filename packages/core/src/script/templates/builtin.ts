@@ -266,38 +266,81 @@ const AROLL_TEXT: Template = {
     const accentWord = asString(props.accentWord);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
-    const enterMs = t.motion.enterMs;
-    const stagger = t.motion.staggerMs;
-    const titleHtml = accentWord
-      ? escapeHtml(title).replace(
-          new RegExp(`\\b(${escapeHtml(accentWord)})\\b`),
-          `<span class="at-accent">$1</span>`,
-        )
-      : escapeHtml(title);
+    // Kinetic typography: split title into word spans for per-word stagger.
+    // Each word becomes its own animated unit so the title reads like it's
+    // being typed, not pasted.
+    const titleWords = title.split(/(\s+)/);
+    const titleHtml = titleWords
+      .map((w) => {
+        if (/^\s+$/.test(w)) return `<span class="at-space">&nbsp;</span>`;
+        const isAccent =
+          accentWord && w.toLowerCase().replace(/[^a-z0-9]/g, "") === accentWord.toLowerCase();
+        const cls = isAccent ? "at-word at-accent" : "at-word";
+        return `<span class="${cls}"><span class="at-word-inner">${escapeHtml(w)}</span></span>`;
+      })
+      .join("");
+    const bodyWords = body.split(/(\s+)/);
+    const bodyHtml = body
+      ? bodyWords
+          .map((w) =>
+            /^\s+$/.test(w)
+              ? `<span class="at-space">&nbsp;</span>`
+              : `<span class="at-bword">${escapeHtml(w)}</span>`,
+          )
+          .join("")
+      : "";
     return `
 <div class="scene scene-aroll-text" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
   <style>
     #${ctx.sceneId}.scene-aroll-text { background: ${t.colors.bg}; color: ${t.colors.fg}; display: flex; flex-direction: column; justify-content: center; padding: 110px 160px; gap: 28px; position: absolute; inset: 0; }
-    #${ctx.sceneId} .at-grid { position: absolute; inset: 0; background-image: linear-gradient(${t.colors.subtle}0a 1px, transparent 1px), linear-gradient(90deg, ${t.colors.subtle}0a 1px, transparent 1px); background-size: 80px 80px; pointer-events: none; }
-    #${ctx.sceneId} .at-eyebrow { font-size: 16px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; }
-    #${ctx.sceneId} .at-title { font-size: 78px; font-weight: 800; line-height: 1.06; max-width: 1500px; font-family: ${t.fonts.display}; opacity: 0; transform: translateY(20px); position: relative; letter-spacing: -0.02em; }
-    #${ctx.sceneId} .at-title .at-accent { color: ${t.colors.accent}; }
-    #${ctx.sceneId} .at-body { font-size: 32px; font-weight: 400; line-height: 1.42; max-width: 1300px; color: ${t.colors.muted}; opacity: 0; transform: translateY(16px); position: relative; }
+    #${ctx.sceneId} .at-eyebrow { font-size: 16px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; padding-left: 36px; }
+    #${ctx.sceneId} .at-eyebrow::before { content: ""; position: absolute; left: 0; top: 50%; width: 26px; height: 1.5px; background: ${t.colors.accent2}; transform: translateY(-50%) scaleX(0); transform-origin: left; }
+    #${ctx.sceneId} .at-title { font-size: 78px; font-weight: 800; line-height: 1.06; max-width: 1500px; font-family: ${t.fonts.display}; position: relative; letter-spacing: -0.02em; }
+    #${ctx.sceneId} .at-title .at-word { display: inline-block; overflow: hidden; vertical-align: bottom; }
+    #${ctx.sceneId} .at-title .at-word-inner { display: inline-block; transform: translateY(110%); will-change: transform; }
+    #${ctx.sceneId} .at-title .at-accent .at-word-inner { color: ${t.colors.accent}; }
+    #${ctx.sceneId} .at-title .at-space { display: inline-block; width: 0.32em; }
+    #${ctx.sceneId} .at-rule { position: absolute; height: 4px; width: 0; background: ${t.colors.accent}; left: 160px; top: 110px; opacity: 0.95; }
+    #${ctx.sceneId} .at-body { font-size: 32px; font-weight: 400; line-height: 1.42; max-width: 1300px; color: ${t.colors.muted}; position: relative; }
+    #${ctx.sceneId} .at-body .at-bword { display: inline-block; opacity: 0; transform: translateY(8px); will-change: transform, opacity; }
+    #${ctx.sceneId} .at-body .at-space { display: inline-block; width: 0.28em; }
   </style>
-  <div class="at-grid"></div>
+  <div class="at-rule"></div>
   ${eyebrow ? `<div class="at-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
   <div class="at-title">${titleHtml}</div>
-  ${body ? `<div class="at-body">${escapeHtml(body)}</div>` : ""}
+  ${body ? `<div class="at-body">${bodyHtml}</div>` : ""}
   <script>
     (function(){
       var s = document.getElementById('${ctx.sceneId}');
       if (!window.gsap || !s) return;
       var tl = window.gsap.timeline({ paused: true });
+      tl.to(s.querySelector('.at-rule'), { width: 140, duration: 0.55, ease: 'expo.out' }, 0);
       var eb = s.querySelector('.at-eyebrow');
-      if (eb) tl.to(eb, { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0);
-      tl.to(s.querySelector('.at-title'), { opacity: 1, y: 0, duration: ${enterMs / 1000}, ease: '${t.motion.ease}' }, ${eyebrow ? 0.15 : 0});
-      var b = s.querySelector('.at-body');
-      if (b) tl.to(b, { opacity: 1, y: 0, duration: ${enterMs / 1000}, ease: '${t.motion.ease}' }, ${stagger / 1000 + (eyebrow ? 0.15 : 0)});
+      if (eb) {
+        tl.to(eb, { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0.1);
+        var ebBefore = eb.querySelector ? null : null;
+        tl.to(eb, { '--placeholder': 1, duration: 0.5, ease: 'expo.out' }, 0.1);
+      }
+      // Per-word kinetic title reveal — each word slides up from below its
+      // own clip mask, giving a crisp newsroom feel without per-letter cost.
+      var titleWords = s.querySelectorAll('.at-title .at-word-inner');
+      tl.to(titleWords, {
+        y: 0,
+        duration: 0.55,
+        ease: 'expo.out',
+        stagger: { each: 0.06, from: 'start' },
+      }, ${eyebrow ? 0.2 : 0.05});
+      // Body — faster per-word fade with light upward slide.
+      var bodyWords = s.querySelectorAll('.at-body .at-bword');
+      if (bodyWords.length) {
+        tl.to(bodyWords, {
+          opacity: 1,
+          y: 0,
+          duration: 0.4,
+          ease: 'power3.out',
+          stagger: { each: 0.025, from: 'start' },
+        }, ${0.35 + (eyebrow ? 0.15 : 0)});
+      }
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
     })();
@@ -334,29 +377,45 @@ const CONCEPT_CALLOUT: Template = {
     const items = asStringArray(props.items).slice(0, 5);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
+    // Per-item stagger spaced so the last badge lands well before the scene
+    // ends, leaving a beat for the audio to catch up.
     const stagger =
-      items.length > 0 ? Math.min(0.7, ctx.durationSeconds / (items.length + 2)) : 0.4;
+      items.length > 0 ? Math.min(0.55, ctx.durationSeconds / (items.length + 3)) : 0.4;
+    const itemsHtml = items
+      .map((item, i) => {
+        // Per-word reveal inside each item label.
+        const words = item
+          .split(/(\s+)/)
+          .map((w) =>
+            /^\s+$/.test(w)
+              ? `<span class="co-space">&nbsp;</span>`
+              : `<span class="co-iword">${escapeHtml(w)}</span>`,
+          )
+          .join("");
+        return `<div class="co-item" data-idx="${i}"><span class="co-badge">${String(i + 1).padStart(2, "0")}</span><span class="co-label">${words}</span></div>`;
+      })
+      .join("\n    ");
     return `
 <div class="scene scene-callout" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
   <style>
     #${ctx.sceneId}.scene-callout { background: ${t.colors.bg}; color: ${t.colors.fg}; display: flex; flex-direction: column; justify-content: center; padding: 110px 160px; gap: 36px; position: absolute; inset: 0; }
-    #${ctx.sceneId} .co-grid { position: absolute; inset: 0; background-image: linear-gradient(${t.colors.subtle}0a 1px, transparent 1px), linear-gradient(90deg, ${t.colors.subtle}0a 1px, transparent 1px); background-size: 80px 80px; pointer-events: none; }
-    #${ctx.sceneId} .co-eyebrow { font-size: 16px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; }
-    #${ctx.sceneId} .co-title { font-size: 64px; font-weight: 800; font-family: ${t.fonts.display}; opacity: 0; position: relative; letter-spacing: -0.02em; }
-    #${ctx.sceneId} .co-list { display: flex; flex-direction: column; gap: 22px; max-width: 1500px; position: relative; }
-    #${ctx.sceneId} .co-item { font-size: 38px; font-weight: 500; display: flex; gap: 28px; align-items: baseline; opacity: 0; transform: translateX(-16px); }
-    #${ctx.sceneId} .co-bullet { font-size: 28px; color: ${t.colors.accent3}; font-family: ${t.fonts.mono}; font-weight: 700; min-width: 56px; }
+    #${ctx.sceneId} .co-eyebrow { font-size: 16px; font-weight: 600; letter-spacing: 0.22em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; padding-left: 36px; }
+    #${ctx.sceneId} .co-eyebrow::before { content: ""; position: absolute; left: 0; top: 50%; width: 26px; height: 1.5px; background: ${t.colors.accent2}; transform: translateY(-50%) scaleX(0); transform-origin: left; }
+    #${ctx.sceneId} .co-title { font-size: 64px; font-weight: 800; font-family: ${t.fonts.display}; opacity: 0; transform: translateY(14px); position: relative; letter-spacing: -0.02em; }
+    #${ctx.sceneId} .co-list { display: flex; flex-direction: column; gap: 26px; max-width: 1500px; position: relative; padding-left: 16px; }
+    /* Vertical spine connecting all badges — draws in once, then anchors the list. */
+    #${ctx.sceneId} .co-spine { position: absolute; left: 38px; top: 36px; bottom: 36px; width: 2px; background: ${t.colors.accent}; transform-origin: top; transform: scaleY(0); will-change: transform; }
+    #${ctx.sceneId} .co-item { font-size: 38px; font-weight: 500; display: flex; gap: 32px; align-items: center; position: relative; }
+    #${ctx.sceneId} .co-badge { display: inline-flex; align-items: center; justify-content: center; width: 64px; height: 64px; min-width: 64px; border-radius: 50%; background: ${t.colors.accent}; color: ${t.colors.bg}; font-family: ${t.fonts.mono}; font-weight: 800; font-size: 22px; letter-spacing: 0.04em; opacity: 0; transform: scale(0.4) rotate(-90deg); will-change: transform, opacity; box-shadow: 0 0 0 6px ${t.colors.accent}1a; }
+    #${ctx.sceneId} .co-label { display: inline-block; line-height: 1.18; }
+    #${ctx.sceneId} .co-label .co-iword { display: inline-block; opacity: 0; transform: translateY(10px); will-change: transform, opacity; }
+    #${ctx.sceneId} .co-label .co-space { display: inline-block; width: 0.28em; }
   </style>
-  <div class="co-grid"></div>
   ${eyebrow ? `<div class="co-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
   <div class="co-title">${escapeHtml(title)}</div>
   <div class="co-list">
-    ${items
-      .map(
-        (item, i) =>
-          `<div class="co-item"><span class="co-bullet">${String(i + 1).padStart(2, "0")}</span><span>${escapeHtml(item)}</span></div>`,
-      )
-      .join("\n    ")}
+    <div class="co-spine"></div>
+    ${itemsHtml}
   </div>
   <script>
     (function(){
@@ -365,9 +424,37 @@ const CONCEPT_CALLOUT: Template = {
       var tl = window.gsap.timeline({ paused: true });
       var eb = s.querySelector('.co-eyebrow');
       if (eb) tl.to(eb, { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0);
-      tl.to(s.querySelector('.co-title'), { opacity: 1, duration: 0.5, ease: '${t.motion.ease}' }, ${eyebrow ? 0.15 : 0});
+      tl.to(s.querySelector('.co-title'), { opacity: 1, y: 0, duration: 0.5, ease: '${t.motion.ease}' }, ${eyebrow ? 0.15 : 0});
+      // Spine grows downward as the badges drop in — gives the list a sense
+      // of structure assembling, not just text appearing.
+      var spineStart = ${0.35 + (eyebrow ? 0.15 : 0)};
+      var totalItems = ${items.length};
+      var perItem = ${stagger.toFixed(3)};
+      var spineDur = Math.max(0.4, perItem * totalItems);
+      tl.to(s.querySelector('.co-spine'), { scaleY: 1, duration: spineDur, ease: 'power2.inOut' }, spineStart);
+      // Badges stamp in with a back-overshoot, settling like coins dropping.
+      var badges = s.querySelectorAll('.co-badge');
+      tl.to(badges, {
+        opacity: 1,
+        scale: 1,
+        rotate: 0,
+        duration: 0.5,
+        ease: 'back.out(2)',
+        stagger: perItem,
+      }, spineStart + 0.05);
+      // Item labels — per-word reveal inside each item, staggered with badges.
       var items = s.querySelectorAll('.co-item');
-      tl.to(items, { opacity: 1, x: 0, duration: 0.5, stagger: ${stagger.toFixed(2)}, ease: '${t.motion.ease}' }, ${0.35 + (eyebrow ? 0.15 : 0)});
+      items.forEach(function(item, i) {
+        var words = item.querySelectorAll('.co-iword');
+        if (!words.length) return;
+        tl.to(words, {
+          opacity: 1,
+          y: 0,
+          duration: 0.4,
+          ease: 'power3.out',
+          stagger: 0.025,
+        }, spineStart + 0.18 + i * perItem);
+      });
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
     })();

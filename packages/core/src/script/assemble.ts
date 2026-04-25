@@ -1,7 +1,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BUILTIN_TEMPLATES, DEFAULT_TOKENS, type DesignTokens } from "./templates/index.js";
-import type { PlannedScene, PlannedScript } from "./types.js";
+import { defaultAtmosphereForTemplate, renderAtmosphere } from "./atmosphere/index.js";
+import { TRANSITION_DURATIONS, defaultTransitionForTemplate } from "./transitions/index.js";
+import type { PlannedScene, PlannedScript, SceneTransition } from "./types.js";
 
 export interface AssembleOptions {
   projectDir: string;
@@ -51,6 +53,8 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     text: string;
     audioStart: number;
     audioDuration: number;
+    transitionIn: SceneTransition;
+    transitionInMs: number;
   }> = [];
 
   for (const scene of planned.scenes) {
@@ -68,7 +72,22 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
       tokens,
     });
     const positioned = fragment.replace(`data-start="0"`, `data-start="${cursor.toFixed(2)}"`);
-    sceneFragments.push(positioned);
+    // Inject the per-scene atmosphere as the first child of the scene div.
+    // The planner can override the default by setting props.background to one
+    // of the registered preset ids (aurora, gradient-mesh, particle-field,
+    // noise-grain, studio-flat).
+    const requestedAtmo =
+      typeof scene.props?.background === "string" ? scene.props.background : undefined;
+    const atmoId = requestedAtmo ?? defaultAtmosphereForTemplate(scene.template);
+    const atmoHtml = renderAtmosphere(atmoId, {
+      sceneId: scene.id,
+      tokens,
+      isHook: scene.hook === true,
+    });
+    const withAtmo = atmoHtml
+      ? positioned.replace(/(<div class="scene[^>]*>)/, `$1\n  ${atmoHtml}`)
+      : positioned;
+    sceneFragments.push(withAtmo);
 
     if (scene.audio) {
       // Audio starts AFTER the lead-in, so the visual lands first. Audio
@@ -78,6 +97,9 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
         `  <audio src="${escapeAttr(scene.audio.path)}" data-start="${audioStart.toFixed(2)}" data-duration="${audioDur.toFixed(2)}" data-track-index="1" preload="auto"></audio>`,
       );
     }
+    const transitionIn: SceneTransition =
+      scene.transition ?? defaultTransitionForTemplate(scene.template);
+    const transitionInMs = (TRANSITION_DURATIONS[transitionIn] ?? 0) * 1000;
     sceneVisibility.push({
       id: scene.id,
       start: cursor,
@@ -85,6 +107,8 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
       text: scene.text,
       audioStart: cursor + audioStartOffset,
       audioDuration: audioDur,
+      transitionIn,
+      transitionInMs,
     });
     cursor += sceneTotal;
   }
@@ -399,6 +423,73 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
         // syncScenes() is no-op when active scene is unchanged AND already
         // applied, so this is cheap. We force-apply even when "current" is
         // unchanged because external code may have flipped style.visibility.
+        // Apply transition state to one scene element. Called per-frame for
+        // every scene. role is hidden/active/entering/exiting; p is the
+        // entrance progress 0-1 of the active scene transition. Drives
+        // opacity + transform + clipPath only - pure CSS, no GSAP, so it
+        // cannot fight the runtime ticker.
+        function applyTransition(el, role, type, p) {
+          if (role === "hidden") {
+            if (el.style.opacity !== "0") el.style.opacity = "0";
+            if (el.style.transform) el.style.transform = "";
+            if (el.style.clipPath) el.style.clipPath = "";
+            if (el.style.visibility === "hidden") el.style.visibility = "";
+            return;
+          }
+          if (role === "active") {
+            if (el.style.opacity !== "1") el.style.opacity = "1";
+            if (el.style.transform) el.style.transform = "";
+            if (el.style.clipPath) el.style.clipPath = "";
+            if (el.style.visibility === "hidden") el.style.visibility = "";
+            return;
+          }
+          // entering or exiting — apply per type
+          var entering = role === "entering";
+          var op = "1", tr = "", cp = "";
+          switch (type) {
+            case "cut":
+              op = entering ? "1" : "0";
+              break;
+            case "fade":
+              op = entering ? String(p) : String(1 - p);
+              break;
+            case "wipe-left":
+              cp = entering
+                ? "inset(0 " + ((1 - p) * 100).toFixed(2) + "% 0 0)"
+                : "inset(0 0 0 " + (p * 100).toFixed(2) + "%)";
+              break;
+            case "wipe-right":
+              cp = entering
+                ? "inset(0 0 0 " + ((1 - p) * 100).toFixed(2) + "%)"
+                : "inset(0 " + (p * 100).toFixed(2) + "% 0 0)";
+              break;
+            case "zoom-in":
+              op = entering ? String(p) : String(1 - p);
+              tr = entering
+                ? "scale(" + (0.92 + 0.08 * p).toFixed(3) + ")"
+                : "scale(" + (1 + 0.08 * p).toFixed(3) + ")";
+              break;
+            case "zoom-out":
+              op = entering ? String(p) : String(1 - p);
+              tr = entering
+                ? "scale(" + (1.12 - 0.12 * p).toFixed(3) + ")"
+                : "scale(" + (1 - 0.08 * p).toFixed(3) + ")";
+              break;
+            case "whip-pan":
+              op = entering ? String(Math.min(1, p * 1.4)) : String(1 - p);
+              tr = entering
+                ? "translateX(" + ((1 - p) * 220).toFixed(1) + "px)"
+                : "translateX(" + (-p * 220).toFixed(1) + "px)";
+              break;
+            default:
+              op = entering ? "1" : "0";
+          }
+          if (el.style.opacity !== op) el.style.opacity = op;
+          if (el.style.transform !== tr) el.style.transform = tr;
+          if (el.style.clipPath !== cp) el.style.clipPath = cp;
+          if (el.style.visibility === "hidden") el.style.visibility = "";
+        }
+
         function forceSync(t) {
           var activeIdx = -1;
           for (var i = 0; i < SCENES.length; i++) {
@@ -406,14 +497,29 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
             if (t >= s.start && t < s.start + s.duration) { activeIdx = i; break; }
           }
           var active = activeIdx >= 0 ? SCENES[activeIdx].id : null;
-          // Scene visibility: opacity-only so the runtime can't override us.
+          // Compute entrance progress + transition type for the active scene.
+          // The entrance window is the first transitionInMs of the scene; the
+          // previous scene cross-exits during the same window so audio and
+          // visuals stay locked to the scene boundary.
+          var transType = "cut";
+          var transP = 1;
+          if (activeIdx >= 0) {
+            var sa = SCENES[activeIdx];
+            transType = sa.transitionIn || "cut";
+            if (sa.transitionInMs > 0) {
+              var elapsed = (t - sa.start) * 1000;
+              transP = Math.max(0, Math.min(1, elapsed / sa.transitionInMs));
+            }
+          }
           for (var j = 0; j < SCENES.length; j++) {
             var sj = SCENES[j];
             var el = document.getElementById(sj.id);
             if (!el) continue;
-            var want = sj.id === active ? "1" : "0";
-            if (el.style.opacity !== want) el.style.opacity = want;
-            if (el.style.visibility === "hidden") el.style.visibility = "";
+            var role;
+            if (j === activeIdx) role = transP < 1 ? "entering" : "active";
+            else if (j === activeIdx - 1 && transP < 1) role = "exiting";
+            else role = "hidden";
+            applyTransition(el, role, transType, transP);
           }
           // Persistent corner overlays: time code, scene id, active tick.
           var tc = document.getElementById('hf-time-code');
