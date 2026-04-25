@@ -1,8 +1,9 @@
 import type { Hono } from "hono";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve, join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
 import { isSafePath } from "../helpers/safePath.js";
+import { atomicWriteFileSync, withMutex } from "../../internal/atomicWrite.js";
 import {
   loadElevenLabsKey,
   getElevenLabsKeyStatus,
@@ -22,6 +23,11 @@ const VALID_FORMATS: readonly string[] = [
   "pcm_22050",
   "pcm_44100",
 ];
+
+// ElevenLabs accepts up to ~5000 chars per synth; we cap a hair lower so the
+// JSON payload itself never blows past a sensible body size and so a malformed
+// client can't send 10MB of "text" to drive up costs.
+const MAX_TTS_TEXT_LEN = 4500;
 
 interface GenerateBody {
   text?: string;
@@ -124,7 +130,8 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
     let body: GenerateBody;
     try {
       body = (await c.req.json()) as GenerateBody;
-    } catch {
+    } catch (err) {
+      console.warn("[elevenlabs] /generate invalid JSON body", err);
       return c.json({ error: "invalid JSON body" }, 400);
     }
 
@@ -132,6 +139,14 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
     const voiceId = body.voiceId?.trim();
     if (!text) return c.json({ error: "text is required" }, 400);
     if (!voiceId) return c.json({ error: "voiceId is required" }, 400);
+    if (text.length > MAX_TTS_TEXT_LEN) {
+      return c.json(
+        {
+          error: `text too long (${text.length} chars; max ${MAX_TTS_TEXT_LEN}). Split into multiple scenes.`,
+        },
+        413,
+      );
+    }
 
     let outputFormat: NonNullable<SynthesizeOptions["outputFormat"]> = "mp3_44100_128";
     if (body.outputFormat) {
@@ -142,7 +157,17 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
     }
 
     const ext = fileExtensionForFormat(outputFormat);
-    const safeFilename = sanitizeFilename(body.filename) ?? `voice/scene-${Date.now()}.${ext}`;
+    const sanitized = sanitizeFilename(body.filename, ext);
+    if (body.filename != null && body.filename.trim().length > 0 && sanitized == null) {
+      return c.json(
+        {
+          error:
+            "invalid filename. Use letters, digits, dash, underscore, dot, or forward slash; no leading dots or '..'.",
+        },
+        400,
+      );
+    }
+    const safeFilename = sanitized ?? `voice/scene-${Date.now()}.${ext}`;
     const relativePath = safeFilename.endsWith(`.${ext}`) ? safeFilename : `${safeFilename}.${ext}`;
     const finalRelative = relativePath.startsWith("assets/")
       ? relativePath
@@ -160,8 +185,8 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
         style: body.style,
         outputFormat,
       });
-      mkdirSync(dirname(absPath), { recursive: true });
-      writeFileSync(absPath, bytes);
+      // Atomic so a partial write can't leave a 0-byte file the next pipeline run picks up.
+      atomicWriteFileSync(absPath, bytes);
       return c.json({
         ok: true,
         path: finalRelative,
@@ -188,15 +213,20 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
     let body: { value?: string | null };
     try {
       body = (await c.req.json()) as { value?: string | null };
-    } catch {
+    } catch (err) {
+      console.warn("[elevenlabs] PUT /key invalid JSON body", err);
       return c.json({ error: "invalid JSON body" }, 400);
     }
 
     const raw = typeof body.value === "string" ? body.value.trim() : null;
     const value = raw && raw.length > 0 ? raw : null;
     try {
-      writeElevenLabsKeyToEnvFile(join(project.dir, ".env"), value);
-      ensureGitignoreCovers(project.dir, ".env");
+      // Serialize against any settings PATCH for the same project so writes
+      // can't interleave on the same hyperframes.json scratch space.
+      await withMutex(`project:${project.dir}:env`, async () => {
+        writeElevenLabsKeyToEnvFile(join(project.dir, ".env"), value);
+        ensureGitignoreCovers(project.dir, ".env");
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
@@ -219,11 +249,23 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
     let body: { defaultVoiceId?: string | null };
     try {
       body = (await c.req.json()) as { defaultVoiceId?: string | null };
-    } catch {
+    } catch (err) {
+      console.warn("[elevenlabs] PATCH /settings invalid JSON body", err);
       return c.json({ error: "invalid JSON body" }, 400);
     }
 
-    const next = writeTtsSettings(project.dir, body);
+    // Validate types before touching disk so a bad payload can't no-op the lock.
+    if (
+      body.defaultVoiceId !== undefined &&
+      body.defaultVoiceId !== null &&
+      typeof body.defaultVoiceId !== "string"
+    ) {
+      return c.json({ error: "defaultVoiceId must be a string or null" }, 400);
+    }
+
+    const next = await withMutex(`project:${project.dir}:settings`, async () =>
+      writeTtsSettings(project.dir, body),
+    );
     return c.json(next);
   });
 }
@@ -241,7 +283,8 @@ function readTtsSettings(projectDir: string): TtsSettings {
     };
     const id = raw.tts?.defaultVoiceId;
     return { defaultVoiceId: typeof id === "string" && id.length > 0 ? id : null };
-  } catch {
+  } catch (err) {
+    console.warn(`[elevenlabs] hyperframes.json at ${path} is not valid JSON; using defaults`, err);
     return { defaultVoiceId: null };
   }
 }
@@ -255,7 +298,11 @@ function writeTtsSettings(
   if (existsSync(path)) {
     try {
       json = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
-    } catch {
+    } catch (err) {
+      console.warn(
+        `[elevenlabs] hyperframes.json at ${path} is not valid JSON; replacing on next write`,
+        err,
+      );
       json = {};
     }
   }
@@ -273,7 +320,7 @@ function writeTtsSettings(
   }
 
   json.tts = tts;
-  writeFileSync(path, JSON.stringify(json, null, 2) + "\n");
+  atomicWriteFileSync(path, JSON.stringify(json, null, 2) + "\n");
   return readTtsSettings(projectDir);
 }
 
@@ -299,20 +346,57 @@ function ensureGitignoreCovers(projectDir: string, entry: string): void {
   const trailingNl = content.length === 0 || content.endsWith("\n");
   const next = (trailingNl ? content : content + "\n") + `${entry}\n`;
   try {
-    writeFileSync(gitignorePath, next);
+    atomicWriteFileSync(gitignorePath, next);
   } catch {
     /* ignore — best effort */
   }
 }
 
-function sanitizeFilename(value: string | undefined): string | null {
+/**
+ * Whitelist-based filename sanitizer for user-supplied output filenames.
+ *
+ * Accepts a forward-slash-delimited relative path. Each component must match
+ * `[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)?`, so:
+ *  - no leading dots (no hidden files / no `.git/`)
+ *  - no `..` traversal
+ *  - exactly one dot per component (prevents `voice.html.mp3`-style ambiguous
+ *    extensions)
+ *  - no spaces, slashes inside components, or shell metachars
+ *
+ * If `expectedExt` is provided, components that already have an extension must
+ * match it — this prevents a caller from injecting an .html or .exe through a
+ * code path that treats the file as audio.
+ *
+ * Returns null on invalid input; caller should reject (400) rather than fall
+ * back to a default, so users get a clear error instead of silently renamed
+ * outputs.
+ */
+export function sanitizeFilename(value: string | undefined, expectedExt?: string): string | null {
   if (!value) return null;
-  // Allow forward slashes for subdirectory hints, strip everything else risky.
-  const cleaned = value
-    .replace(/\\/g, "/")
-    .replace(/\.\.+/g, ".")
-    .replace(/[^a-zA-Z0-9._\-/]/g, "_")
-    .replace(/^\/+/, "")
-    .trim();
-  return cleaned.length > 0 ? cleaned : null;
+  let v = value.replace(/\\+/g, "/").replace(/\/+/g, "/").replace(/^\/+/, "").trim();
+  if (!v) return null;
+  // No control characters anywhere (defense in depth — they'd already fail the
+  // per-component regex below, but worth refusing early).
+  // eslint-disable-next-line no-control-regex
+  if (/[ -]/.test(v)) return null;
+  const parts = v.split("/");
+  const safeParts: string[] = [];
+  for (const part of parts) {
+    if (!part) return null;
+    if (part === "." || part === "..") return null;
+    if (part.startsWith(".")) return null;
+    if (!/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/.test(part)) return null;
+    safeParts.push(part);
+  }
+  if (safeParts.length === 0) return null;
+  // If an extension is mandated, the basename's extension (if present) must match.
+  if (expectedExt) {
+    const last = safeParts[safeParts.length - 1] as string;
+    const dot = last.lastIndexOf(".");
+    if (dot !== -1) {
+      const ext = last.slice(dot + 1);
+      if (ext !== expectedExt) return null;
+    }
+  }
+  return safeParts.join("/");
 }

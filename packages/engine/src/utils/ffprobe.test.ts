@@ -4,6 +4,30 @@ import { resolve } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { extractMediaMetadata, extractPngMetadataFromBuffer } from "./ffprobe.js";
 
+const HDR_FIXTURE_PATH = resolve(
+  __dirname,
+  "../../../producer/tests/hdr-regression/src/hdr-photo-pq.png",
+);
+
+// The HDR PNG is checked into git-lfs. On a host without `git lfs` installed
+// (or before `git lfs pull` runs) the file is a small text pointer rather
+// than the actual PNG bytes. Skip the fixture-dependent tests cleanly with a
+// helpful message instead of failing with "expected smpte2084, got
+// undefined" — the parser is fine, the file just isn't there. CI runs the
+// container build which fetches LFS, so the tests still execute there.
+function isLfsPointer(buf: Buffer): boolean {
+  return buf.length < 1024 && buf.subarray(0, 60).toString().startsWith("version https://git-lfs");
+}
+function loadHdrFixtureOrSkip(): Buffer | null {
+  try {
+    const buf = readFileSync(HDR_FIXTURE_PATH);
+    if (isLfsPointer(buf)) return null;
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
 function crc32(buf: Buffer): number {
   let crc = 0xffffffff;
   for (let i = 0; i < buf.length; i++) {
@@ -53,20 +77,18 @@ function buildMinimalPng(options?: {
 }
 
 describe("extractMediaMetadata", () => {
-  it("reads HDR PNG cICP metadata when ffprobe color fields are absent", async () => {
-    const fixturePath = resolve(
-      __dirname,
-      "../../../producer/tests/hdr-regression/src/hdr-photo-pq.png",
-    );
+  it.skipIf(!loadHdrFixtureOrSkip())(
+    "reads HDR PNG cICP metadata when ffprobe color fields are absent",
+    async () => {
+      const metadata = await extractMediaMetadata(HDR_FIXTURE_PATH);
 
-    const metadata = await extractMediaMetadata(fixturePath);
-
-    expect(metadata.colorSpace).toEqual({
-      colorPrimaries: "bt2020",
-      colorTransfer: "smpte2084",
-      colorSpace: "gbr",
-    });
-  });
+      expect(metadata.colorSpace).toEqual({
+        colorPrimaries: "bt2020",
+        colorTransfer: "smpte2084",
+        colorSpace: "gbr",
+      });
+    },
+  );
 });
 
 describe("extractPngMetadataFromBuffer", () => {
@@ -101,10 +123,8 @@ describe("extractPngMetadataFromBuffer", () => {
     });
   });
 
-  it("continues to parse the checked-in HDR PNG fixture", () => {
-    const fixture = readFileSync(
-      resolve(__dirname, "../../../producer/tests/hdr-regression/src/hdr-photo-pq.png"),
-    );
+  it.skipIf(!loadHdrFixtureOrSkip())("continues to parse the checked-in HDR PNG fixture", () => {
+    const fixture = loadHdrFixtureOrSkip()!;
     expect(extractPngMetadataFromBuffer(fixture)?.colorSpace?.colorTransfer).toBe("smpte2084");
   });
 });
@@ -169,29 +189,28 @@ describe("ffprobe missing-binary fallback", () => {
     vi.doUnmock("child_process");
   });
 
-  it("extractMediaMetadata falls back to PNG cICP metadata when ffprobe is missing", async () => {
-    const { spawn, calls } = createSpawnSpy([{ kind: "missing" }]);
-    vi.resetModules();
-    vi.doMock("child_process", () => ({ spawn }));
+  it.skipIf(!loadHdrFixtureOrSkip())(
+    "extractMediaMetadata falls back to PNG cICP metadata when ffprobe is missing",
+    async () => {
+      const { spawn, calls } = createSpawnSpy([{ kind: "missing" }]);
+      vi.resetModules();
+      vi.doMock("child_process", () => ({ spawn }));
 
-    const { extractMediaMetadata: extractMediaMetadataMocked } = await import("./ffprobe.js");
-    const fixture = resolve(
-      __dirname,
-      "../../../producer/tests/hdr-regression/src/hdr-photo-pq.png",
-    );
-    const meta = await extractMediaMetadataMocked(fixture);
+      const { extractMediaMetadata: extractMediaMetadataMocked } = await import("./ffprobe.js");
+      const meta = await extractMediaMetadataMocked(HDR_FIXTURE_PATH);
 
-    expect(calls.length).toBe(1);
-    expect(calls[0]?.command).toBe("ffprobe");
-    expect(meta.videoCodec).toBe("png");
-    expect(meta.durationSeconds).toBe(0);
-    expect(meta.fps).toBe(0);
-    expect(meta.hasAudio).toBe(false);
-    expect(meta.isVFR).toBe(false);
-    expect(meta.hasAlpha).toBe(false);
-    expect(meta.colorSpace?.colorTransfer).toBe("smpte2084");
-    expect(meta.colorSpace?.colorPrimaries).toBe("bt2020");
-  });
+      expect(calls.length).toBe(1);
+      expect(calls[0]?.command).toBe("ffprobe");
+      expect(meta.videoCodec).toBe("png");
+      expect(meta.durationSeconds).toBe(0);
+      expect(meta.fps).toBe(0);
+      expect(meta.hasAudio).toBe(false);
+      expect(meta.isVFR).toBe(false);
+      expect(meta.hasAlpha).toBe(false);
+      expect(meta.colorSpace?.colorTransfer).toBe("smpte2084");
+      expect(meta.colorSpace?.colorPrimaries).toBe("bt2020");
+    },
+  );
 
   it("extractMediaMetadata detects VP9 alpha_mode streams", async () => {
     const { spawn } = createSpawnSpy([

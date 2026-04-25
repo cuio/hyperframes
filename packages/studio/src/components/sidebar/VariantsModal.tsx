@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 
 interface SceneVariant {
   id: string;
@@ -19,6 +19,10 @@ interface VariantsModalProps {
   onPick: (variant: SceneVariant) => void;
 }
 
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
 export const VariantsModal = memo(function VariantsModal({
   projectId,
   sceneId,
@@ -32,7 +36,16 @@ export const VariantsModal = memo(function VariantsModal({
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState<string | null>(null);
 
+  // Abort controllers: load() may be re-invoked (Regenerate button); pick is one-shot.
+  // Both are cancelled on unmount so a late response cannot setState on a dead component
+  // or invoke onPick (which mutates parent script) with stale variants.
+  const loadAcRef = useRef<AbortController | null>(null);
+  const pickAcRef = useRef<AbortController | null>(null);
+
   const load = useCallback(async () => {
+    loadAcRef.current?.abort();
+    const ac = new AbortController();
+    loadAcRef.current = ac;
     setLoading(true);
     setError(null);
     try {
@@ -42,29 +55,43 @@ export const VariantsModal = memo(function VariantsModal({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ count: 3 }),
+          signal: ac.signal,
         },
       );
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       const data = (await res.json()) as { variants: SceneVariant[] };
+      if (ac.signal.aborted) return;
       setVariants(data.variants ?? []);
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      if (!ac.signal.aborted) setLoading(false);
     }
   }, [projectId, sceneId]);
 
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
     void load();
+    return () => loadAcRef.current?.abort();
   }, [load]);
+
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    return () => pickAcRef.current?.abort();
+  }, []);
 
   const handlePick = useCallback(
     async (variant: SceneVariant) => {
+      pickAcRef.current?.abort();
+      const ac = new AbortController();
+      pickAcRef.current = ac;
       setPicking(variant.label ?? variant.template);
       try {
         const res = await fetch(
@@ -73,19 +100,25 @@ export const VariantsModal = memo(function VariantsModal({
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ scene: variant }),
+            signal: ac.signal,
           },
         );
+        if (ac.signal.aborted) return;
         if (!res.ok) {
           const data = (await res.json().catch(() => ({}))) as { error?: string };
+          if (ac.signal.aborted) return;
           setError(data.error ?? `HTTP ${res.status}`);
           return;
         }
+        // The server has accepted the variant; commit it to parent state and close.
+        // onPick / onClose are parent setters — safe to call (parent owns its lifecycle).
         onPick(variant);
         onClose();
       } catch (err) {
+        if (isAbort(err) || ac.signal.aborted) return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setPicking(null);
+        if (!ac.signal.aborted) setPicking(null);
       }
     },
     [projectId, sceneId, onPick, onClose],
@@ -163,7 +196,7 @@ export const VariantsModal = memo(function VariantsModal({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {variants.map((v, i) => (
                 <button
-                  key={i}
+                  key={v.label ?? `${v.template}-${i}`}
                   type="button"
                   onClick={() => void handlePick(v)}
                   disabled={picking != null}
@@ -179,12 +212,20 @@ export const VariantsModal = memo(function VariantsModal({
                   </div>
                   <div className="text-[10px] font-mono text-studio-accent">
                     {v.template}
-                    {v.template === "chart-scene" && v.props && (
-                      <span className="text-neutral-400">
-                        {" → "}
-                        {String((v.props.chart as { type?: string } | undefined)?.type ?? "")}
-                      </span>
-                    )}
+                    {v.template === "chart-scene" &&
+                      (() => {
+                        const chart = v.props?.chart;
+                        const type =
+                          chart && typeof chart === "object" && "type" in chart
+                            ? (chart as Record<string, unknown>).type
+                            : null;
+                        return typeof type === "string" ? (
+                          <span className="text-neutral-400">
+                            {" → "}
+                            {type}
+                          </span>
+                        ) : null;
+                      })()}
                   </div>
                   {v.reasoning && (
                     <div className="text-[11px] text-neutral-400 leading-relaxed line-clamp-6 italic">

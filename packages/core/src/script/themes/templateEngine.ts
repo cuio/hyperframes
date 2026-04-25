@@ -63,30 +63,79 @@ function applyFilter(v: unknown, filter: string | undefined): string {
 const EACH_RE = /\{\{#each\s+([\w.@]+)\s*\}\}([\s\S]*?)\{\{\/each\}\}/g;
 const VAR_RE = /\{\{([@\w.]+)(?:\|(\w+))?\}\}/g;
 
-export function renderTemplate(html: string, ctx: TemplateContext): string {
-  // Handle {{#each path}}…{{/each}} first so its body can also contain
-  // variable substitutions that we resolve in the recursive pass.
+/**
+ * Hard caps to keep a malicious or buggy sidecar from blowing the stack or
+ * memory. A real production template needs nowhere near these limits — most
+ * port from JSX with depth ≤2 and output well under a megabyte.
+ */
+export const MAX_RENDER_DEPTH = 8;
+export const MAX_RENDER_OUTPUT_BYTES = 4 * 1024 * 1024;
+export const MAX_RENDER_ITERATIONS = 50_000;
+
+export class TemplateRenderError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TemplateRenderError";
+  }
+}
+
+interface RenderState {
+  depth: number;
+  iterations: { count: number };
+}
+
+function renderInternal(html: string, ctx: TemplateContext, state: RenderState): string {
+  if (state.depth > MAX_RENDER_DEPTH) {
+    throw new TemplateRenderError(
+      `Template recursion exceeded ${MAX_RENDER_DEPTH} levels — refusing to render. ` +
+        `Nest {{#each}} blocks shallower or pre-flatten the data.`,
+    );
+  }
+
   let out = html.replace(EACH_RE, (_, path: string, body: string) => {
     const arr = lookup(ctx, path);
     if (!Array.isArray(arr)) return "";
-    return arr
-      .map((item, i) =>
-        renderTemplate(body, {
-          ...ctx,
-          this: item,
-          "@index": i,
-          "@first": i === 0,
-          "@last": i === arr.length - 1,
-        }),
-      )
-      .join("");
+    const pieces: string[] = [];
+    for (let i = 0; i < arr.length; i++) {
+      state.iterations.count++;
+      if (state.iterations.count > MAX_RENDER_ITERATIONS) {
+        throw new TemplateRenderError(
+          `Template iteration count exceeded ${MAX_RENDER_ITERATIONS} — refusing to render. ` +
+            `Reduce array sizes or unroll the loop.`,
+        );
+      }
+      pieces.push(
+        renderInternal(
+          body,
+          {
+            ...ctx,
+            this: arr[i],
+            "@index": i,
+            "@first": i === 0,
+            "@last": i === arr.length - 1,
+          },
+          { ...state, depth: state.depth + 1 },
+        ),
+      );
+    }
+    return pieces.join("");
   });
 
-  // Variable substitutions. Skip anything we already consumed in EACH_RE.
   out = out.replace(VAR_RE, (_, path: string, filter: string | undefined) => {
     const v = lookup(ctx, path);
     return applyFilter(v, filter);
   });
 
+  if (out.length > MAX_RENDER_OUTPUT_BYTES) {
+    throw new TemplateRenderError(
+      `Template output exceeded ${MAX_RENDER_OUTPUT_BYTES} bytes (${out.length}). ` +
+        `Cap the data fed in or split the template.`,
+    );
+  }
+
   return out;
+}
+
+export function renderTemplate(html: string, ctx: TemplateContext): string {
+  return renderInternal(html, ctx, { depth: 0, iterations: { count: 0 } });
 }

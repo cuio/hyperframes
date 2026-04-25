@@ -75,35 +75,49 @@ export function loadThemesFromRoot(rootDir: string): LoadedTheme[] {
   return out;
 }
 
+function asStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string");
+}
+
 /**
  * Convert a parsed manifest plus its folder location into a runtime
  * LoadedTheme: validates required fields, resolves filesystem paths,
  * inlines the designSystemDoc so callers get all the data in one shot.
  * Returns null when the manifest is malformed.
+ *
+ * All optional fields run through type guards (asStringArray, typeof checks)
+ * so a malformed theme.json — say preferences.atmospheres=`"aurora"` instead
+ * of `["aurora"]` — degrades to defaults instead of leaking through to the
+ * planner where it becomes a runtime crash.
  */
 export function materializeTheme(raw: unknown, folder: string): LoadedTheme | null {
   if (!raw || typeof raw !== "object") return null;
   const m = raw as Partial<ThemeManifest>;
   if (typeof m.id !== "string" || !m.id.trim()) return null;
   if (!m.tokens || !validateTokens(m.tokens)) return null;
-  const designSystemDoc = m.designSystemDoc ? safeReadText(join(folder, m.designSystemDoc)) : null;
-  const referenceRenderPath = m.referenceRender
-    ? safeAbsolutePath(join(folder, m.referenceRender))
-    : null;
+  const designSystemDoc =
+    typeof m.designSystemDoc === "string" && m.designSystemDoc.trim()
+      ? safeReadText(join(folder, m.designSystemDoc))
+      : null;
+  const referenceRenderPath =
+    typeof m.referenceRender === "string" && m.referenceRender.trim()
+      ? safeAbsolutePath(join(folder, m.referenceRender))
+      : null;
   return {
-    id: m.id,
-    name: typeof m.name === "string" ? m.name : m.id,
+    id: m.id.trim(),
+    name: typeof m.name === "string" && m.name.trim() ? m.name.trim() : m.id.trim(),
     description: typeof m.description === "string" ? m.description : "",
     tokens: m.tokens,
-    fonts: { googleFonts: m.fonts?.googleFonts ?? [] },
+    fonts: { googleFonts: asStringArray(m.fonts?.googleFonts) },
     preferences: {
-      atmospheres: m.preferences?.atmospheres ?? [],
-      transitions: m.preferences?.transitions ?? [],
-      icons: m.preferences?.icons ?? [],
+      atmospheres: asStringArray(m.preferences?.atmospheres),
+      transitions: asStringArray(m.preferences?.transitions),
+      icons: asStringArray(m.preferences?.icons),
     },
     designSystemDoc,
     referenceRenderPath,
-    templates: loadThemeTemplates(folder, m.id),
+    templates: loadThemeTemplates(folder, m.id.trim()),
     source: `disk:${folder}`,
   };
 }

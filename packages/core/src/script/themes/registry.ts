@@ -67,6 +67,30 @@ const BUILTIN: LoadedTheme[] = [
 ];
 
 /**
+ * Tiny TTL cache keyed by the resolved search-root pair. The studio loader
+ * is called on every plan / variant request — caching avoids re-walking the
+ * `docs/design-systems/` tree (~30+ folders) and re-parsing every theme.json
+ * for each request. The TTL is short enough that an interactive `theme.json`
+ * edit shows up within a second; the studio file watcher can also call
+ * `invalidateThemeRegistry()` on disk changes for instant updates.
+ */
+const REGISTRY_CACHE_TTL_MS = 1000;
+interface CacheEntry {
+  themes: LoadedTheme[];
+  expiresAt: number;
+}
+const registryCache = new Map<string, CacheEntry>();
+
+function cacheKey(roots: ThemeSearchRoots): string {
+  return `${roots.repoRoot ?? ""}::${roots.projectDir ?? ""}`;
+}
+
+/** Drop the cache so the next call walks the disk again. */
+export function invalidateThemeRegistry(): void {
+  registryCache.clear();
+}
+
+/**
  * Build the runtime theme registry. Built-in themes are seeded first; disk
  * themes are loaded next and OVERRIDE built-ins of the same id (so the
  * dreamspace built-in can be enriched with a full design-system doc by
@@ -78,13 +102,15 @@ const BUILTIN: LoadedTheme[] = [
  * touching the framework.
  */
 export function loadThemeRegistry(roots: ThemeSearchRoots = {}): LoadedTheme[] {
+  const key = cacheKey(roots);
+  const cached = registryCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.themes;
+
   const byId = new Map<string, LoadedTheme>();
   for (const theme of BUILTIN) byId.set(theme.id, theme);
   const folders = discoverThemeRoots(roots);
   for (const folder of folders) {
     for (const disk of loadThemesFromRoot(folder)) {
-      // Disk theme wins on id collision — but if it omits googleFonts /
-      // preferences and the built-in has them, keep the built-in's hints.
       const existing = byId.get(disk.id);
       if (existing) {
         byId.set(disk.id, mergeWithBuiltin(disk, existing));
@@ -93,7 +119,9 @@ export function loadThemeRegistry(roots: ThemeSearchRoots = {}): LoadedTheme[] {
       }
     }
   }
-  return Array.from(byId.values());
+  const themes = Array.from(byId.values());
+  registryCache.set(key, { themes, expiresAt: Date.now() + REGISTRY_CACHE_TTL_MS });
+  return themes;
 }
 
 function mergeWithBuiltin(disk: LoadedTheme, builtin: LoadedTheme): LoadedTheme {

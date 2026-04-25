@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
 import { isSafePath } from "../helpers/safePath.js";
+import { atomicWriteFileSync, withMutex } from "../../internal/atomicWrite.js";
 import { loadAnthropicKey } from "../../anthropic/index.js";
 import { loadElevenLabsKey, readDefaultVoiceId } from "../../elevenlabs/index.js";
 import {
@@ -24,6 +25,7 @@ import {
   type Script,
   type ScriptFidelity,
 } from "../../script/index.js";
+import { validateAgainstSchema } from "../../script/themes/validateProps.js";
 
 interface PlanBody {
   text?: string;
@@ -210,23 +212,48 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     let body: { theme?: string };
     try {
       body = (await c.req.json()) as { theme?: string };
-    } catch {
+    } catch (err) {
+      console.warn("[script] PUT /theme invalid JSON body", err);
       return c.json({ error: "invalid JSON body" }, 400);
     }
     const themeId = body.theme?.trim();
     if (!themeId) return c.json({ error: "theme is required" }, 400);
-    const configPath = join(project.dir, "hyperframes.json");
-    let json: Record<string, unknown> = {};
-    if (existsSync(configPath)) {
-      try {
-        json = JSON.parse(readFileSync(configPath, "utf-8"));
-      } catch {
-        return c.json({ error: "hyperframes.json is malformed" }, 500);
-      }
+    // Validate against the registry so a typo / stale UI / malicious caller
+    // can't write a theme id that no template engine recognizes — leaving the
+    // assembler to silently fall back to the default would mask the mistake.
+    const known = listAvailableThemes(project.dir).map((t) => t.id);
+    if (!known.includes(themeId)) {
+      return c.json(
+        {
+          error: `unknown theme '${themeId}'. Known themes: ${known.join(", ") || "(none)"}`,
+        },
+        400,
+      );
     }
-    json.design = { ...(json.design as object | undefined), theme: themeId };
-    writeFileSync(configPath, JSON.stringify(json, null, 2) + "\n");
-    return c.json({ ok: true, theme: themeId });
+    const configPath = join(project.dir, "hyperframes.json");
+    try {
+      const next = await withMutex(`project:${project.dir}:settings`, async () => {
+        let json: Record<string, unknown> = {};
+        if (existsSync(configPath)) {
+          try {
+            json = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
+          } catch (err) {
+            console.warn(
+              `[script] hyperframes.json at ${configPath} is malformed; refusing PUT /theme`,
+              err,
+            );
+            throw new Error("hyperframes.json is malformed — fix the JSON and retry");
+          }
+        }
+        json.design = { ...(json.design as object | undefined), theme: themeId };
+        atomicWriteFileSync(configPath, JSON.stringify(json, null, 2) + "\n");
+        return themeId;
+      });
+      return c.json({ ok: true, theme: next });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
   });
 
   // Scaffold templates: create RESEARCH.md / DESIGN-ART.md if missing.
@@ -388,36 +415,76 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     let body: { scene?: Record<string, unknown> };
     try {
       body = (await c.req.json()) as { scene?: Record<string, unknown> };
-    } catch {
+    } catch (err) {
+      console.warn("[script] PUT /scenes invalid JSON body", err);
       return c.json({ error: "invalid JSON body" }, 400);
     }
     if (!body.scene || typeof body.scene !== "object") {
       return c.json({ error: "scene is required" }, 400);
     }
 
-    let script: Script;
-    try {
-      script = JSON.parse(readFileSync(path, "utf-8")) as Script;
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
-    }
-    const idx = script.scenes.findIndex((s) => s.id === sceneId);
-    if (idx === -1) return c.json({ error: `scene ${sceneId} not found` }, 404);
-
-    // Preserve the scene's id and existing audio cache info; replace the
-    // visual treatment + reasoning from the variant.
     const incoming = body.scene as Record<string, unknown>;
-    script.scenes[idx] = {
-      ...script.scenes[idx]!,
-      template:
-        typeof incoming.template === "string" ? incoming.template : script.scenes[idx]!.template,
-      props: (incoming.props as Record<string, unknown>) ?? script.scenes[idx]!.props,
-      reasoning:
-        typeof incoming.reasoning === "string" ? incoming.reasoning : script.scenes[idx]!.reasoning,
-      hook: typeof incoming.hook === "boolean" ? incoming.hook : script.scenes[idx]!.hook,
-    };
-    writeJson(path, script);
-    return c.json({ ok: true, scene: script.scenes[idx] });
+    // Validate the incoming template id against the registry — a typo or
+    // stale UI shouldn't be silently coerced into a fallback.
+    const templateRegistry = resolveTemplateRegistry(project.dir);
+    const incomingTemplate = typeof incoming.template === "string" ? incoming.template : null;
+    if (incomingTemplate != null) {
+      const tmpl = templateRegistry.find((t) => t.id === incomingTemplate);
+      if (!tmpl) {
+        return c.json(
+          {
+            error: `unknown template '${incomingTemplate}'. Known: ${templateRegistry
+              .map((t) => t.id)
+              .join(", ")}`,
+          },
+          400,
+        );
+      }
+      // Validate the props against the template's schema. Issues come back
+      // as a list so the studio can surface every problem at once.
+      const incomingProps =
+        incoming.props && typeof incoming.props === "object"
+          ? (incoming.props as Record<string, unknown>)
+          : {};
+      const issues = validateAgainstSchema(tmpl.propsSchema, incomingProps);
+      if (issues.length > 0) {
+        return c.json({ error: `invalid scene props`, issues }, 400);
+      }
+    }
+
+    try {
+      const updated = await withMutex(`project:${project.dir}:script.json`, async () => {
+        let script: Script;
+        try {
+          script = JSON.parse(readFileSync(path, "utf-8")) as Script;
+        } catch (err) {
+          console.warn(`[script] script.json at ${path} is malformed`, err);
+          throw new Error("script.json is malformed — fix the JSON and retry");
+        }
+        const idx = script.scenes.findIndex((s) => s.id === sceneId);
+        if (idx === -1) throw new Error(`scene ${sceneId} not found`);
+
+        // Preserve the scene's id and existing audio cache info; replace the
+        // visual treatment + reasoning from the variant.
+        script.scenes[idx] = {
+          ...script.scenes[idx]!,
+          template: incomingTemplate ?? script.scenes[idx]!.template,
+          props: (incoming.props as Record<string, unknown>) ?? script.scenes[idx]!.props,
+          reasoning:
+            typeof incoming.reasoning === "string"
+              ? incoming.reasoning
+              : script.scenes[idx]!.reasoning,
+          hook: typeof incoming.hook === "boolean" ? incoming.hook : script.scenes[idx]!.hook,
+        };
+        atomicWriteFileSync(path, JSON.stringify(script, null, 2) + "\n");
+        return script.scenes[idx];
+      });
+      return c.json({ ok: true, scene: updated });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = /not found/i.test(msg) ? 404 : 500;
+      return c.json({ error: msg }, status);
+    }
   });
 
   // Manually update script.json (after user edits the plan in UI).

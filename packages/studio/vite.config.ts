@@ -466,12 +466,26 @@ function devProjectApi(): Plugin {
       let _apiDirty = false;
       const coreSrcDir = resolve(__dirname, "../core/src");
       const studioSrcDir = resolve(__dirname, "src");
-      const isWatched = (file: string) =>
-        file.startsWith(coreSrcDir) || file.startsWith(studioSrcDir);
+      // Only invalidate the SSR-loaded API when an actual TypeScript source
+      // file changes. Saves of .md, .css, .test.ts (which the SSR module
+      // graph never imports), or transient editor artifacts shouldn't reset
+      // the cached api — that wastes a re-import on every keystroke in
+      // unrelated docs.
+      const SOURCE_EXT = /\.(ts|tsx|mts|cts)$/;
+      const TEST_FILE = /\.(test|spec)\.(ts|tsx|mts|cts)$/;
+      const isWatched = (file: string): boolean => {
+        if (!file.startsWith(coreSrcDir) && !file.startsWith(studioSrcDir)) return false;
+        if (!SOURCE_EXT.test(file)) return false;
+        if (TEST_FILE.test(file)) return false;
+        return true;
+      };
       server.watcher.on("change", (file) => {
         if (isWatched(file)) _apiDirty = true;
       });
       server.watcher.on("add", (file) => {
+        if (isWatched(file)) _apiDirty = true;
+      });
+      server.watcher.on("unlink", (file) => {
         if (isWatched(file)) _apiDirty = true;
       });
       const getApi = async () => {
