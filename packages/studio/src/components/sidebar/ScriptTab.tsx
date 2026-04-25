@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { VariantsModal } from "./VariantsModal";
 
 interface ScriptTabProps {
@@ -7,6 +7,16 @@ interface ScriptTabProps {
 
 const CAPTIONS_STORAGE_KEY = "hf-captions-visible";
 const CAPTIONS_CHANNEL = "hf-captions";
+const FIDELITIES = ["verbatim", "split-merge", "refine"] as const;
+type Fidelity = (typeof FIDELITIES)[number];
+
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+function isFidelity(value: string): value is Fidelity {
+  return (FIDELITIES as readonly string[]).includes(value);
+}
 
 function readStoredCaptionsVisible(): boolean {
   try {
@@ -92,7 +102,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   const [defaultVoiceId, setDefaultVoiceId] = useState<string | null>(null);
   const [expandedScene, setExpandedScene] = useState<string | null>(null);
   const [variantSceneId, setVariantSceneId] = useState<string | null>(null);
-  const [fidelity, setFidelity] = useState<"verbatim" | "split-merge" | "refine">("split-merge");
+  const [fidelity, setFidelity] = useState<Fidelity>("split-merge");
   const [filesStatus, setFilesStatus] = useState<{
     hasDesign: boolean;
     hasDesignArt: boolean;
@@ -103,89 +113,179 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   const [themes, setThemes] = useState<ThemeSummary[] | null>(null);
   const [activeTheme, setActiveTheme] = useState<ActiveThemeInfo | null>(null);
   const [themeBusy, setThemeBusy] = useState(false);
+  // Aggregate loader-error banner. Individual loaders push a short hint here
+  // (e.g. "couldn't reach key status"), and the user-facing banner shows the
+  // most recent. Cleared when any loader succeeds or projectId changes.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [generateStartedAt, setGenerateStartedAt] = useState<number | null>(null);
+  const [generateNow, setGenerateNow] = useState(0);
+
+  // AbortControllers for every async call site, aborted on unmount or project
+  // change so a late response can't race a newer load.
+  const keyAcRef = useRef<AbortController | null>(null);
+  const scriptAcRef = useRef<AbortController | null>(null);
+  const themesAcRef = useRef<AbortController | null>(null);
+  const filesAcRef = useRef<AbortController | null>(null);
+  const voiceAcRef = useRef<AbortController | null>(null);
+  const themePutAcRef = useRef<AbortController | null>(null);
+  const scaffoldAcRef = useRef<AbortController | null>(null);
+  const keySaveAcRef = useRef<AbortController | null>(null);
+  const planAcRef = useRef<AbortController | null>(null);
+  const generateAcRef = useRef<AbortController | null>(null);
 
   const loadAnthropicKeyStatus = useCallback(async () => {
+    keyAcRef.current?.abort();
+    const ac = new AbortController();
+    keyAcRef.current = ac;
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/anthropic/key`);
-      if (res.ok) setAnthropicKey((await res.json()) as KeyStatus);
-    } catch {
-      /* ignore */
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/anthropic/key`, {
+        signal: ac.signal,
+      });
+      if (ac.signal.aborted) return;
+      if (res.ok) {
+        setAnthropicKey((await res.json()) as KeyStatus);
+        return;
+      }
+      setLoadError(`Couldn't read Claude key status (HTTP ${res.status})`);
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      setLoadError("Couldn't reach the studio API for key status. Is the server running?");
+      console.warn("[ScriptTab] loadAnthropicKeyStatus failed", err);
     }
   }, [projectId]);
 
   const loadExistingScript = useCallback(async () => {
+    scriptAcRef.current?.abort();
+    const ac = new AbortController();
+    scriptAcRef.current = ac;
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script`);
-      if (!res.ok) return;
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script`, {
+        signal: ac.signal,
+      });
+      if (ac.signal.aborted) return;
+      if (!res.ok) {
+        if (res.status !== 404) {
+          setLoadError(`Couldn't load existing script (HTTP ${res.status})`);
+        }
+        return;
+      }
       const data = (await res.json()) as { script: Script | null };
+      if (ac.signal.aborted) return;
       if (data.script) setScript(data.script);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      setLoadError("Couldn't load the existing script. Is the server running?");
+      console.warn("[ScriptTab] loadExistingScript failed", err);
     }
   }, [projectId]);
 
   const loadThemes = useCallback(async () => {
+    themesAcRef.current?.abort();
+    const ac = new AbortController();
+    themesAcRef.current = ac;
     try {
-      const [allRes, activeRes] = await Promise.all([
-        fetch(`/api/themes?project=${encodeURIComponent(projectId)}`),
-        fetch(`/api/projects/${encodeURIComponent(projectId)}/theme`),
+      const [allRes, activeRes] = await Promise.allSettled([
+        fetch(`/api/themes?project=${encodeURIComponent(projectId)}`, { signal: ac.signal }),
+        fetch(`/api/projects/${encodeURIComponent(projectId)}/theme`, { signal: ac.signal }),
       ]);
-      if (allRes.ok) {
-        const data = (await allRes.json()) as { themes: ThemeSummary[] };
+      if (ac.signal.aborted) return;
+      if (allRes.status === "fulfilled" && allRes.value.ok) {
+        const data = (await allRes.value.json()) as { themes: ThemeSummary[] };
+        if (ac.signal.aborted) return;
         setThemes(data.themes);
+      } else if (allRes.status === "rejected" && !isAbort(allRes.reason)) {
+        setLoadError("Couldn't load theme list.");
       }
-      if (activeRes.ok) {
-        setActiveTheme((await activeRes.json()) as ActiveThemeInfo);
+      if (activeRes.status === "fulfilled" && activeRes.value.ok) {
+        const info = (await activeRes.value.json()) as ActiveThemeInfo;
+        if (ac.signal.aborted) return;
+        setActiveTheme(info);
       }
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      console.warn("[ScriptTab] loadThemes failed", err);
     }
   }, [projectId]);
 
   const setProjectTheme = useCallback(
     async (themeId: string) => {
+      themePutAcRef.current?.abort();
+      const ac = new AbortController();
+      themePutAcRef.current = ac;
       setThemeBusy(true);
       try {
         const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/theme`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ theme: themeId }),
+          signal: ac.signal,
         });
-        if (res.ok) await loadThemes();
+        if (ac.signal.aborted) return;
+        if (res.ok) {
+          await loadThemes();
+          return;
+        }
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setLoadError(data.error ?? `Failed to set theme (HTTP ${res.status})`);
+      } catch (err) {
+        if (isAbort(err) || ac.signal.aborted) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
-        setThemeBusy(false);
+        if (!ac.signal.aborted) setThemeBusy(false);
       }
     },
     [projectId, loadThemes],
   );
 
   const loadFilesStatus = useCallback(async () => {
+    filesAcRef.current?.abort();
+    const ac = new AbortController();
+    filesAcRef.current = ac;
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script/files-status`);
+      const res = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/script/files-status`,
+        { signal: ac.signal },
+      );
+      if (ac.signal.aborted) return;
       if (!res.ok) return;
       const data = (await res.json()) as {
         hasDesign: boolean;
         hasDesignArt: boolean;
         hasResearch: boolean;
       };
+      if (ac.signal.aborted) return;
       setFilesStatus(data);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      console.warn("[ScriptTab] loadFilesStatus failed", err);
     }
   }, [projectId]);
 
   const scaffoldFiles = useCallback(
     async (which: { research?: boolean; designArt?: boolean }) => {
+      scaffoldAcRef.current?.abort();
+      const ac = new AbortController();
+      scaffoldAcRef.current = ac;
       setScaffolding(true);
       try {
         const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script/scaffold`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(which),
+          signal: ac.signal,
         });
-        if (res.ok) await loadFilesStatus();
+        if (ac.signal.aborted) return;
+        if (res.ok) {
+          await loadFilesStatus();
+          return;
+        }
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setLoadError(data.error ?? `Scaffold failed (HTTP ${res.status})`);
+      } catch (err) {
+        if (isAbort(err) || ac.signal.aborted) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
-        setScaffolding(false);
+        if (!ac.signal.aborted) setScaffolding(false);
       }
     },
     [projectId, loadFilesStatus],
@@ -258,28 +358,54 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   }, []);
 
   const loadDefaultVoice = useCallback(async () => {
+    voiceAcRef.current?.abort();
+    const ac = new AbortController();
+    voiceAcRef.current = ac;
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/elevenlabs/settings`);
+      const res = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/elevenlabs/settings`,
+        { signal: ac.signal },
+      );
+      if (ac.signal.aborted) return;
       if (!res.ok) return;
       const data = (await res.json()) as { defaultVoiceId?: string | null };
+      if (ac.signal.aborted) return;
       setDefaultVoiceId(typeof data.defaultVoiceId === "string" ? data.defaultVoiceId : null);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      console.warn("[ScriptTab] loadDefaultVoice failed", err);
     }
   }, [projectId]);
 
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
+    setLoadError(null);
+    setScript(null);
     void loadAnthropicKeyStatus();
     void loadExistingScript();
     void loadDefaultVoice();
     void loadFilesStatus();
     void loadThemes();
+    return () => {
+      keyAcRef.current?.abort();
+      scriptAcRef.current?.abort();
+      themesAcRef.current?.abort();
+      filesAcRef.current?.abort();
+      voiceAcRef.current?.abort();
+      themePutAcRef.current?.abort();
+      scaffoldAcRef.current?.abort();
+      keySaveAcRef.current?.abort();
+      planAcRef.current?.abort();
+      generateAcRef.current?.abort();
+    };
   }, [loadAnthropicKeyStatus, loadExistingScript, loadDefaultVoice, loadFilesStatus, loadThemes]);
 
   const saveAnthropicKey = useCallback(async () => {
     const value = keyDraft.trim();
     if (!value) return;
+    keySaveAcRef.current?.abort();
+    const ac = new AbortController();
+    keySaveAcRef.current = ac;
     setKeyBusy(true);
     setKeyError(null);
     try {
@@ -287,23 +413,32 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value }),
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setKeyError(data.error ?? `HTTP ${res.status}`);
         return;
       }
-      setAnthropicKey((await res.json()) as KeyStatus);
+      const status = (await res.json()) as KeyStatus;
+      if (ac.signal.aborted) return;
+      setAnthropicKey(status);
       setKeyDraft("");
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setKeyError(err instanceof Error ? err.message : String(err));
     } finally {
-      setKeyBusy(false);
+      if (!ac.signal.aborted) setKeyBusy(false);
     }
   }, [projectId, keyDraft]);
 
   const handlePlan = useCallback(async () => {
     if (!text.trim()) return;
+    planAcRef.current?.abort();
+    const ac = new AbortController();
+    planAcRef.current = ac;
     setBusy({ kind: "planning", message: "Planning with Claude..." });
     setError(null);
     try {
@@ -319,42 +454,75 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
             tone: tone.trim() || undefined,
           },
         }),
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       const data = (await res.json()) as { script: Script };
+      if (ac.signal.aborted) return;
       setScript(data.script);
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy({ kind: "idle" });
+      if (!ac.signal.aborted) setBusy({ kind: "idle" });
     }
   }, [projectId, text, audience, tone, fidelity]);
 
+  const cancelGenerate = useCallback(() => {
+    generateAcRef.current?.abort();
+    setBusy({ kind: "idle" });
+    setGenerateStartedAt(null);
+  }, []);
+
   const handleGenerate = useCallback(async () => {
     if (!script) return;
+    generateAcRef.current?.abort();
+    const ac = new AbortController();
+    generateAcRef.current = ac;
     setBusy({ kind: "generating", message: "Synthesizing audio + assembling..." });
     setError(null);
+    setGenerateStartedAt(Date.now());
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ script }),
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setError(data.error ?? `HTTP ${res.status}`);
         return;
       }
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy({ kind: "idle" });
+      if (!ac.signal.aborted) {
+        setBusy({ kind: "idle" });
+        setGenerateStartedAt(null);
+      }
     }
   }, [projectId, script]);
+
+  // Tick the elapsed timer once per second while generating.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    if (generateStartedAt == null) return;
+    const id = setInterval(() => setGenerateNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [generateStartedAt]);
+
+  const generateElapsedSec =
+    generateStartedAt != null ? Math.floor((generateNow - generateStartedAt) / 1000) : 0;
 
   const planning = busy.kind === "planning";
   const generating = busy.kind === "generating";
@@ -362,6 +530,18 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
+      {loadError && (
+        <div className="px-3 py-2 border-b border-amber-900/40 bg-amber-950/30 flex items-start gap-2">
+          <span className="text-[11px] text-amber-300 flex-1 leading-snug">{loadError}</span>
+          <button
+            type="button"
+            onClick={() => setLoadError(null)}
+            className="text-[10px] text-amber-400/70 hover:text-amber-200 uppercase tracking-wider"
+          >
+            dismiss
+          </button>
+        </div>
+      )}
       {needsAnthropicKey && (
         <div className="p-3 border-b border-neutral-800/50">
           <div className="text-[11px] font-medium text-neutral-200 mb-1">
@@ -475,7 +655,10 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
           <label className="text-[10px] text-neutral-500">Fidelity</label>
           <select
             value={fidelity}
-            onChange={(e) => setFidelity(e.target.value as "verbatim" | "split-merge" | "refine")}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (isFidelity(v)) setFidelity(v);
+            }}
             className="h-7 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 focus:outline-none focus:border-neutral-700 cursor-pointer"
             title={
               fidelity === "verbatim"
@@ -527,19 +710,39 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
               {script.scenes.length} scenes
               {script.meta.title ? ` · ${script.meta.title}` : ""}
             </div>
-            <button
-              type="button"
-              onClick={() => void handleGenerate()}
-              disabled={generating || planning || (!script.meta.voiceId && !defaultVoiceId)}
-              className="h-7 px-3 rounded-md text-[11px] font-medium border border-studio-accent/40 bg-studio-accent/10 text-studio-accent hover:bg-studio-accent/15 disabled:opacity-40"
-              title={
-                !script.meta.voiceId && !defaultVoiceId
-                  ? "Pick a default voice in the Voices tab first"
-                  : "Generate audio + index.html"
-              }
-            >
-              {generating ? "Generating…" : "Generate"}
-            </button>
+            <div className="flex items-center gap-1.5">
+              {generating && (
+                <>
+                  <span
+                    className="text-[10px] font-mono text-neutral-500"
+                    title="Elapsed since generate started"
+                  >
+                    {generateElapsedSec}s
+                  </span>
+                  <button
+                    type="button"
+                    onClick={cancelGenerate}
+                    className="h-7 px-2 rounded-md text-[11px] font-medium border border-neutral-800 text-neutral-400 hover:text-red-300 hover:border-red-900/50"
+                    title="Abort the in-flight generate request"
+                  >
+                    Cancel
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={() => void handleGenerate()}
+                disabled={generating || planning || (!script.meta.voiceId && !defaultVoiceId)}
+                className="h-7 px-3 rounded-md text-[11px] font-medium border border-studio-accent/40 bg-studio-accent/10 text-studio-accent hover:bg-studio-accent/15 disabled:opacity-40"
+                title={
+                  !script.meta.voiceId && !defaultVoiceId
+                    ? "Pick a default voice in the Voices tab first"
+                    : "Generate audio + index.html"
+                }
+              >
+                {generating ? "Generating…" : "Generate"}
+              </button>
+            </div>
           </div>
           <div className="text-[10px] text-neutral-500 mb-2 font-mono">
             voice:{" "}
@@ -590,7 +793,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
                 </div>
                 <ul className="text-[10px] text-amber-200/80 space-y-0.5">
                   {visibleWarnings.map((w, i) => (
-                    <li key={i}>· {w}</li>
+                    <li key={`${i}-${w}`}>· {w}</li>
                   ))}
                 </ul>
                 {showScaffold && (

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 interface ProjectSummary {
   id: string;
@@ -9,6 +9,24 @@ interface ProjectSwitcherProps {
   currentId: string;
 }
 
+// Project ids become directory names on disk and URL hashes; restrict to the
+// safest cross-platform set. Server enforces too, but failing fast in the UI
+// gives a clearer error.
+const PROJECT_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,62}[A-Za-z0-9])?$/;
+
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
+function validateProjectId(id: string): string | null {
+  if (!id) return "Name is required.";
+  if (id.length > 64) return "Name must be 64 characters or fewer.";
+  if (!PROJECT_ID_RE.test(id)) {
+    return "Use letters, digits, dash, or underscore. Start and end with a letter or digit.";
+  }
+  return null;
+}
+
 export const ProjectSwitcher = memo(function ProjectSwitcher({ currentId }: ProjectSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
@@ -17,15 +35,33 @@ export const ProjectSwitcher = memo(function ProjectSwitcher({ currentId }: Proj
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const loadAcRef = useRef<AbortController | null>(null);
+  const createAcRef = useRef<AbortController | null>(null);
+
+  const draftError = useMemo(() => {
+    const trimmed = draftName.trim();
+    if (!trimmed) return null;
+    return validateProjectId(trimmed);
+  }, [draftName]);
 
   const loadProjects = useCallback(async () => {
+    loadAcRef.current?.abort();
+    const ac = new AbortController();
+    loadAcRef.current = ac;
     try {
-      const res = await fetch("/api/projects");
-      if (!res.ok) return;
+      const res = await fetch("/api/projects", { signal: ac.signal });
+      if (ac.signal.aborted) return;
+      if (!res.ok) {
+        setError(`Couldn't load project list (HTTP ${res.status}).`);
+        return;
+      }
       const data = (await res.json()) as { projects: ProjectSummary[] };
+      if (ac.signal.aborted) return;
       setProjects(data.projects ?? []);
-    } catch {
-      /* ignore */
+      setError(null);
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      setError("Couldn't reach the studio API.");
     }
   }, []);
 
@@ -59,6 +95,14 @@ export const ProjectSwitcher = memo(function ProjectSwitcher({ currentId }: Proj
   const create = useCallback(async () => {
     const id = draftName.trim();
     if (!id) return;
+    const validationError = validateProjectId(id);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    createAcRef.current?.abort();
+    const ac = new AbortController();
+    createAcRef.current = ac;
     setBusy(true);
     setError(null);
     try {
@@ -66,22 +110,35 @@ export const ProjectSwitcher = memo(function ProjectSwitcher({ currentId }: Proj
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id, title: id }),
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       const data = (await res.json()) as { project: ProjectSummary };
+      if (ac.signal.aborted) return;
       setDraftName("");
       setCreating(false);
       switchTo(data.project.id);
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (!ac.signal.aborted) setBusy(false);
     }
   }, [draftName, switchTo]);
+
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    return () => {
+      loadAcRef.current?.abort();
+      createAcRef.current?.abort();
+    };
+  }, []);
 
   return (
     <div ref={wrapRef} className="relative">
@@ -159,7 +216,7 @@ export const ProjectSwitcher = memo(function ProjectSwitcher({ currentId }: Proj
                   <button
                     type="button"
                     onClick={() => void create()}
-                    disabled={!draftName.trim() || busy}
+                    disabled={!draftName.trim() || busy || draftError != null}
                     className="flex-1 h-7 rounded-md text-[11px] font-medium border border-studio-accent/40 bg-studio-accent/10 text-studio-accent hover:bg-studio-accent/15 disabled:opacity-40"
                   >
                     {busy ? "Creating…" : "Create"}
@@ -176,7 +233,9 @@ export const ProjectSwitcher = memo(function ProjectSwitcher({ currentId }: Proj
                     Cancel
                   </button>
                 </div>
-                {error && <div className="text-[10px] text-red-400">{error}</div>}
+                {(draftError || error) && (
+                  <div className="text-[10px] text-red-400">{draftError ?? error}</div>
+                )}
               </div>
             )}
           </div>

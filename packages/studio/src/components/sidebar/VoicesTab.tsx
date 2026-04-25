@@ -36,6 +36,10 @@ function joinLabels(labels?: Record<string, string>): string {
   return Object.values(labels).slice(0, 3).join(" · ");
 }
 
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError";
+}
+
 export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) {
   const [load, setLoad] = useState<LoadState>({ status: "idle", voices: [] });
   const [defaultVoiceId, setDefaultVoiceId] = useState<string | null>(null);
@@ -46,25 +50,67 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
   const [keyDraft, setKeyDraft] = useState("");
   const [keyBusy, setKeyBusy] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
+
+  // One audio element at a time. We track the voice id it represents so a stale
+  // onended/onerror firing after a project switch can't clobber the new state.
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioVoiceIdRef = useRef<string | null>(null);
+
+  // AbortControllers per concurrent call site. Aborted on unmount or project switch.
+  const voicesAcRef = useRef<AbortController | null>(null);
+  const keyStatusAcRef = useRef<AbortController | null>(null);
+  const settingsAcRef = useRef<AbortController | null>(null);
+  const keyOpAcRef = useRef<AbortController | null>(null);
+  const useVoiceAcRef = useRef<AbortController | null>(null);
+
+  const stopAudio = useCallback(() => {
+    const a = audioRef.current;
+    if (a) {
+      a.pause();
+      // Clearing src releases the network connection and underlying buffer.
+      try {
+        a.removeAttribute("src");
+        a.load();
+      } catch {
+        /* ignore */
+      }
+    }
+    audioRef.current = null;
+    audioVoiceIdRef.current = null;
+  }, []);
 
   const refreshKeyStatus = useCallback(async () => {
+    keyStatusAcRef.current?.abort();
+    const ac = new AbortController();
+    keyStatusAcRef.current = ac;
     try {
-      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/elevenlabs/key`);
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/elevenlabs/key`, {
+        signal: ac.signal,
+      });
+      if (ac.signal.aborted) return;
       if (!res.ok) return;
       const data = (await res.json()) as KeyStatus;
+      if (ac.signal.aborted) return;
       setKeyStatus(data);
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      console.warn("[VoicesTab] refreshKeyStatus failed", err);
     }
   }, [projectId]);
 
   const fetchVoices = useCallback(async () => {
+    voicesAcRef.current?.abort();
+    const ac = new AbortController();
+    voicesAcRef.current = ac;
     setLoad((prev) => ({ ...prev, status: "loading", error: undefined, needsKey: false }));
     try {
-      const res = await fetch(`/api/elevenlabs/voices?project=${encodeURIComponent(projectId)}`);
+      const res = await fetch(`/api/elevenlabs/voices?project=${encodeURIComponent(projectId)}`, {
+        signal: ac.signal,
+      });
+      if (ac.signal.aborted) return;
       if (res.status === 401) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setLoad({
           status: "error",
           voices: [],
@@ -75,6 +121,7 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
       }
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setLoad({
           status: "error",
           voices: [],
@@ -83,8 +130,10 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
         return;
       }
       const data = (await res.json()) as { voices?: ElevenLabsVoice[] };
+      if (ac.signal.aborted) return;
       setLoad({ status: "ready", voices: data.voices ?? [] });
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setLoad({
         status: "error",
         voices: [],
@@ -96,6 +145,9 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
   const handleSaveKey = useCallback(async () => {
     const value = keyDraft.trim();
     if (!value) return;
+    keyOpAcRef.current?.abort();
+    const ac = new AbortController();
+    keyOpAcRef.current = ac;
     setKeyBusy(true);
     setKeyError(null);
     try {
@@ -103,24 +155,32 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value }),
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       if (!res.ok) {
         const data = (await res.json().catch(() => ({}))) as { error?: string };
+        if (ac.signal.aborted) return;
         setKeyError(data.error ?? `HTTP ${res.status}`);
         return;
       }
       const data = (await res.json()) as KeyStatus;
+      if (ac.signal.aborted) return;
       setKeyStatus(data);
       setKeyDraft("");
       void fetchVoices();
     } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
       setKeyError(err instanceof Error ? err.message : String(err));
     } finally {
-      setKeyBusy(false);
+      if (!ac.signal.aborted) setKeyBusy(false);
     }
   }, [projectId, keyDraft, fetchVoices]);
 
   const handleClearKey = useCallback(async () => {
+    keyOpAcRef.current?.abort();
+    const ac = new AbortController();
+    keyOpAcRef.current = ac;
     setKeyBusy(true);
     setKeyError(null);
     try {
@@ -128,70 +188,98 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ value: null }),
+        signal: ac.signal,
       });
+      if (ac.signal.aborted) return;
       if (res.ok) {
         const data = (await res.json()) as KeyStatus;
+        if (ac.signal.aborted) return;
         setKeyStatus(data);
         void fetchVoices();
       }
+    } catch (err) {
+      if (isAbort(err) || ac.signal.aborted) return;
+      console.warn("[VoicesTab] clearKey failed", err);
     } finally {
-      setKeyBusy(false);
+      if (!ac.signal.aborted) setKeyBusy(false);
     }
   }, [projectId, fetchVoices]);
 
-  // Initial load + when project changes.
-  // Direct subscription to a route param is fine here; no derived state.
+  // Initial load + when project changes. All in-flight requests for the previous
+  // project are aborted on cleanup so their late responses can't write into the
+  // new project's state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
+    settingsAcRef.current?.abort();
+    const ac = new AbortController();
+    settingsAcRef.current = ac;
     void fetchVoices();
     void refreshKeyStatus();
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/elevenlabs/settings`)
+    fetch(`/api/projects/${encodeURIComponent(projectId)}/elevenlabs/settings`, {
+      signal: ac.signal,
+    })
       .then((r) => (r.ok ? r.json() : null))
       .then((data: { defaultVoiceId?: string | null } | null) => {
+        if (ac.signal.aborted) return;
         if (data && typeof data.defaultVoiceId === "string") {
           setDefaultVoiceId(data.defaultVoiceId);
         }
       })
-      .catch(() => {});
-  }, [projectId, fetchVoices, refreshKeyStatus]);
-
-  // Stop audio on unmount or project switch.
-  // eslint-disable-next-line no-restricted-syntax
-  useEffect(() => {
+      .catch((err: unknown) => {
+        if (isAbort(err) || ac.signal.aborted) return;
+        console.warn("[VoicesTab] load settings failed", err);
+      });
     return () => {
-      audioRef.current?.pause();
-      audioRef.current = null;
+      voicesAcRef.current?.abort();
+      keyStatusAcRef.current?.abort();
+      settingsAcRef.current?.abort();
+      keyOpAcRef.current?.abort();
+      useVoiceAcRef.current?.abort();
+      stopAudio();
     };
-  }, [projectId]);
+  }, [projectId, fetchVoices, refreshKeyStatus, stopAudio]);
 
   const handlePreview = useCallback(
     (voiceId: string) => {
       // Toggle: clicking the same playing voice stops it.
       if (playingId === voiceId && audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
+        stopAudio();
         setPlayingId(null);
         return;
       }
-      // Stop any current playback.
-      audioRef.current?.pause();
+      stopAudio();
       const url = `/api/elevenlabs/voices/${encodeURIComponent(voiceId)}/preview?project=${encodeURIComponent(projectId)}`;
       const audio = new Audio(url);
       audio.onended = () => {
-        setPlayingId((current) => (current === voiceId ? null : current));
+        // Only update state if this audio element is still the active one.
+        if (audioVoiceIdRef.current === voiceId && audioRef.current === audio) {
+          setPlayingId((current) => (current === voiceId ? null : current));
+          audioRef.current = null;
+          audioVoiceIdRef.current = null;
+        }
       };
       audio.onerror = () => {
-        setPlayingId((current) => (current === voiceId ? null : current));
+        if (audioVoiceIdRef.current === voiceId && audioRef.current === audio) {
+          setPlayingId((current) => (current === voiceId ? null : current));
+          audioRef.current = null;
+          audioVoiceIdRef.current = null;
+        }
       };
       audioRef.current = audio;
+      audioVoiceIdRef.current = voiceId;
       setPlayingId(voiceId);
-      void audio.play().catch(() => setPlayingId(null));
+      void audio.play().catch(() => {
+        if (audioVoiceIdRef.current === voiceId) setPlayingId(null);
+      });
     },
-    [playingId, projectId],
+    [playingId, projectId, stopAudio],
   );
 
   const handleUseVoice = useCallback(
     async (voiceId: string) => {
+      useVoiceAcRef.current?.abort();
+      const ac = new AbortController();
+      useVoiceAcRef.current = ac;
       setSavingId(voiceId);
       try {
         const res = await fetch(
@@ -200,14 +288,20 @@ export const VoicesTab = memo(function VoicesTab({ projectId }: VoicesTabProps) 
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ defaultVoiceId: voiceId }),
+            signal: ac.signal,
           },
         );
+        if (ac.signal.aborted) return;
         if (res.ok) {
           const data = (await res.json()) as { defaultVoiceId?: string | null };
+          if (ac.signal.aborted) return;
           setDefaultVoiceId(data.defaultVoiceId ?? voiceId);
         }
+      } catch (err) {
+        if (isAbort(err) || ac.signal.aborted) return;
+        console.warn("[VoicesTab] handleUseVoice failed", err);
       } finally {
-        setSavingId(null);
+        if (!ac.signal.aborted) setSavingId(null);
       }
     },
     [projectId],
