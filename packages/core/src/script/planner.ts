@@ -34,7 +34,18 @@ export interface PlanOptions {
    * and to populate chart-scene source/watermark from this file.
    */
   research?: string;
+  /**
+   * How faithfully the planner must reproduce the source script.
+   *   "verbatim"     — exact words, no edits, no swaps. Scene text === source span.
+   *   "split-merge"  — DEFAULT. Split or merge adjacent sentences but no other
+   *                    rewriting. Words and order preserved.
+   *   "refine"       — small wording tweaks allowed (filler removal, tightening)
+   *                    but core claims and numbers must be preserved exactly.
+   */
+  fidelity?: ScriptFidelity;
 }
+
+export type ScriptFidelity = "verbatim" | "split-merge" | "refine";
 
 interface PlanToolInput {
   meta?: {
@@ -198,7 +209,7 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
   const tool = buildToolDefinition(opts.maxSceneDuration ?? 9);
   const user = buildUserMessage(rawScript, opts);
 
-  const sections: string[] = [RETENTION_PLAYBOOK];
+  const sections: string[] = [RETENTION_PLAYBOOK, fidelityRule(opts.fidelity ?? "split-merge")];
   if (opts.designBrief?.trim()) {
     sections.push(
       `# Visual identity — project DESIGN.md\n\n${opts.designBrief.trim()}\n\n## How to apply this brief\n\n- Every scene's reasoning MUST reference at least one specific element\n  from the brief (a color, a font, a motion principle, a chart-style cue).\n- Pick chart colors deliberately: map the brief's "primary" palette role\n  to props.color = "primary", "secondary" role to "secondary", etc.\n- Set props.watermark to the brief's author byline if mentioned. Set\n  props.source to citation lines from RESEARCH.md when relevant.\n- Type hierarchy: hook scenes use the brief's display font; data\n  numbers use the mono font; body uses the body font.`,
@@ -435,6 +446,61 @@ export async function planSceneVariants(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+function fidelityRule(mode: ScriptFidelity): string {
+  if (mode === "verbatim") {
+    return (
+      `# Script fidelity — VERBATIM (strict)\n\n` +
+      `The user has chosen STRICT verbatim mode. The audio voiceover IS the\n` +
+      `user's script word-for-word. Your only freedom is segmentation:\n\n` +
+      `- Each scene's "text" MUST be a contiguous span of the source script\n` +
+      `  copied character-for-character, including punctuation.\n` +
+      `- You may split a long sentence at natural clause boundaries (commas,\n` +
+      `  em dashes, semicolons) into multiple scenes, but the resulting spans\n` +
+      `  must concatenate back to the original sentence.\n` +
+      `- You may NOT merge adjacent sentences. You may NOT skip sentences.\n` +
+      `- You may NOT add transitions, summaries, hooks, or any words that\n` +
+      `  weren't in the source. If a sentence reads weakly, that's the user's\n` +
+      `  call to fix in their script.\n` +
+      `- The hook scene is whatever the FIRST sentence of the source is, even\n` +
+      `  if you would have picked a stronger sentence. Visual treatment is\n` +
+      `  still your call — pick the strongest visual for the actual opener.`
+    );
+  }
+  if (mode === "refine") {
+    return (
+      `# Script fidelity — REFINE (loose)\n\n` +
+      `The user has opted into light editorial. You may:\n\n` +
+      `- Remove filler ("basically", "you know", "I mean", "actually").\n` +
+      `- Tighten wordy phrasing for cadence (e.g. "the fact that the market\n` +
+      `  was at" → "the market was at").\n` +
+      `- Reorder clauses within a sentence for flow.\n` +
+      `- Pick a stronger opener: if the source's first sentence is weak,\n` +
+      `  promote a more striking later sentence to s01.\n\n` +
+      `You may NOT:\n\n` +
+      `- Change any specific number, date, name, dollar amount, or citation.\n` +
+      `- Invent claims or facts not present in the source script.\n` +
+      `- Drop sentences that contain unique information.\n` +
+      `- Switch tone (e.g. casual → formal). Match the user's voice.\n\n` +
+      `When you edit a sentence, mention it in the scene's reasoning so the\n` +
+      `user can see what changed and approve.`
+    );
+  }
+  // split-merge (default)
+  return (
+    `# Script fidelity — SPLIT-MERGE (default)\n\n` +
+    `Words and word order are PRESERVED. You may:\n\n` +
+    `- Split a long sentence into two scenes at a natural boundary.\n` +
+    `- Merge two adjacent short sentences into one scene if their meaning\n` +
+    `  belongs together visually.\n` +
+    `- Promote a stronger sentence to s01 if the source's first line is weak\n` +
+    `  (still verbatim — you swap which sentence is the opener, not what\n` +
+    `  it says).\n\n` +
+    `You may NOT change words, drop words, add words, or reorder words\n` +
+    `within a sentence. Punctuation may be normalized for TTS readability\n` +
+    `(stray "..." → ".").`
+  );
+}
 
 function collectWarnings(opts: PlanOptions, scenes: SceneRef[]): string[] {
   const warnings: string[] = [];
