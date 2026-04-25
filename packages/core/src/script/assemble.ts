@@ -4,6 +4,7 @@ import { BUILTIN_TEMPLATES, DEFAULT_TOKENS, type DesignTokens } from "./template
 import type { Template } from "./templates/types.js";
 import { defaultAtmosphereForTemplate, renderAtmosphere } from "./atmosphere/index.js";
 import { TRANSITION_DURATIONS, defaultTransitionForTemplate } from "./transitions/index.js";
+import { getLoadedThemeByName } from "./themes/index.js";
 import type { PlannedScene, PlannedScript, SceneTransition } from "./types.js";
 
 export interface AssembleOptions {
@@ -74,12 +75,22 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     const audioStartOffset = scene.audio?.leadInSeconds ?? 0;
     const audioDur = scene.audio?.durationSeconds ?? 0;
 
+    // Per-scene theme override: if scene.props.theme names a registered
+    // theme, use ITS tokens for this one scene. Lets the planner mix
+    // concepts (e.g. a Dreamspace hook in a HackerNoon-themed video) by
+    // setting one prop, no global config change.
+    const requestedSceneTheme =
+      typeof scene.props?.theme === "string" ? scene.props.theme : undefined;
+    const sceneTokens = requestedSceneTheme
+      ? (getLoadedThemeByName(requestedSceneTheme)?.tokens ?? tokens)
+      : tokens;
+
     const fragment = tpl.render(scene.props, {
       sceneId: scene.id,
       audioSrc: scene.audio?.path,
       durationSeconds: sceneTotal,
       isHook: scene.hook === true,
-      tokens,
+      tokens: sceneTokens,
     });
     const positioned = fragment.replace(`data-start="0"`, `data-start="${cursor.toFixed(2)}"`);
     // Inject the per-scene atmosphere as the first child of the scene div.
@@ -91,7 +102,7 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     const atmoId = requestedAtmo ?? defaultAtmosphereForTemplate(scene.template);
     const atmoHtml = renderAtmosphere(atmoId, {
       sceneId: scene.id,
-      tokens,
+      tokens: sceneTokens,
       isHook: scene.hook === true,
     });
     const withAtmo = atmoHtml

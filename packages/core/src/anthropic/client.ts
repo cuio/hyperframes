@@ -25,10 +25,24 @@ export interface ToolDefinition {
   input_schema: Record<string, unknown>;
 }
 
+/**
+ * A system-prompt segment. When `cache_control` is set, the API caches the
+ * prefix up to and including this segment so subsequent requests with the
+ * same prefix pay ~10% of the input cost. Up to 4 segments may carry
+ * cache_control. Order longest-stable → most-volatile so the cache hits
+ * on iterative replans, retries, and the hook-critic second pass.
+ */
+export interface SystemSegment {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
 export interface MessagesRequest {
   model?: string;
   max_tokens?: number;
-  system?: string;
+  /** Either a plain string OR a sequence of segments that opt into caching. */
+  system?: string | SystemSegment[];
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   tools?: ToolDefinition[];
   tool_choice?: { type: "tool"; name: string } | { type: "auto" } | { type: "any" };
@@ -42,7 +56,14 @@ export interface MessagesResponse {
   content: Array<
     { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: unknown }
   >;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    /** Tokens that were read from cache (charged at ~10% of normal rate). */
+    cache_read_input_tokens?: number;
+    /** Tokens written to cache for future hits (charged at ~125% the first time). */
+    cache_creation_input_tokens?: number;
+  };
 }
 
 async function ensureOk(res: Response): Promise<void> {
@@ -97,7 +118,8 @@ export async function callStructuredTool<T>(
   apiKey: string,
   opts: {
     model?: string;
-    system: string;
+    /** Either a plain string OR cache-controlled segments (see SystemSegment). */
+    system: string | SystemSegment[];
     user: string;
     tool: ToolDefinition;
     maxTokens?: number;

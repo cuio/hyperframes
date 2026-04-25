@@ -11,4 +11,4 @@ export {
   AnthropicError,
   DEFAULT_MODEL as DEFAULT_ANTHROPIC_MODEL,
 } from "./client.js";
-export type { MessagesRequest, MessagesResponse, ToolDefinition } from "./client.js";
+export type { MessagesRequest, MessagesResponse, SystemSegment, ToolDefinition } from "./client.js";

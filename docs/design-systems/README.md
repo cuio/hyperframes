@@ -74,6 +74,28 @@ Or write a `DESIGN.md` and let it overlay the named theme — the resolver merge
 
 If a theme is project-specific, drop it under `<project>/themes/<theme-id>/` instead of here. Project-local themes override repo-shipped ones of the same id.
 
+## Mixing themes per scene
+
+The planner can borrow from a theme that isn't the project's active theme. Two mechanisms:
+
+1. **`scene.props.theme = "<other-theme-id>"`** — re-renders just that scene with the other theme's tokens (palette + fonts). Use sparingly — for moments where a different aesthetic earns the cut.
+2. **Pull individual atmospheres / transitions / icons from another theme's preferences** — keeps the global palette but borrows the kinetic feel.
+
+The planner sees a CONDENSED list of every other installed theme (id + 1-line description + their preferences) so it can reason about cross-pollination without dragging every theme's full design doc into context. The active theme's `DESIGN_SYSTEM.md` is the only one passed verbatim.
+
+## Themes from Claude design (Remotion + Babel)
+
+Claude design produces themes as **Remotion / Babel-standalone JSX** components — typically a `dreamspace.jsx` source plus an `animations.jsx` primitives file plus a reference HTML that mounts them via Babel-standalone. That's the input format.
+
+Hyperframes renders **HTML + GSAP**, not React + Remotion. The bridge:
+
+- **JSX is reference, not runtime.** Drop the JSX files into your theme folder (`docs/design-systems/<id>/`) so designers and the planner have the source of truth. The framework never executes them.
+- **`DESIGN_SYSTEM.md` is the spec the planner reads.** Claude design ships this alongside the JSX. The planner uses it as source-of-truth for palette, type hierarchy, motion physics, and any custom template specifications.
+- **Templates are HTML+GSAP.** Per-theme template overrides ship at `<theme>/templates/<id>.html` — see the "Theme-shipped templates" section below for the format. Port from JSX manually or with a Claude Code agent — the JSX is the spec, the HTML is the production form.
+- **Reference render** — `Dreamspace Explainer.html` (or whatever you've named yours) is the canonical look. Open in a browser to scrub the timeline and verify what "production quality" means for the theme.
+
+The porting workflow: Claude design generates a theme → drop into `docs/design-systems/<id>/` → write a `theme.json` → port templates lazily as the planner picks them. The framework's built-in templates remain as the safety net so themes only need to ship templates where they can offer a meaningfully better look.
+
 ## Theme-shipped templates
 
 A theme can ship its own scene templates that the planner and assembler treat as first-class members of the template catalog. Drop HTML files under `<theme>/templates/`:
@@ -141,6 +163,17 @@ If the sidecar is absent, the template still loads with a permissive default sch
 When the studio API plans a script, it calls `resolveTemplateRegistry(projectDir)` which returns `[...BUILTIN_TEMPLATES, ...activeTheme.templates]`. That registry is passed to `planScript()` as `availableTemplates` (it shows up in the planner's tool catalog) AND to `assembleMaster()` as `templates` (so scene resolution finds the theme-shipped renderer).
 
 The studio's SSR cache-watcher invalidates on file changes under `docs/design-systems/`, so dropping a new template HTML and regenerating picks it up without restart.
+
+## Cost notes
+
+The planner uses Anthropic prompt caching aggressively:
+
+- **Block 1**: the playbook (most stable, ~3-5k tokens). Cached across every video.
+- **Block 2**: the active theme's `DESIGN_SYSTEM.md` + preferences. Cached per theme.
+- **Block 3**: `DESIGN.md` + `DESIGN-ART.md` + `RESEARCH.md`. Cached per project.
+- **Block 4**: fidelity rule + per-call hints. Always re-evaluated.
+
+Iterative re-plans inside the 5-minute cache TTL pay ~10% of input cost on the cached prefix. Schema-correction retries and the hook critic both reuse the same prefix. Net: ~80% input-cost reduction on iterative work after the first plan.
 
 ## Currently shipped
 

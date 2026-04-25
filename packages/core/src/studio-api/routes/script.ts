@@ -84,11 +84,25 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       const artDirection = loadDesignArt(project.dir) ?? undefined;
       // Resolve the active theme so the planner gets the theme's full DNA
       // (DESIGN_SYSTEM.md + preferred atmospheres / transitions / icons),
-      // not just a colour palette.
+      // not just a colour palette. Also pass a condensed list of OTHER
+      // themes so the planner can borrow concepts per scene without the
+      // cost of loading every theme's full design doc.
       const activeTheme = resolveActiveTheme(project.dir, designBrief);
       // Theme-shipped templates show up in the planner's catalog so the
-      // AI can pick `<theme-id>.<basename>` ids alongside built-ins.
+      // AI can pick `<theme-id>__<basename>` ids alongside built-ins.
       const availableTemplates = resolveTemplateRegistry(project.dir, designBrief);
+      // Condensed peer-theme list lets the planner borrow concepts from
+      // other installed themes (atmospheres, transitions, palettes) per
+      // scene without dragging their full design docs into context.
+      const allThemes = listAvailableThemes(project.dir);
+      const otherThemes = allThemes
+        .filter((t) => t.id !== activeTheme.id)
+        .map((t) => ({
+          id: t.id,
+          description: t.description,
+          atmospheres: t.preferences.atmospheres,
+          transitions: t.preferences.transitions,
+        }));
       let script = await planScript(text, {
         apiKey,
         model: body.model,
@@ -102,6 +116,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         themeName: activeTheme.name,
         themeDesignSystemDoc: activeTheme.designSystemDoc ?? undefined,
         themePreferences: activeTheme.preferences,
+        availableThemes: otherThemes,
         availableTemplates,
       });
       // Second-pass hook critic. Defaults on; the user can set
