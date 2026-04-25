@@ -7,7 +7,14 @@
  * resulting Script is what the renderer consumes.
  */
 
-export type SceneTransition = "cut" | "fade";
+export type SceneTransition =
+  | "cut"
+  | "fade"
+  | "wipe-left"
+  | "wipe-right"
+  | "zoom-in"
+  | "zoom-out"
+  | "whip-pan";
 
 export interface SceneRef {
   /** Stable id, e.g. "s01". Used for filenames and cache keys. */
