@@ -1,6 +1,7 @@
 import type { Template } from "./types.js";
-import { escapeHtml, asString, asStringArray, formatSec } from "./util.js";
+import { escapeHtml, asString, formatSec } from "./util.js";
 import { BUILTIN_CHARTS } from "../charts/index.js";
+import { ICON_IDS, hasIcon, renderIcon } from "../icons/index.js";
 
 /**
  * Premium template set. Each renders an HTML fragment with self-contained
@@ -365,8 +366,25 @@ const CONCEPT_CALLOUT: Template = {
       title: { type: "string", description: "Short title for the list" },
       items: {
         type: "array",
-        items: { type: "string" },
-        description: "Bullet items, 2 to 5 entries, each under 8 words",
+        items: {
+          oneOf: [
+            { type: "string" },
+            {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "The label text" },
+                icon: {
+                  type: "string",
+                  enum: ICON_IDS,
+                  description: "Optional icon id from the icon library; replaces the number badge",
+                },
+              },
+              required: ["text"],
+            },
+          ],
+        },
+        description:
+          "Bullet items, 2-5 entries each under 8 words. Pass each as either a plain string OR an object {text, icon} where icon is one of the registered icon ids. Icons replace the number badge; pick semantically (lock for security, network for partnerships, bolt for speed, etc.).",
       },
     },
     required: ["title", "items"],
@@ -374,7 +392,21 @@ const CONCEPT_CALLOUT: Template = {
   render(props, ctx) {
     const title = asString(props.title) || "";
     const eyebrow = asString(props.eyebrow);
-    const items = asStringArray(props.items).slice(0, 5);
+    // Items can be either plain strings (legacy) or {text, icon} objects.
+    // Normalise to a single shape, drop empties, cap at 5.
+    const rawItems = Array.isArray(props.items) ? props.items.slice(0, 5) : [];
+    const items: { text: string; icon?: string }[] = rawItems
+      .map((it: unknown) => {
+        if (typeof it === "string") return { text: it.trim() };
+        if (it && typeof it === "object") {
+          const obj = it as { text?: unknown; icon?: unknown };
+          const text = typeof obj.text === "string" ? obj.text.trim() : "";
+          const icon = typeof obj.icon === "string" && hasIcon(obj.icon) ? obj.icon : undefined;
+          return { text, icon };
+        }
+        return { text: "" };
+      })
+      .filter((i) => i.text.length > 0);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
     // Per-item stagger spaced so the last badge lands well before the scene
@@ -384,7 +416,7 @@ const CONCEPT_CALLOUT: Template = {
     const itemsHtml = items
       .map((item, i) => {
         // Per-word reveal inside each item label.
-        const words = item
+        const words = item.text
           .split(/(\s+)/)
           .map((w) =>
             /^\s+$/.test(w)
@@ -392,7 +424,11 @@ const CONCEPT_CALLOUT: Template = {
               : `<span class="co-iword">${escapeHtml(w)}</span>`,
           )
           .join("");
-        return `<div class="co-item" data-idx="${i}"><span class="co-badge">${String(i + 1).padStart(2, "0")}</span><span class="co-label">${words}</span></div>`;
+        // Badge content: icon if provided (semantic), else two-digit number.
+        const badgeInner = item.icon
+          ? renderIcon(item.icon, { size: 30, color: t.colors.bg, strokeWidth: 2.2 })
+          : String(i + 1).padStart(2, "0");
+        return `<div class="co-item" data-idx="${i}"><span class="co-badge">${badgeInner}</span><span class="co-label">${words}</span></div>`;
       })
       .join("\n    ");
     return `

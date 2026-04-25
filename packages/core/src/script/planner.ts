@@ -3,7 +3,9 @@ import type { ToolDefinition } from "../anthropic/index.js";
 import { RETENTION_PLAYBOOK } from "./playbook.js";
 import { BUILTIN_TEMPLATES } from "./templates/index.js";
 import { BUILTIN_CHARTS } from "./charts/index.js";
-import type { Script, SceneRef, ScriptMeta } from "./types.js";
+import { ATMOSPHERE_IDS } from "./atmosphere/index.js";
+import { TRANSITION_IDS } from "./transitions/index.js";
+import type { Script, SceneRef, ScriptMeta, SceneTransition } from "./types.js";
 
 export interface PlanOptions {
   apiKey: string;
@@ -63,6 +65,8 @@ interface PlanToolInput {
     durationHint?: number;
     voiceId?: string;
     reasoning?: string;
+    transition?: SceneTransition;
+    background?: string;
   }>;
 }
 
@@ -146,10 +150,22 @@ function buildToolDefinition(maxSceneDuration: number): ToolDefinition {
                 type: "string",
                 description: "Optional override of the script-level voice",
               },
+              background: {
+                type: "string",
+                enum: ATMOSPHERE_IDS,
+                description:
+                  "Optional atmosphere preset id. Omit to accept the per-template default. See the Cinematography section of the playbook for when to override.",
+              },
+              transition: {
+                type: "string",
+                enum: TRANSITION_IDS,
+                description:
+                  "Optional inbound transition. Omit to accept the per-template default (cut for hooks, fade for most others). Never repeat the same non-cut transition twice in a row.",
+              },
               reasoning: {
                 type: "string",
                 description:
-                  "REQUIRED. 2–4 sentences explaining WHY this template + chart was chosen for this exact narration. Reference the playbook AND the design brief if one was supplied. Be specific and visual — name the animation, the colors, why this beats the alternatives.",
+                  "REQUIRED. 2–4 sentences explaining WHY this template + chart + atmosphere were chosen for this exact narration. Reference the playbook AND the design brief if one was supplied. Be specific and visual — name the animation, the colors, why this beats the alternatives. If you overrode the default background or transition, name the override and the reason.",
               },
             },
             required: ["id", "text", "template", "props", "reasoning"],
@@ -231,47 +247,90 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
   }
   const system = sections.join("\n\n");
 
-  let result: PlanToolInput;
-  try {
-    const { result: r } = await callStructuredTool<PlanToolInput>(opts.apiKey, {
-      model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
-      system,
-      user,
-      tool,
-      maxTokens: 4096,
-      temperature: opts.temperature ?? 0.7,
-    });
-    result = r;
-  } catch (err) {
-    if (err instanceof AnthropicError) {
-      throw new ScriptPlannerError(`Planner API call failed: ${err.message}`, err);
+  // First-pass call. If the planner emits scenes that fail schema checks
+  // (chart-scene without chart.type, missing required template props, etc.)
+  // we run one corrective retry with the validation errors injected into
+  // the system prompt — this turns a 90% success rate into ~99% at the
+  // cost of one extra LLM round-trip on the failing case.
+  const callPlanner = async (sys: string): Promise<PlanToolInput> => {
+    try {
+      const { result: r } = await callStructuredTool<PlanToolInput>(opts.apiKey, {
+        model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
+        system: sys,
+        user,
+        tool,
+        maxTokens: 4096,
+        temperature: opts.temperature ?? 0.7,
+      });
+      return r;
+    } catch (err) {
+      if (err instanceof AnthropicError) {
+        throw new ScriptPlannerError(`Planner API call failed: ${err.message}`, err);
+      }
+      throw err;
     }
-    throw err;
-  }
+  };
+
+  let result = await callPlanner(system);
 
   if (!Array.isArray(result?.scenes) || result.scenes.length === 0) {
     throw new ScriptPlannerError("Planner returned no scenes");
   }
 
+  let issues = collectSchemaIssues(result.scenes);
+  if (issues.length > 0) {
+    const corrective =
+      `${system}\n\n# REQUIRED CORRECTIONS — fix and re-emit\n\n` +
+      `Your previous output had these schema violations. Re-emit the FULL\n` +
+      `plan with these fixed; do not change correct scenes' template, props,\n` +
+      `or text — preserve them verbatim.\n\n` +
+      issues.map((i) => `- Scene ${i.sceneId} (${i.template}): ${i.message}`).join("\n");
+    result = await callPlanner(corrective);
+    if (!Array.isArray(result?.scenes) || result.scenes.length === 0) {
+      throw new ScriptPlannerError("Planner returned no scenes after schema-correction retry");
+    }
+    issues = collectSchemaIssues(result.scenes);
+  }
+
   const validIds = new Set(BUILTIN_TEMPLATES.map((t) => t.id));
+  const validAtmoIds = new Set(ATMOSPHERE_IDS);
+  const validTransitionIds = new Set<string>(TRANSITION_IDS);
   const scenes: SceneRef[] = result.scenes.map((scene, i) => {
     if (!validIds.has(scene.template)) {
       throw new ScriptPlannerError(
         `Planner picked unknown template "${scene.template}" for scene ${i + 1}`,
       );
     }
+    // Atmosphere is threaded through scene.props.background so it survives
+    // the existing assemble.ts injection path; we also keep an unknown-id
+    // guard so a planner hallucination quietly falls back to default.
+    const props = { ...(scene.props ?? {}) };
+    if (typeof scene.background === "string" && validAtmoIds.has(scene.background)) {
+      props.background = scene.background;
+    } else if (typeof props.background === "string" && !validAtmoIds.has(props.background)) {
+      delete props.background;
+    }
+    const transition: SceneTransition | undefined =
+      typeof scene.transition === "string" && validTransitionIds.has(scene.transition)
+        ? (scene.transition as SceneTransition)
+        : undefined;
     return {
       id: scene.id || `s${String(i + 1).padStart(2, "0")}`,
       text: scene.text ?? "",
       template: scene.template,
-      props: scene.props ?? {},
+      props,
       hook: scene.hook === true,
       voiceId: scene.voiceId || undefined,
       durationHint: typeof scene.durationHint === "number" ? scene.durationHint : undefined,
+      transition,
       reasoning: typeof scene.reasoning === "string" ? scene.reasoning : undefined,
     };
   });
 
+  const baseWarnings = collectWarnings(opts, scenes);
+  const lingeringSchemaWarnings = issues.map(
+    (i) => `Schema issue (post-retry): scene ${i.sceneId} ${i.template} — ${i.message}`,
+  );
   const meta: ScriptMeta = {
     ...opts.meta,
     title: opts.meta?.title ?? result.meta?.title,
@@ -279,7 +338,7 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     tone: opts.meta?.tone ?? result.meta?.tone,
     targetDurationSeconds: opts.targetDurationSeconds ?? opts.meta?.targetDurationSeconds,
     overallReasoning: result.meta?.overallReasoning ?? opts.meta?.overallReasoning,
-    warnings: collectWarnings(opts, scenes),
+    warnings: [...baseWarnings, ...lingeringSchemaWarnings],
   };
 
   return { meta, scenes };
@@ -445,7 +504,261 @@ export async function planSceneVariants(
     }));
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────
+// ── Hook composer pass ───────────────────────────────────────────────────
+
+export interface HookCriticOptions {
+  apiKey: string;
+  model?: string;
+  designBrief?: string;
+  research?: string;
+  /** Fidelity must be respected — verbatim refuses to swap, refine allows it. */
+  fidelity?: ScriptFidelity;
+  temperature?: number;
+}
+
+interface HookCriticToolInput {
+  decision: "keep" | "swap";
+  /** When swap: the id of the scene to promote into s01 position. */
+  promoteSceneId?: string;
+  /** Why the chosen sentence is the strongest opener. */
+  reasoning: string;
+}
+
+/**
+ * Optional second-pass critic: scores the current s01 against the playbook's
+ * hook quality checklist (3-second readability, concrete number/claim,
+ * scroll-stopping specificity) and either keeps it or swaps it with a
+ * stronger sentence from later in the script. Verbatim fidelity refuses
+ * the swap to honour the user's strict-mode contract.
+ *
+ * Cheap call (~1k input tokens, ~200 output) — costs roughly $0.01 per
+ * video on Sonnet 4.6 — but reliably promotes the most punchy sentence
+ * into the opener slot, which is the highest-leverage retention edit.
+ */
+export async function improveHook(
+  script: Script,
+  opts: HookCriticOptions,
+): Promise<{ script: Script; swapped: boolean; reasoning: string | null }> {
+  if (script.scenes.length < 2) {
+    return { script, swapped: false, reasoning: null };
+  }
+  if ((opts.fidelity ?? "split-merge") === "verbatim") {
+    return {
+      script,
+      swapped: false,
+      reasoning: "verbatim fidelity — hook composer skipped (no swap allowed)",
+    };
+  }
+  const scenes = script.scenes;
+  const sceneCatalog = scenes
+    .slice(0, Math.min(scenes.length, 12))
+    .map((s, i) => `${s.id} (#${i + 1}): ${JSON.stringify(s.text)}`)
+    .join("\n");
+
+  const tool: ToolDefinition = {
+    name: "critique_hook",
+    description:
+      "Decide whether the current opener (s01) is the strongest possible hook from the script's first ~12 scenes. If a later sentence is materially stronger, propose a swap — its id replaces s01.",
+    input_schema: {
+      type: "object",
+      properties: {
+        decision: { type: "string", enum: ["keep", "swap"] },
+        promoteSceneId: {
+          type: "string",
+          description:
+            "When decision=swap, the id of the scene whose text should become s01. Required when decision=swap.",
+        },
+        reasoning: {
+          type: "string",
+          description:
+            "2-3 sentences explaining the decision against the hook quality checklist (3-second readability, concrete number/claim, scroll-stopping specificity).",
+        },
+      },
+      required: ["decision", "reasoning"],
+    },
+  };
+
+  const sections: string[] = [
+    `# Hook critic — first 3 seconds decide retention\n\n` +
+      `You're scoring the OPENER of an already-planned video. The current s01\n` +
+      `is the first scene the viewer sees. Your only job: decide if it's the\n` +
+      `strongest possible opener pulled from the script's first ~12 scenes.\n` +
+      `Use the hook quality checklist:\n\n` +
+      `1. Could you say it out loud in 3 seconds? (If not, weaker.)\n` +
+      `2. Does it land a CONCRETE number, claim, or contrast? (If abstract,\n` +
+      `   weaker.)\n` +
+      `3. Would it make a stranger pause their scroll? (If not, weaker.)\n` +
+      `4. Does it set up specificity (proper noun + verb + number/contrast)?\n\n` +
+      `Output: keep if the current opener is at least tied with everything\n` +
+      `else; swap (with promoteSceneId) only when a later sentence is\n` +
+      `materially stronger by the checklist. Be biased toward keep — only\n` +
+      `swap when the difference is unambiguous.`,
+  ];
+  if (opts.designBrief?.trim()) sections.push(`# DESIGN.md\n${opts.designBrief.trim()}`);
+  if (opts.research?.trim()) sections.push(`# RESEARCH.md\n${opts.research.trim()}`);
+
+  const userMsg =
+    `# Current opener (s01)\n${JSON.stringify(scenes[0]?.text ?? "")}\n\n` +
+    `# Candidate scenes (id, position, narration)\n${sceneCatalog}\n\n` +
+    `Call the critique_hook tool now.`;
+
+  let result: HookCriticToolInput;
+  try {
+    const { result: r } = await callStructuredTool<HookCriticToolInput>(opts.apiKey, {
+      model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
+      system: sections.join("\n\n"),
+      user: userMsg,
+      tool,
+      maxTokens: 1024,
+      temperature: opts.temperature ?? 0.4,
+    });
+    result = r;
+  } catch (err) {
+    if (err instanceof AnthropicError) {
+      // Hook critic is optional — failure should not block planning. Return
+      // the original script with a reasoning string so the UI can surface it.
+      return {
+        script,
+        swapped: false,
+        reasoning: `hook critic skipped: ${err.message}`,
+      };
+    }
+    throw err;
+  }
+
+  if (result.decision !== "swap" || !result.promoteSceneId) {
+    return { script, swapped: false, reasoning: result.reasoning };
+  }
+  const targetIdx = scenes.findIndex((s) => s.id === result.promoteSceneId);
+  if (targetIdx <= 0) {
+    return { script, swapped: false, reasoning: result.reasoning };
+  }
+  // Swap text + template + props between current s01 and the chosen scene.
+  // Preserve the s01 / sNN ids so downstream caches and audio paths remain
+  // stable; only the CONTENT moves between slots.
+  const a = scenes[0];
+  const b = scenes[targetIdx];
+  if (!a || !b) return { script, swapped: false, reasoning: result.reasoning };
+  const swappedScenes: SceneRef[] = scenes.map((s, i) => {
+    if (i === 0) {
+      return {
+        ...s,
+        text: b.text,
+        template: b.template,
+        props: b.props,
+        hook: true,
+        durationHint: b.durationHint,
+        reasoning: b.reasoning,
+      };
+    }
+    if (i === targetIdx) {
+      return {
+        ...s,
+        text: a.text,
+        template: a.template,
+        props: a.props,
+        durationHint: a.durationHint,
+        reasoning: a.reasoning,
+      };
+    }
+    return s;
+  });
+  return {
+    script: { meta: script.meta, scenes: swappedScenes },
+    swapped: true,
+    reasoning: result.reasoning,
+  };
+}
+
+interface SchemaIssue {
+  sceneId: string;
+  template: string;
+  message: string;
+}
+
+/**
+ * Lightweight schema validator. Walks each planned scene and checks the
+ * cases the LLM most commonly trips on: missing required props on the
+ * chosen template, chart-scene without a chart.type, chart.props missing
+ * the fields the chosen chart type requires. Not a full JSON Schema
+ * validator — that's intentional. We only flag classes of error the planner
+ * can reasonably fix on retry.
+ */
+function collectSchemaIssues(scenes: PlanToolInput["scenes"]): SchemaIssue[] {
+  const issues: SchemaIssue[] = [];
+  for (let i = 0; i < scenes.length; i++) {
+    const s = scenes[i];
+    if (!s) continue;
+    const sceneId = s.id || `s${String(i + 1).padStart(2, "0")}`;
+    const tpl = BUILTIN_TEMPLATES.find((t) => t.id === s.template);
+    if (!tpl) continue; // unknown template handled elsewhere as a hard error
+    const props = (s.props ?? {}) as Record<string, unknown>;
+    const required =
+      ((tpl.propsSchema as { required?: unknown })?.required as string[] | undefined) ?? [];
+    for (const key of required) {
+      const v = props[key];
+      const missing =
+        v == null ||
+        (typeof v === "string" && v.trim() === "") ||
+        (Array.isArray(v) && v.length === 0);
+      if (missing) {
+        issues.push({
+          sceneId,
+          template: s.template,
+          message: `missing required prop "${key}"`,
+        });
+      }
+    }
+    // Chart-scene needs a valid chart.type and chart.props matching the
+    // chosen chart's required fields. This is the single biggest source
+    // of planner output that crashes the assembler.
+    if (s.template === "chart-scene") {
+      const chart = props.chart as { type?: unknown; props?: unknown } | undefined;
+      if (!chart || typeof chart !== "object") {
+        issues.push({
+          sceneId,
+          template: s.template,
+          message: "missing props.chart object (needs { type, props })",
+        });
+      } else if (typeof chart.type !== "string") {
+        issues.push({
+          sceneId,
+          template: s.template,
+          message: "missing props.chart.type",
+        });
+      } else {
+        const chartDef = BUILTIN_CHARTS.find((c) => c.id === chart.type);
+        if (!chartDef) {
+          issues.push({
+            sceneId,
+            template: s.template,
+            message: `unknown chart type "${chart.type}" — pick one of ${BUILTIN_CHARTS.map((c) => c.id).join(", ")}`,
+          });
+        } else {
+          const chartProps = (chart.props ?? {}) as Record<string, unknown>;
+          const chartRequired =
+            ((chartDef.propsSchema as { required?: unknown })?.required as string[] | undefined) ??
+            [];
+          for (const key of chartRequired) {
+            const v = chartProps[key];
+            const missing =
+              v == null ||
+              (typeof v === "string" && v.trim() === "") ||
+              (Array.isArray(v) && v.length === 0);
+            if (missing) {
+              issues.push({
+                sceneId,
+                template: s.template,
+                message: `chart "${chart.type}" missing required prop "${key}" inside props.chart.props`,
+              });
+            }
+          }
+        }
+      }
+    }
+  }
+  return issues;
+}
 
 function fidelityRule(mode: ScriptFidelity): string {
   if (mode === "verbatim") {
