@@ -7,6 +7,40 @@ import { BUILTIN_CHARTS } from "./charts/index.js";
 import { ATMOSPHERE_IDS } from "./atmosphere/index.js";
 import { TRANSITION_IDS } from "./transitions/index.js";
 import type { Script, SceneRef, ScriptMeta, SceneTransition } from "./types.js";
+import type { CostEventSink } from "../telemetry/cost.js";
+
+function emitAnthropicCost(
+  sink: CostEventSink | undefined,
+  op: string,
+  model: string,
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  },
+  wallMs: number,
+  meta?: Record<string, unknown>,
+): void {
+  if (!sink) return;
+  sink(
+    op,
+    {
+      kind: "anthropic",
+      model,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      ...(usage.cache_read_input_tokens !== undefined
+        ? { cacheReadInputTokens: usage.cache_read_input_tokens }
+        : {}),
+      ...(usage.cache_creation_input_tokens !== undefined
+        ? { cacheCreationInputTokens: usage.cache_creation_input_tokens }
+        : {}),
+    },
+    wallMs,
+    meta,
+  );
+}
 
 /**
  * Wrap user-supplied content (DESIGN.md, DESIGN-ART.md, RESEARCH.md, theme
@@ -121,6 +155,13 @@ export interface PlanOptions {
    * templates show up in the catalog and pass validation alongside built-ins.
    */
   availableTemplates?: readonly Template[];
+  /**
+   * Optional sink for cost events. Each Anthropic call inside the planner
+   * (main plan call, retries, hook critic) reports its model usage and
+   * wall-clock duration through this callback so the studio's cost
+   * monitor can attribute spend to the project. No-op when omitted.
+   */
+  onCostEvent?: CostEventSink;
 }
 
 export type ScriptFidelity = "verbatim" | "split-merge" | "refine";
@@ -449,19 +490,27 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     text: fidelityRule(opts.fidelity ?? "split-merge"),
   });
 
+  const plannerModel = opts.model ?? DEFAULT_ANTHROPIC_MODEL;
   // First-pass call. If the planner emits scenes that fail schema checks,
   // we retry once with the validation errors injected into the USER
   // message (NOT the system) so the cached system prefix stays valid and
-  // the retry also hits cache.
+  // the retry also hits cache. Each attempt fires a cost event so retries
+  // are visible in `hyperframes costs`.
+  let plannerAttempt = 0;
   const callPlanner = async (userMsg: string): Promise<PlanToolInput> => {
+    const attempt = ++plannerAttempt;
+    const start = Date.now();
     try {
-      const { result: r } = await callStructuredTool<PlanToolInput>(opts.apiKey, {
-        model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
+      const { result: r, usage } = await callStructuredTool<PlanToolInput>(opts.apiKey, {
+        model: plannerModel,
         system,
         user: userMsg,
         tool,
         maxTokens: 8192,
         temperature: opts.temperature ?? 0.7,
+      });
+      emitAnthropicCost(opts.onCostEvent, "script.plan", plannerModel, usage, Date.now() - start, {
+        attempt,
       });
       return r;
     } catch (err) {
@@ -586,6 +635,8 @@ export interface VariantOptions {
   artDirection?: string;
   research?: string;
   temperature?: number;
+  /** Cost telemetry sink — see PlanOptions.onCostEvent. */
+  onCostEvent?: CostEventSink;
 }
 
 interface VariantToolInput {
@@ -705,16 +756,26 @@ export async function planSceneVariants(
     "for each so the user can pick visually.",
   ];
 
+  const variantModel = opts.model ?? DEFAULT_ANTHROPIC_MODEL;
   let result: VariantToolInput;
+  const variantStart = Date.now();
   try {
-    const { result: r } = await callStructuredTool<VariantToolInput>(opts.apiKey, {
-      model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
+    const { result: r, usage } = await callStructuredTool<VariantToolInput>(opts.apiKey, {
+      model: variantModel,
       system: sections.join("\n\n"),
       user: userMsg.join("\n"),
       tool,
       maxTokens: 4096,
       temperature: opts.temperature ?? 0.85,
     });
+    emitAnthropicCost(
+      opts.onCostEvent,
+      "script.variants",
+      variantModel,
+      usage,
+      Date.now() - variantStart,
+      { sceneId: scene.id, count },
+    );
     result = r;
   } catch (err) {
     if (err instanceof AnthropicError) {
@@ -753,6 +814,8 @@ export interface HookCriticOptions {
   /** Fidelity must be respected — verbatim refuses to swap, refine allows it. */
   fidelity?: ScriptFidelity;
   temperature?: number;
+  /** Cost telemetry sink — see PlanOptions.onCostEvent. */
+  onCostEvent?: CostEventSink;
 }
 
 interface HookCriticToolInput {
@@ -847,15 +910,25 @@ export async function improveHook(
     `Call the critique_hook tool now.`;
 
   let result: HookCriticToolInput;
+  const hookModel = opts.model ?? DEFAULT_ANTHROPIC_MODEL;
+  const hookStart = Date.now();
   try {
-    const { result: r } = await callStructuredTool<HookCriticToolInput>(opts.apiKey, {
-      model: opts.model ?? DEFAULT_ANTHROPIC_MODEL,
+    const { result: r, usage } = await callStructuredTool<HookCriticToolInput>(opts.apiKey, {
+      model: hookModel,
       system: sections.join("\n\n"),
       user: userMsg,
       tool,
       maxTokens: 1024,
       temperature: opts.temperature ?? 0.4,
     });
+    emitAnthropicCost(
+      opts.onCostEvent,
+      "script.improveHook",
+      hookModel,
+      usage,
+      Date.now() - hookStart,
+      { sceneCount: scenes.length },
+    );
     result = r;
   } catch (err) {
     if (err instanceof AnthropicError) {

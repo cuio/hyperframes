@@ -503,6 +503,7 @@ async function renderDocker(
   });
 
   printRenderComplete(outputPath, elapsed, options.quiet);
+  await logRenderCost(projectDir, outputPath, elapsed, options, undefined);
 }
 
 async function renderLocal(
@@ -547,6 +548,7 @@ async function renderLocal(
   const elapsed = Date.now() - startTime;
   trackRenderMetrics(job, elapsed, options, false);
   printRenderComplete(outputPath, elapsed, options.quiet);
+  await logRenderCost(projectDir, outputPath, elapsed, options, job);
 }
 
 function getMemorySnapshot() {
@@ -633,6 +635,58 @@ function trackRenderMetrics(
     extractCacheMisses: extract?.cacheMisses,
     ...getMemorySnapshot(),
   });
+}
+
+/**
+ * Append a render cost entry to <project>/.hyperframes/costs.jsonl. Cost is
+ * priced from the loaded rate table (defaults to $0.10/wall-clock minute).
+ * Frame count is reconstructed from the perfSummary when available; the
+ * Docker path doesn't surface it here so we log undefined and fall back to
+ * a duration × fps estimate.
+ */
+async function logRenderCost(
+  projectDir: string,
+  outputPath: string,
+  elapsedMs: number,
+  options: RenderOptions,
+  job: RenderJob | undefined,
+): Promise<void> {
+  try {
+    const { CostLogger } = await import("@hyperframes/core");
+    const logger = new CostLogger(projectDir);
+    let outputBytes = 0;
+    try {
+      outputBytes = statSync(outputPath).size;
+    } catch {
+      /* file may not exist on a partial render */
+    }
+    const compositionDurationSeconds = job?.perfSummary?.compositionDurationSeconds ?? 0;
+    const framesCaptured = compositionDurationSeconds
+      ? Math.round(compositionDurationSeconds * options.fps)
+      : 0;
+    await logger.log(
+      "render",
+      {
+        kind: "render",
+        durationSeconds: compositionDurationSeconds,
+        framesCaptured,
+        quality: options.quality,
+        fps: options.fps,
+        outputBytes,
+      },
+      elapsedMs,
+      {
+        format: options.format,
+        workers: options.workers,
+        gpu: options.gpu,
+        hdr: options.hdr,
+        outputPath,
+      },
+    );
+  } catch (err) {
+    // Cost logging must never block a render. Surface as a warning only.
+    console.warn("[costs] failed to log render cost:", err);
+  }
 }
 
 function printRenderComplete(outputPath: string, elapsedMs: number, quiet: boolean): void {

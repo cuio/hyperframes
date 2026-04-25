@@ -172,5 +172,23 @@ export function logFireAndForget(
   });
 }
 
+/**
+ * Callback shape that long-running functions (planScript, synthesizeScript,
+ * etc.) accept so they can report per-op cost without taking a hard
+ * dependency on the CostLogger class. Route handlers wire this to a
+ * CostLogger; tests can pass a spy.
+ */
+export type CostEventSink = (
+  op: string,
+  details: CostOp,
+  wallMs: number,
+  meta?: Record<string, unknown>,
+) => void;
+
+/** Build a sink that funnels into a CostLogger (fire-and-forget). */
+export function loggerSink(logger: CostLogger): CostEventSink {
+  return (op, details, wallMs, meta) => logFireAndForget(logger, op, details, wallMs, meta);
+}
+
 export { DEFAULT_RATES, loadRates, rateForModel };
 export type { CostRates };

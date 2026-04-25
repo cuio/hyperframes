@@ -26,6 +26,7 @@ import {
   type ScriptFidelity,
 } from "../../script/index.js";
 import { validateAgainstSchema } from "../../script/themes/validateProps.js";
+import { CostLogger, loggerSink } from "../../telemetry/cost.js";
 
 interface PlanBody {
   text?: string;
@@ -105,6 +106,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           atmospheres: t.preferences.atmospheres,
           transitions: t.preferences.transitions,
         }));
+      const costSink = loggerSink(new CostLogger(project.dir));
       let script = await planScript(text, {
         apiKey,
         model: body.model,
@@ -120,6 +122,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         themePreferences: activeTheme.preferences,
         availableThemes: otherThemes,
         availableTemplates,
+        onCostEvent: costSink,
       });
       // Second-pass hook critic. Defaults on; the user can set
       // improveHook: false to skip the extra LLM round-trip when iterating.
@@ -134,6 +137,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           designBrief,
           research,
           fidelity: body.fidelity,
+          onCostEvent: costSink,
         });
         script = result.script;
         hookSwapped = result.swapped;
@@ -385,6 +389,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     }
 
     try {
+      const variantSink = loggerSink(new CostLogger(project.dir));
       const variants = await planSceneVariants(
         scene,
         { meta: script.meta, allScenes: script.scenes },
@@ -392,6 +397,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           apiKey,
           model: body.model,
           count: body.count,
+          onCostEvent: variantSink,
           designBrief: loadDesignBrief(project.dir) ?? undefined,
           artDirection: loadDesignArt(project.dir) ?? undefined,
           research: loadResearch(project.dir) ?? undefined,
@@ -542,6 +548,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           designBrief: loadDesignBrief(project.dir) ?? undefined,
           artDirection: loadDesignArt(project.dir) ?? undefined,
           research: loadResearch(project.dir) ?? undefined,
+          onCostEvent: loggerSink(new CostLogger(project.dir)),
         });
         writeJson(join(project.dir, SCRIPT_FILE), script);
       } catch (err) {
@@ -575,12 +582,14 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     }
 
     try {
+      const generateSink = loggerSink(new CostLogger(project.dir));
       const planned = await synthesizeScript(script, {
         apiKey: elKey,
         projectDir: project.dir,
         modelId: body.modelId,
         probeDurationSeconds: adapter.probeAudioDurationSeconds,
         fallbackVoiceId: script.meta.voiceId,
+        onCostEvent: generateSink,
       });
       writeJson(join(project.dir, PLANNED_FILE), planned);
 

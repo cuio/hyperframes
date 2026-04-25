@@ -195,8 +195,9 @@ export {
   computeCost,
   timed,
   logFireAndForget,
+  loggerSink,
   DEFAULT_RATES,
   loadRates,
   rateForModel,
 } from "./telemetry/cost.js";
-export type { CostEntry, CostOp, CostRates } from "./telemetry/cost.js";
+export type { CostEntry, CostEventSink, CostOp, CostRates } from "./telemetry/cost.js";
