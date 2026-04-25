@@ -61,6 +61,10 @@ const GROUPS: Group[] = [
       ],
       ["tts", "Generate speech audio from text using a local AI model (Kokoro-82M)"],
       ["el-tts", "Generate speech audio with ElevenLabs (cloud, multi-voice)"],
+      [
+        "script",
+        "Turn a written script into a video: AI scene planner + ElevenLabs TTS + master HTML",
+      ],
     ],
   },
   {

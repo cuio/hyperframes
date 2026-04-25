@@ -1,0 +1,214 @@
+import type { Hono } from "hono";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { StudioApiAdapter } from "../types.js";
+import { isSafePath } from "../helpers/safePath.js";
+import { loadAnthropicKey } from "../../anthropic/index.js";
+import { loadElevenLabsKey, readDefaultVoiceId } from "../../elevenlabs/index.js";
+import {
+  planScript,
+  synthesizeScript,
+  assembleMaster,
+  loadDesignBrief,
+  resolveProjectTokens,
+  ScriptPlannerError,
+  type Script,
+} from "../../script/index.js";
+
+interface PlanBody {
+  text?: string;
+  model?: string;
+  targetDurationSeconds?: number;
+  maxSceneDuration?: number;
+  meta?: { title?: string; audience?: string; tone?: string; voiceId?: string };
+}
+
+interface GenerateBody {
+  /** Provide either rawText (re-plan first) or script (use as-is). */
+  rawText?: string;
+  script?: Script;
+  /** Override the script's voiceId for synthesis. */
+  voiceId?: string;
+  modelId?: string;
+  outFile?: string;
+  /** Same options as PlanBody if rawText is given. */
+  planOptions?: Omit<PlanBody, "text">;
+}
+
+const SCRIPT_FILE = "script.json";
+const PLANNED_FILE = "script.generated.json";
+
+export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void {
+  // Run the AI planner against raw text. Returns a Script DSL and writes it
+  // to <project>/script.json so the user can iterate from the file.
+  api.post("/projects/:id/script/plan", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) {
+      return c.json(
+        {
+          error:
+            "ANTHROPIC_API_KEY not set. Add it to <project>/.env, ~/.hyperframes/.env, or the process env.",
+        },
+        401,
+      );
+    }
+
+    let body: PlanBody;
+    try {
+      body = (await c.req.json()) as PlanBody;
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const text = body.text?.trim();
+    if (!text) return c.json({ error: "text is required" }, 400);
+
+    try {
+      const script = await planScript(text, {
+        apiKey,
+        model: body.model,
+        targetDurationSeconds: body.targetDurationSeconds,
+        maxSceneDuration: body.maxSceneDuration,
+        meta: body.meta,
+        designBrief: loadDesignBrief(project.dir) ?? undefined,
+      });
+      writeJson(join(project.dir, SCRIPT_FILE), script);
+      return c.json({ ok: true, script });
+    } catch (err) {
+      if (err instanceof ScriptPlannerError) {
+        return c.json({ error: err.message }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // Read the saved script.json (if any).
+  api.get("/projects/:id/script", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const path = join(project.dir, SCRIPT_FILE);
+    if (!existsSync(path)) return c.json({ script: null });
+    try {
+      const script = JSON.parse(readFileSync(path, "utf-8")) as Script;
+      return c.json({ script });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // Manually update script.json (after user edits the plan in UI).
+  api.put("/projects/:id/script", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: { script?: Script };
+    try {
+      body = (await c.req.json()) as { script?: Script };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body.script || !Array.isArray(body.script.scenes)) {
+      return c.json({ error: "script.scenes is required" }, 400);
+    }
+    writeJson(join(project.dir, SCRIPT_FILE), body.script);
+    return c.json({ ok: true });
+  });
+
+  // End-to-end: synthesize audio + assemble master index.html.
+  api.post("/projects/:id/script/generate", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    if (!adapter.probeAudioDurationSeconds) {
+      return c.json({ error: "ffprobe is not available in this server" }, 503);
+    }
+    const elKey = loadElevenLabsKey(project.dir);
+    if (!elKey) {
+      return c.json({ error: "ELEVENLABS_API_KEY not set. Set it before generating audio." }, 401);
+    }
+
+    let body: GenerateBody;
+    try {
+      body = (await c.req.json()) as GenerateBody;
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    let script: Script | null = body.script ?? null;
+    if (!script && body.rawText) {
+      const anthropicKey = loadAnthropicKey(project.dir);
+      if (!anthropicKey) {
+        return c.json(
+          { error: "ANTHROPIC_API_KEY not set. Required when planning from rawText." },
+          401,
+        );
+      }
+      try {
+        script = await planScript(body.rawText, {
+          apiKey: anthropicKey,
+          model: body.planOptions?.model,
+          targetDurationSeconds: body.planOptions?.targetDurationSeconds,
+          maxSceneDuration: body.planOptions?.maxSceneDuration,
+          meta: body.planOptions?.meta,
+          designBrief: loadDesignBrief(project.dir) ?? undefined,
+        });
+        writeJson(join(project.dir, SCRIPT_FILE), script);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 502);
+      }
+    }
+    if (!script) {
+      // Fall back to disk if neither was passed.
+      const path = join(project.dir, SCRIPT_FILE);
+      if (!existsSync(path)) {
+        return c.json({ error: "no script provided and no script.json on disk" }, 400);
+      }
+      script = JSON.parse(readFileSync(path, "utf-8")) as Script;
+    }
+
+    // Resolve effective voice: explicit override > script.meta > project default.
+    const projectDefaultVoice = readDefaultVoiceId(project.dir);
+    if (body.voiceId) {
+      script.meta = { ...script.meta, voiceId: body.voiceId };
+    } else if (!script.meta.voiceId && projectDefaultVoice) {
+      script.meta = { ...script.meta, voiceId: projectDefaultVoice };
+    }
+    if (!script.meta.voiceId) {
+      return c.json(
+        {
+          error:
+            "No voice selected. Pick a default voice in the Voices tab, or pass voiceId in the request.",
+        },
+        400,
+      );
+    }
+
+    try {
+      const planned = await synthesizeScript(script, {
+        apiKey: elKey,
+        projectDir: project.dir,
+        modelId: body.modelId,
+        probeDurationSeconds: adapter.probeAudioDurationSeconds,
+        fallbackVoiceId: script.meta.voiceId,
+      });
+      writeJson(join(project.dir, PLANNED_FILE), planned);
+
+      const outFile = body.outFile ?? "index.html";
+      const absOut = join(project.dir, outFile);
+      if (!isSafePath(project.dir, absOut)) {
+        return c.json({ error: "forbidden outFile path" }, 403);
+      }
+
+      const tokens = resolveProjectTokens(project.dir, loadDesignBrief(project.dir));
+      const result = assembleMaster(planned, { projectDir: project.dir, outFile, tokens });
+      return c.json({ ok: true, planned, result });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+}
+
+function writeJson(path: string, data: unknown): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
+}

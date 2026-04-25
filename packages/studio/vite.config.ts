@@ -321,6 +321,74 @@ function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAda
       return bufferPromise;
     },
 
+    async probeAudioDurationSeconds(filePath: string) {
+      // Inline ffprobe call — avoids importing @hyperframes/engine from the
+      // vite config (which can fail under .vite-temp ESM resolution).
+      const { spawn } = await import("node:child_process");
+      const stdout = await new Promise<string>((resolveOut, rejectOut) => {
+        const child = spawn(
+          "ffprobe",
+          ["-v", "quiet", "-print_format", "json", "-show_format", filePath],
+          { stdio: ["ignore", "pipe", "pipe"] },
+        );
+        let out = "";
+        let err = "";
+        child.stdout?.on("data", (b) => (out += b.toString()));
+        child.stderr?.on("data", (b) => (err += b.toString()));
+        child.on("close", (code) => {
+          if (code === 0) resolveOut(out);
+          else rejectOut(new Error(`ffprobe exited ${code}: ${err.trim()}`));
+        });
+        child.on("error", (e) => rejectOut(e));
+      });
+      const data = JSON.parse(stdout) as { format?: { duration?: string } };
+      const dur = data.format?.duration ? parseFloat(data.format.duration) : 0;
+      return Number.isFinite(dur) ? dur : 0;
+    },
+
+    async createProject({ id, title }: { id: string; title?: string }) {
+      const { mkdirSync, writeFileSync, existsSync: exists } = await import("node:fs");
+      const projectDir = resolve(dataDir, id);
+      if (exists(projectDir)) {
+        throw new Error(`Project "${id}" already exists`);
+      }
+      mkdirSync(projectDir, { recursive: true });
+      mkdirSync(resolve(projectDir, "assets/voice"), { recursive: true });
+      mkdirSync(resolve(projectDir, "compositions"), { recursive: true });
+      writeFileSync(
+        resolve(projectDir, "hyperframes.json"),
+        JSON.stringify(
+          {
+            $schema: "https://hyperframes.heygen.com/schema/hyperframes.json",
+            registry: "https://raw.githubusercontent.com/heygen-com/hyperframes/main/registry",
+            paths: {
+              blocks: "compositions",
+              components: "compositions/components",
+              assets: "assets",
+            },
+            ...(title ? { title } : {}),
+          },
+          null,
+          2,
+        ) + "\n",
+      );
+      writeFileSync(
+        resolve(projectDir, "index.html"),
+        `<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8" /><title>${title ?? id}</title></head>
+  <body style="margin:0;background:#0a0a0a;color:#f0f0f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;">
+    <div style="text-align:center;">
+      <div style="font-size:24px;font-weight:600;">${title ?? id}</div>
+      <div style="font-size:12px;color:#666;margin-top:8px;">Empty project — use the Script tab to generate.</div>
+    </div>
+  </body>
+</html>
+`,
+      );
+      return { id, dir: projectDir, title } satisfies ResolvedProject;
+    },
+
     async resolveSession(sessionId: string) {
       const sessionsDir = resolve(dataDir, "../sessions");
       const sessionFile = join(sessionsDir, `${sessionId}.json`);

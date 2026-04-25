@@ -3,9 +3,10 @@ import { useMountEffect } from "../../hooks/useMountEffect";
 import { CompositionsTab } from "./CompositionsTab";
 import { AssetsTab } from "./AssetsTab";
 import { VoicesTab } from "./VoicesTab";
+import { ScriptTab } from "./ScriptTab";
 import { FileTree } from "../editor/FileTree";
 
-type SidebarTab = "compositions" | "assets" | "code" | "voices";
+type SidebarTab = "compositions" | "assets" | "code" | "voices" | "script";
 
 const STORAGE_KEY = "hf-studio-sidebar-tab";
 
@@ -14,6 +15,7 @@ function getPersistedTab(): SidebarTab {
   if (stored === "assets") return "assets";
   if (stored === "code") return "code";
   if (stored === "voices") return "voices";
+  if (stored === "script") return "script";
   return "compositions";
 }
 
@@ -83,6 +85,10 @@ export const LeftSidebar = memo(function LeftSidebar({
         e.preventDefault();
         selectTab("voices");
       }
+      if (e.key === "4") {
+        e.preventDefault();
+        selectTab("script");
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -139,6 +145,17 @@ export const LeftSidebar = memo(function LeftSidebar({
         >
           Voices
         </button>
+        <button
+          type="button"
+          onClick={() => selectTab("script")}
+          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
+            tab === "script"
+              ? "text-neutral-200 border-b-2 border-studio-accent"
+              : "text-neutral-500 hover:text-neutral-400"
+          }`}
+        >
+          Script
+        </button>
       </div>
 
       {/* Tab content */}
@@ -160,6 +177,7 @@ export const LeftSidebar = memo(function LeftSidebar({
         />
       )}
       {tab === "voices" && <VoicesTab projectId={projectId} />}
+      {tab === "script" && <ScriptTab projectId={projectId} />}
       {tab === "code" && (
         <div className="flex flex-1 min-h-0">
           {(fileProp?.length ?? 0) > 0 && (
