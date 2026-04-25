@@ -15,7 +15,10 @@ import {
   loadResearch,
   resolveProjectTokens,
   ScriptPlannerError,
+  DESIGN_ART_TEMPLATE,
+  RESEARCH_TEMPLATE,
   type Script,
+  type ScriptFidelity,
 } from "../../script/index.js";
 
 interface PlanBody {
@@ -23,6 +26,7 @@ interface PlanBody {
   model?: string;
   targetDurationSeconds?: number;
   maxSceneDuration?: number;
+  fidelity?: ScriptFidelity;
   meta?: { title?: string; audience?: string; tone?: string; voiceId?: string };
 }
 
@@ -74,6 +78,7 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         model: body.model,
         targetDurationSeconds: body.targetDurationSeconds,
         maxSceneDuration: body.maxSceneDuration,
+        fidelity: body.fidelity,
         meta: body.meta,
         designBrief: loadDesignBrief(project.dir) ?? undefined,
         artDirection: loadDesignArt(project.dir) ?? undefined,
@@ -87,6 +92,88 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
+  });
+
+  // Scaffold templates: create RESEARCH.md / DESIGN-ART.md if missing.
+  api.post("/projects/:id/script/scaffold", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+
+    let body: { research?: boolean; designArt?: boolean };
+    try {
+      body = (await c.req.json()) as { research?: boolean; designArt?: boolean };
+    } catch {
+      body = {};
+    }
+
+    const created: string[] = [];
+    const skipped: string[] = [];
+
+    if (body.research !== false) {
+      const path = join(project.dir, "RESEARCH.md");
+      if (existsSync(path)) skipped.push("RESEARCH.md");
+      else {
+        writeFileSync(path, RESEARCH_TEMPLATE);
+        created.push("RESEARCH.md");
+      }
+    }
+    if (body.designArt !== false) {
+      const path = join(project.dir, "DESIGN-ART.md");
+      if (existsSync(path)) skipped.push("DESIGN-ART.md");
+      else {
+        writeFileSync(path, DESIGN_ART_TEMPLATE);
+        created.push("DESIGN-ART.md");
+      }
+    }
+    return c.json({ ok: true, created, skipped });
+  });
+
+  // Report which optional planner files exist.
+  api.get("/projects/:id/script/files-status", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    return c.json({
+      hasDesign: existsSync(join(project.dir, "DESIGN.md")),
+      hasDesignArt:
+        existsSync(join(project.dir, "DESIGN-ART.md")) ||
+        existsSync(join(project.dir, "design-art.md")),
+      hasResearch:
+        existsSync(join(project.dir, "RESEARCH.md")) ||
+        existsSync(join(project.dir, "research.md")),
+    });
+  });
+
+  // Caption export: SRT + VTT generated from the planned timing.
+  api.get("/projects/:id/script/captions.:format{srt|vtt}", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const format = c.req.param("format") as "srt" | "vtt";
+    const plannedPath = join(project.dir, PLANNED_FILE);
+    if (!existsSync(plannedPath)) {
+      return c.json({ error: "no script.generated.json — run generate first" }, 400);
+    }
+    let planned: {
+      scenes: Array<{
+        id: string;
+        text: string;
+        audio?: { durationSeconds: number; leadInSeconds?: number; tailPadSeconds?: number };
+        totalDurationSeconds?: number;
+        durationHint?: number;
+      }>;
+    };
+    try {
+      planned = JSON.parse(readFileSync(plannedPath, "utf-8"));
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+    const captions = format === "vtt" ? toVtt(planned.scenes) : toSrt(planned.scenes);
+    return new Response(captions, {
+      status: 200,
+      headers: {
+        "Content-Type": format === "vtt" ? "text/vtt" : "application/x-subrip",
+        "Content-Disposition": `attachment; filename="captions.${format}"`,
+      },
+    });
   });
 
   // Read the saved script.json (if any).
@@ -313,4 +400,64 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
 function writeJson(path: string, data: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(data, null, 2) + "\n");
+}
+
+interface CaptionSceneShape {
+  id: string;
+  text: string;
+  audio?: { durationSeconds: number; leadInSeconds?: number; tailPadSeconds?: number };
+  totalDurationSeconds?: number;
+  durationHint?: number;
+}
+
+function captionWindows(
+  scenes: CaptionSceneShape[],
+): Array<{ start: number; end: number; text: string }> {
+  let cursor = 0;
+  const out: Array<{ start: number; end: number; text: string }> = [];
+  for (const scene of scenes) {
+    const total =
+      scene.totalDurationSeconds ??
+      (scene.audio
+        ? (scene.audio.leadInSeconds ?? 0) +
+          scene.audio.durationSeconds +
+          (scene.audio.tailPadSeconds ?? 0)
+        : (scene.durationHint ?? 3));
+    const audioStart = cursor + (scene.audio?.leadInSeconds ?? 0);
+    const audioEnd = audioStart + (scene.audio?.durationSeconds ?? total);
+    if (scene.text?.trim()) {
+      out.push({ start: audioStart, end: audioEnd, text: scene.text.trim() });
+    }
+    cursor += total;
+  }
+  return out;
+}
+
+function formatSrtTime(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds - Math.floor(seconds)) * 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+function formatVttTime(seconds: number): string {
+  return formatSrtTime(seconds).replace(",", ".");
+}
+
+function toSrt(scenes: CaptionSceneShape[]): string {
+  const windows = captionWindows(scenes);
+  return windows
+    .map((w, i) => `${i + 1}\n${formatSrtTime(w.start)} --> ${formatSrtTime(w.end)}\n${w.text}\n`)
+    .join("\n");
+}
+
+function toVtt(scenes: CaptionSceneShape[]): string {
+  const windows = captionWindows(scenes);
+  return (
+    "WEBVTT\n\n" +
+    windows
+      .map((w) => `${formatVttTime(w.start)} --> ${formatVttTime(w.end)}\n${w.text}\n`)
+      .join("\n")
+  );
 }

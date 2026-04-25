@@ -54,6 +54,14 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   const [defaultVoiceId, setDefaultVoiceId] = useState<string | null>(null);
   const [expandedScene, setExpandedScene] = useState<string | null>(null);
   const [variantSceneId, setVariantSceneId] = useState<string | null>(null);
+  const [fidelity, setFidelity] = useState<"verbatim" | "split-merge" | "refine">("split-merge");
+  const [filesStatus, setFilesStatus] = useState<{
+    hasDesign: boolean;
+    hasDesignArt: boolean;
+    hasResearch: boolean;
+  } | null>(null);
+  const [scaffolding, setScaffolding] = useState(false);
+  const [captionsVisible, setCaptionsVisible] = useState(true);
 
   const loadAnthropicKeyStatus = useCallback(async () => {
     try {
@@ -75,6 +83,65 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     }
   }, [projectId]);
 
+  const loadFilesStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script/files-status`);
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        hasDesign: boolean;
+        hasDesignArt: boolean;
+        hasResearch: boolean;
+      };
+      setFilesStatus(data);
+    } catch {
+      /* ignore */
+    }
+  }, [projectId]);
+
+  const scaffoldFiles = useCallback(
+    async (which: { research?: boolean; designArt?: boolean }) => {
+      setScaffolding(true);
+      try {
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/script/scaffold`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(which),
+        });
+        if (res.ok) await loadFilesStatus();
+      } finally {
+        setScaffolding(false);
+      }
+    },
+    [projectId, loadFilesStatus],
+  );
+
+  const downloadCaptions = useCallback(
+    (format: "srt" | "vtt") => {
+      const url = `/api/projects/${encodeURIComponent(projectId)}/script/captions.${format}`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `captions.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    },
+    [projectId],
+  );
+
+  const toggleCaptions = useCallback(() => {
+    const next = !captionsVisible;
+    setCaptionsVisible(next);
+    // Find every preview iframe and postMessage the toggle into it.
+    const iframes = document.querySelectorAll("iframe");
+    for (const f of iframes) {
+      try {
+        f.contentWindow?.postMessage({ source: "hf-host", type: "captions", visible: next }, "*");
+      } catch {
+        /* ignore cross-origin */
+      }
+    }
+  }, [captionsVisible]);
+
   const loadDefaultVoice = useCallback(async () => {
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/elevenlabs/settings`);
@@ -91,7 +158,8 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     void loadAnthropicKeyStatus();
     void loadExistingScript();
     void loadDefaultVoice();
-  }, [loadAnthropicKeyStatus, loadExistingScript, loadDefaultVoice]);
+    void loadFilesStatus();
+  }, [loadAnthropicKeyStatus, loadExistingScript, loadDefaultVoice, loadFilesStatus]);
 
   const saveAnthropicKey = useCallback(async () => {
     const value = keyDraft.trim();
@@ -129,6 +197,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
         body: JSON.stringify({
           text,
           targetDurationSeconds: target ? parseFloat(target) : undefined,
+          fidelity,
           meta: {
             audience: audience.trim() || undefined,
             tone: tone.trim() || undefined,
@@ -147,7 +216,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     } finally {
       setBusy({ kind: "idle" });
     }
-  }, [projectId, text, target, audience, tone]);
+  }, [projectId, text, target, audience, tone, fidelity]);
 
   const handleGenerate = useCallback(async () => {
     if (!script) return;
@@ -237,7 +306,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
             className="h-7 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 placeholder-neutral-600 focus:outline-none focus:border-neutral-700"
           />
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           <label className="text-[10px] text-neutral-500">Target (s)</label>
           <input
             type="number"
@@ -247,6 +316,23 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
             max={600}
             className="h-7 w-20 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 focus:outline-none focus:border-neutral-700"
           />
+          <label className="text-[10px] text-neutral-500 ml-1">Fidelity</label>
+          <select
+            value={fidelity}
+            onChange={(e) => setFidelity(e.target.value as "verbatim" | "split-merge" | "refine")}
+            className="h-7 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 focus:outline-none focus:border-neutral-700 cursor-pointer"
+            title={
+              fidelity === "verbatim"
+                ? "AI uses your script word-for-word, no edits, only segments it"
+                : fidelity === "refine"
+                  ? "AI may remove filler and tighten phrasing — numbers/claims preserved"
+                  : "AI may split or merge sentences — words and order preserved (default)"
+            }
+          >
+            <option value="verbatim">verbatim</option>
+            <option value="split-merge">split-merge</option>
+            <option value="refine">refine</option>
+          </select>
           <button
             type="button"
             onClick={() => void handlePlan()}
@@ -255,6 +341,25 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
           >
             {planning ? "Planning…" : script ? "Re-plan with AI" : "Plan with AI"}
           </button>
+        </div>
+        <div className="text-[10px] text-neutral-600 leading-relaxed">
+          {fidelity === "verbatim" && (
+            <>
+              <span className="text-studio-accent">verbatim</span> — exact words, no edits, no swaps
+            </>
+          )}
+          {fidelity === "split-merge" && (
+            <>
+              <span className="text-studio-accent">split-merge</span> — sentences may be split or
+              merged, words preserved
+            </>
+          )}
+          {fidelity === "refine" && (
+            <>
+              <span className="text-studio-accent">refine</span> — light editorial (filler removal,
+              tighter phrasing) — numbers preserved
+            </>
+          )}
         </div>
         {error && <div className="text-[10px] text-red-400">{error}</div>}
       </div>
@@ -307,8 +412,64 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
                   <li key={i}>· {w}</li>
                 ))}
               </ul>
+              {filesStatus && (!filesStatus.hasResearch || !filesStatus.hasDesignArt) && (
+                <div className="mt-2 pt-2 border-t border-amber-900/40 flex flex-wrap gap-1.5">
+                  {!filesStatus.hasResearch && (
+                    <button
+                      type="button"
+                      onClick={() => void scaffoldFiles({ research: true })}
+                      disabled={scaffolding}
+                      className="h-6 px-2 rounded-md text-[10px] font-medium border border-amber-700/40 bg-amber-900/20 text-amber-200 hover:bg-amber-900/30 disabled:opacity-40"
+                      title="Create RESEARCH.md from a starter template"
+                    >
+                      + Create RESEARCH.md
+                    </button>
+                  )}
+                  {!filesStatus.hasDesignArt && (
+                    <button
+                      type="button"
+                      onClick={() => void scaffoldFiles({ designArt: true })}
+                      disabled={scaffolding}
+                      className="h-6 px-2 rounded-md text-[10px] font-medium border border-amber-700/40 bg-amber-900/20 text-amber-200 hover:bg-amber-900/30 disabled:opacity-40"
+                      title="Create DESIGN-ART.md from a starter template"
+                    >
+                      + Create DESIGN-ART.md
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           )}
+          <div className="mb-2 flex items-center gap-1.5 flex-wrap">
+            <button
+              type="button"
+              onClick={toggleCaptions}
+              className={`h-6 px-2 rounded-md text-[10px] font-medium border transition-colors ${
+                captionsVisible
+                  ? "border-studio-accent/40 bg-studio-accent/10 text-studio-accent"
+                  : "border-neutral-800 text-neutral-500 hover:text-neutral-300 hover:border-neutral-700"
+              }`}
+              title={captionsVisible ? "Hide captions in preview" : "Show captions in preview"}
+            >
+              CC {captionsVisible ? "on" : "off"}
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadCaptions("srt")}
+              className="h-6 px-2 rounded-md text-[10px] font-medium border border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:border-neutral-700"
+              title="Download SubRip captions"
+            >
+              ↓ .srt
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadCaptions("vtt")}
+              className="h-6 px-2 rounded-md text-[10px] font-medium border border-neutral-800 text-neutral-400 hover:text-neutral-200 hover:border-neutral-700"
+              title="Download WebVTT captions"
+            >
+              ↓ .vtt
+            </button>
+          </div>
           <div className="flex flex-col gap-1.5">
             {script.scenes.map((scene) => (
               <SceneCard

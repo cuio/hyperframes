@@ -261,6 +261,7 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
         overflow: hidden;
       }
       .hf-captions.visible .hf-cap-bubble { opacity: 1; }
+      .hf-captions.hidden { display: none !important; }
       .hf-captions .hf-cap-text { display: block; }
     </style>
   </head>
@@ -326,6 +327,27 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
         window.gsap.to('#hf-rail-top', { width: '100%', duration: 1.2, ease: 'expo.out', delay: 0.2 });
         window.gsap.to('#hf-rail-left', { height: '100%', duration: 1.4, ease: 'expo.out', delay: 0.35 });
         window.gsap.to('.hf-corner', { opacity: 0.9, duration: 0.5, ease: 'power3.out', stagger: 0.08, delay: 0.6 });
+
+        // Cross-frame caption visibility toggle. Studio (or any embedder) can
+        // postMessage({ source: 'hf-host', type: 'captions', visible: false })
+        // to hide the caption bubble. URL hash captions=off also disables.
+        function applyCaptionVisibility(visible) {
+          var cap = document.getElementById('hf-captions');
+          if (!cap) return;
+          if (visible) cap.classList.remove('hidden');
+          else cap.classList.add('hidden');
+        }
+        if (window.location.hash.indexOf('captions=off') !== -1) applyCaptionVisibility(false);
+        try {
+          var stored = localStorage.getItem('hf-captions-visible');
+          if (stored === '0') applyCaptionVisibility(false);
+        } catch (e) {}
+        window.addEventListener('message', function(ev) {
+          var d = ev.data;
+          if (!d || d.source !== 'hf-host' || d.type !== 'captions') return;
+          applyCaptionVisibility(d.visible !== false);
+          try { localStorage.setItem('hf-captions-visible', d.visible === false ? '0' : '1'); } catch (e) {}
+        });
 
         // Imperative visibility, polled on every frame via gsap.ticker.
         // We avoid the timeline's onUpdate because the studio runtime can

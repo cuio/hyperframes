@@ -7,7 +7,7 @@ export type {
   PlannedScript,
 } from "./types.js";
 export { planScript, planSceneVariants, ScriptPlannerError } from "./planner.js";
-export type { PlanOptions, VariantOptions } from "./planner.js";
+export type { PlanOptions, VariantOptions, ScriptFidelity } from "./planner.js";
 export {
   loadDesignArt,
   loadResearch,
