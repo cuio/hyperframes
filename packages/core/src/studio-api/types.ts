@@ -76,4 +76,17 @@ export interface StudioApiAdapter {
 
   /** Optional: resolve session ID to project (multi-project mode). */
   resolveSession?: (sessionId: string) => Promise<{ projectId: string; title: string } | null>;
+
+  /**
+   * Optional: probe an audio file and return its duration in seconds. Used by
+   * the script generator to size scenes from real audio. If absent, /api/script
+   * routes will return 503.
+   */
+  probeAudioDurationSeconds?: (filePath: string) => Promise<number>;
+
+  /**
+   * Optional: create a new project on disk with a unique id. Returns the
+   * resolved project. If absent, POST /projects returns 501.
+   */
+  createProject?: (opts: { id: string; title?: string }) => Promise<ResolvedProject>;
 }

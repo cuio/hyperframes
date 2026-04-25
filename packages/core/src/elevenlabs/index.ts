@@ -4,6 +4,8 @@ export {
   writeElevenLabsKeyToEnvFile,
   ELEVENLABS_KEY_NAME,
 } from "./env.js";
+export { readTtsSettings, readDefaultVoiceId, writeTtsSettings } from "./projectSettings.js";
+export type { TtsProjectSettings } from "./projectSettings.js";
 export type { ElevenLabsKeySource, ElevenLabsKeyStatus } from "./env.js";
 export {
   listVoices,
