@@ -2,9 +2,10 @@ import { memo, useState, useCallback, type ReactNode } from "react";
 import { useMountEffect } from "../../hooks/useMountEffect";
 import { CompositionsTab } from "./CompositionsTab";
 import { AssetsTab } from "./AssetsTab";
+import { VoicesTab } from "./VoicesTab";
 import { FileTree } from "../editor/FileTree";
 
-type SidebarTab = "compositions" | "assets" | "code";
+type SidebarTab = "compositions" | "assets" | "code" | "voices";
 
 const STORAGE_KEY = "hf-studio-sidebar-tab";
 
@@ -12,6 +13,7 @@ function getPersistedTab(): SidebarTab {
   const stored = localStorage.getItem(STORAGE_KEY);
   if (stored === "assets") return "assets";
   if (stored === "code") return "code";
+  if (stored === "voices") return "voices";
   return "compositions";
 }
 
@@ -77,6 +79,10 @@ export const LeftSidebar = memo(function LeftSidebar({
         e.preventDefault();
         selectTab("assets");
       }
+      if (e.key === "3") {
+        e.preventDefault();
+        selectTab("voices");
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -122,6 +128,17 @@ export const LeftSidebar = memo(function LeftSidebar({
         >
           Assets
         </button>
+        <button
+          type="button"
+          onClick={() => selectTab("voices")}
+          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
+            tab === "voices"
+              ? "text-neutral-200 border-b-2 border-studio-accent"
+              : "text-neutral-500 hover:text-neutral-400"
+          }`}
+        >
+          Voices
+        </button>
       </div>
 
       {/* Tab content */}
@@ -142,6 +159,7 @@ export const LeftSidebar = memo(function LeftSidebar({
           onRename={onRenameFile}
         />
       )}
+      {tab === "voices" && <VoicesTab projectId={projectId} />}
       {tab === "code" && (
         <div className="flex flex-1 min-h-0">
           {(fileProp?.length ?? 0) > 0 && (

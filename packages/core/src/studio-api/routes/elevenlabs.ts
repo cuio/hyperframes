@@ -1,10 +1,12 @@
 import type { Hono } from "hono";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
 import { isSafePath } from "../helpers/safePath.js";
 import {
   loadElevenLabsKey,
+  getElevenLabsKeyStatus,
+  writeElevenLabsKeyToEnvFile,
   listVoices,
   fetchVoicePreview,
   synthesize,
@@ -170,6 +172,137 @@ export function registerElevenLabsRoutes(api: Hono, adapter: StudioApiAdapter): 
       return elevenLabsError(err);
     }
   });
+
+  // Report whether a key is set, and which layer it came from. Never returns the value.
+  api.get("/projects/:id/elevenlabs/key", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    return c.json(getElevenLabsKeyStatus(project.dir));
+  });
+
+  // Persist a key into <project>/.env. Use null/empty to remove it.
+  api.put("/projects/:id/elevenlabs/key", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+
+    let body: { value?: string | null };
+    try {
+      body = (await c.req.json()) as { value?: string | null };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const raw = typeof body.value === "string" ? body.value.trim() : null;
+    const value = raw && raw.length > 0 ? raw : null;
+    try {
+      writeElevenLabsKeyToEnvFile(join(project.dir, ".env"), value);
+      ensureGitignoreCovers(project.dir, ".env");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, 500);
+    }
+    return c.json(getElevenLabsKeyStatus(project.dir));
+  });
+
+  // Read project's TTS settings (default voice id, etc.) from hyperframes.json.
+  api.get("/projects/:id/elevenlabs/settings", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    return c.json(readTtsSettings(project.dir));
+  });
+
+  // Persist a partial TTS settings update into hyperframes.json.
+  api.patch("/projects/:id/elevenlabs/settings", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+
+    let body: { defaultVoiceId?: string | null };
+    try {
+      body = (await c.req.json()) as { defaultVoiceId?: string | null };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+
+    const next = writeTtsSettings(project.dir, body);
+    return c.json(next);
+  });
+}
+
+interface TtsSettings {
+  defaultVoiceId: string | null;
+}
+
+function readTtsSettings(projectDir: string): TtsSettings {
+  const path = join(projectDir, "hyperframes.json");
+  if (!existsSync(path)) return { defaultVoiceId: null };
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as {
+      tts?: { defaultVoiceId?: unknown };
+    };
+    const id = raw.tts?.defaultVoiceId;
+    return { defaultVoiceId: typeof id === "string" && id.length > 0 ? id : null };
+  } catch {
+    return { defaultVoiceId: null };
+  }
+}
+
+function writeTtsSettings(
+  projectDir: string,
+  patch: { defaultVoiceId?: string | null },
+): TtsSettings {
+  const path = join(projectDir, "hyperframes.json");
+  let json: Record<string, unknown> = {};
+  if (existsSync(path)) {
+    try {
+      json = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    } catch {
+      json = {};
+    }
+  }
+  const tts =
+    typeof json.tts === "object" && json.tts !== null
+      ? ({ ...(json.tts as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+
+  if (Object.prototype.hasOwnProperty.call(patch, "defaultVoiceId")) {
+    if (patch.defaultVoiceId == null || patch.defaultVoiceId === "") {
+      delete tts.defaultVoiceId;
+    } else {
+      tts.defaultVoiceId = patch.defaultVoiceId;
+    }
+  }
+
+  json.tts = tts;
+  writeFileSync(path, JSON.stringify(json, null, 2) + "\n");
+  return readTtsSettings(projectDir);
+}
+
+/**
+ * Make sure .env is excluded by the project's .gitignore — otherwise a
+ * convenience UI could lead someone to commit a key. Idempotent; touches
+ * .gitignore only when missing the entry. Best-effort: we do nothing if
+ * the project isn't a git repo or the file isn't writable.
+ */
+function ensureGitignoreCovers(projectDir: string, entry: string): void {
+  const gitignorePath = join(projectDir, ".gitignore");
+  let content = "";
+  try {
+    if (existsSync(gitignorePath)) {
+      content = readFileSync(gitignorePath, "utf-8");
+    }
+  } catch {
+    return;
+  }
+  const lines = content.split(/\r?\n/);
+  const already = lines.some((line) => line.trim() === entry || line.trim() === `/${entry}`);
+  if (already) return;
+  const trailingNl = content.length === 0 || content.endsWith("\n");
+  const next = (trailingNl ? content : content + "\n") + `${entry}\n`;
+  try {
+    writeFileSync(gitignorePath, next);
+  } catch {
+    /* ignore — best effort */
+  }
 }
 
 function sanitizeFilename(value: string | undefined): string | null {
