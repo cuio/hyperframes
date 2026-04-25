@@ -12,7 +12,11 @@ export interface PlanOptions {
   model?: string;
   /** Optional context overrides — passed verbatim into the meta of the result. */
   meta?: Partial<ScriptMeta>;
-  /** Soft target overall duration in seconds (default 60). */
+  /**
+   * @deprecated Total duration is derived from the script's natural read
+   * time — the planner no longer tries to hit a target. Field kept for
+   * back-compat with older clients but ignored in the user message.
+   */
   targetDurationSeconds?: number;
   /** Maximum scene duration the planner is allowed to emit (default 9). */
   maxSceneDuration?: number;
@@ -178,15 +182,21 @@ function buildToolDefinition(maxSceneDuration: number): ToolDefinition {
 }
 
 function buildUserMessage(rawScript: string, opts: PlanOptions): string {
-  const target = opts.targetDurationSeconds ?? 60;
   const lines: string[] = [];
   lines.push("# Source script (use these exact words as scene narration — DO NOT REWRITE)");
   lines.push("");
   lines.push(rawScript.trim());
   lines.push("");
   lines.push("# Constraints");
-  lines.push(`- Target overall duration: about ${target} seconds.`);
+  // Note: NO total-duration target. The video's length is the natural sum of
+  // each scene's narration length (audio durations) — letting the script
+  // breathe. The planner controls per-scene PACING via durationHint, not
+  // total runtime. The maxSceneDuration is a hard upper bound to prevent
+  // single scenes from sitting too long on one frame.
   lines.push(`- Maximum single-scene duration: ${opts.maxSceneDuration ?? 9} seconds.`);
+  lines.push(
+    "- Total duration is whatever the script naturally lands on — segment for visual rhythm, not to hit a target.",
+  );
   if (opts.meta?.audience) lines.push(`- Audience: ${opts.meta.audience}`);
   if (opts.meta?.tone) lines.push(`- Tone: ${opts.meta.tone}`);
   if (opts.meta?.title) lines.push(`- Working title: ${opts.meta.title}`);
@@ -194,7 +204,9 @@ function buildUserMessage(rawScript: string, opts: PlanOptions): string {
   lines.push("# Reminders");
   lines.push("- Every scene's `text` must be verbatim from the source above.");
   lines.push("- Every scene MUST include a `reasoning` field (2–4 sentences).");
-  lines.push("- Open with a hook scene that uses the most striking number/claim.");
+  lines.push(
+    "- Open with a HOOK that layers stake + data + claim + why (see Hook scenes section in the playbook). Bare claims are not enough.",
+  );
   lines.push("- Prefer chart-scene whenever the sentence has 2+ numbers in a relationship.");
   lines.push("- Mark every scene in the first ~30s as `hook: true`.");
   lines.push("- End with outro-cta.");

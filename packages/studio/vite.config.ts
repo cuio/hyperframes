@@ -457,13 +457,46 @@ function devProjectApi(): Plugin {
   return {
     name: "studio-dev-api",
     configureServer(server): void {
-      // Load the shared module lazily via SSR (resolves hono + TypeScript)
+      // Load the shared module lazily via SSR (resolves hono + TypeScript).
+      // We re-build the api whenever any module under @hyperframes/core that
+      // it depends on has been invalidated by Vite's HMR — otherwise the
+      // captured `assembleMaster` / `planScript` references stay frozen at
+      // process-start, and source edits to assemble.ts / planner.ts /
+      // playbook.ts silently no-op until the dev server is restarted.
       let _api: { fetch: (req: Request) => Promise<Response> } | null = null;
+      let _apiBuiltAt = 0;
+      const apiInvalidatedSince = (): boolean => {
+        // Walk the SSR module graph for the studio-api entry; if any
+        // transitive dep's lastInvalidationTimestamp is newer than when we
+        // built _api, drop the cache so the next call rebuilds.
+        const root = server.moduleGraph.getModulesByFile?.(
+          require.resolve("@hyperframes/core/studio-api"),
+        );
+        if (!root) return false;
+        const visited = new Set<string>();
+        const queue: Array<{
+          id?: string;
+          lastInvalidationTimestamp?: number;
+          importedModules?: Set<unknown>;
+        }> = [...root] as never[];
+        while (queue.length > 0) {
+          const m = queue.shift();
+          if (!m || (m.id && visited.has(m.id))) continue;
+          if (m.id) visited.add(m.id);
+          if ((m.lastInvalidationTimestamp ?? 0) > _apiBuiltAt) return true;
+          if (m.importedModules) {
+            for (const dep of m.importedModules as Set<{ id?: string }>) queue.push(dep as never);
+          }
+        }
+        return false;
+      };
       const getApi = async () => {
+        if (_api && apiInvalidatedSince()) _api = null;
         if (!_api) {
           const mod = await server.ssrLoadModule("@hyperframes/core/studio-api");
           const adapter = createViteAdapter(dataDir, server);
           _api = mod.createStudioApi(adapter);
+          _apiBuiltAt = Date.now();
         }
         return _api;
       };

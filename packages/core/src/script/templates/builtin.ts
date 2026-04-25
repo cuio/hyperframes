@@ -30,11 +30,20 @@ const HOOK_BIGTEXT: Template = {
   propsSchema: {
     type: "object",
     properties: {
-      eyebrow: { type: "string", description: "Small label above the title (optional)" },
+      eyebrow: {
+        type: "string",
+        description:
+          "Small label above the title — use to set THE STAKE (e.g. 'BILLIONS AT RISK', 'INSTITUTIONAL CUSTODY', 'COLD STORAGE TRADING'). 2-4 words, uppercase reads. REQUIRED for hook scenes.",
+      },
       title: { type: "string", description: "The headline text — keep under 12 words" },
       accentWord: {
         type: "string",
         description: "One word from the title to highlight in the accent color (optional)",
+      },
+      subtext: {
+        type: "string",
+        description:
+          "One short line below the title that adds STAKE / DATA / WHY context — explains why the headline matters. e.g. 'First time a derivatives venue and custodian have plugged in directly.' Keep under 18 words. Strongly recommended for hook scenes.",
       },
     },
     required: ["title"],
@@ -43,6 +52,7 @@ const HOOK_BIGTEXT: Template = {
     const title = asString(props.title) || "Untitled";
     const eyebrow = asString(props.eyebrow);
     const accentWord = asString(props.accentWord);
+    const subtext = asString(props.subtext);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
     // Split the title into words → letters for kinetic per-letter reveal.
@@ -74,6 +84,7 @@ const HOOK_BIGTEXT: Template = {
     #${ctx.sceneId} .hb-word.hb-accent { color: ${t.colors.accent}; font-style: italic; }
     #${ctx.sceneId} .hb-letter { display: inline-block; opacity: 0; transform: translateY(60px) rotateX(-90deg); transform-origin: 50% 100%; will-change: transform, opacity; }
     #${ctx.sceneId} .hb-space { display: inline-block; width: 0.32em; }
+    #${ctx.sceneId} .hb-subtext { font-size: 26px; font-weight: 400; line-height: 1.32; max-width: 1200px; color: ${t.colors.muted}; opacity: 0; transform: translateY(14px); position: relative; padding-left: 14px; border-left: 3px solid ${t.colors.accent2}; }
     #${ctx.sceneId} .hb-meta { display: flex; gap: 24px; align-items: center; font-family: ${t.fonts.mono}; font-size: 16px; letter-spacing: 0.18em; text-transform: uppercase; color: ${t.colors.muted}; opacity: 0; }
     #${ctx.sceneId} .hb-meta .hb-meta-dot { width: 6px; height: 6px; border-radius: 50%; background: ${t.colors.accent}; }
   </style>
@@ -81,6 +92,7 @@ const HOOK_BIGTEXT: Template = {
   <div class="hb-rule"></div>
   ${eyebrow ? `<div class="hb-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
   <div class="hb-title">${letterHtml}</div>
+  ${subtext ? `<div class="hb-subtext">${escapeHtml(subtext)}</div>` : ""}
   <div class="hb-meta"><span class="hb-meta-dot"></span><span>OPEN</span></div>
   <script>
     (function(){
@@ -109,8 +121,12 @@ const HOOK_BIGTEXT: Template = {
         ease: 'expo.out',
         stagger: { each: 0.025, from: 'start' },
       }, 0.25);
+      // Subtext (stake/data/why) lands AFTER the title cascades, so the
+      // viewer's eye reaches it second. Quick fade + small lift.
+      var sub = s.querySelector('.hb-subtext');
+      if (sub) tl.to(sub, { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out' }, 0.7);
       // Meta line settles in last.
-      tl.to(s.querySelector('.hb-meta'), { opacity: 1, duration: 0.4, ease: 'power3.out' }, 0.85);
+      tl.to(s.querySelector('.hb-meta'), { opacity: 1, duration: 0.4, ease: 'power3.out' }, sub ? 1.0 : 0.85);
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
     })();

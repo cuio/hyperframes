@@ -60,31 +60,58 @@ relationship. Charts beat plain text for retention on data points.
 THE FIRST 3 SECONDS DECIDE WHETHER THE VIEWER STAYS. Treat the hook as
 the most important production decision of the whole video.
 
-- The opener MUST be hook-statreveal, hook-bigtext, or chart-scene with
-  a strong chart (cliff-chart, waterfall-bars, divergence-lines).
-- Pick the SINGLE most striking number, claim, or contrast from the
-  source script (or RESEARCH.md if available) as the opening visual.
-- A weak hook is: a generic intro sentence, a setup with no payoff,
-  a vague statement, an unsupported claim. If the source script's first
-  sentence is weak, find a stronger sentence later in the script and
-  use IT as scene s01 — but keep its words verbatim.
-- Add an "eyebrow" prop with a 2–4 word context line (e.g. "MYTH TOKEN",
-  "RWA TOKENIZATION") on hook scenes — this anchors the viewer.
-- Stat numbers in hooks should use props.value with the bare number and
-  props.suffix for "%", "B", etc. so the counter can animate from 0.
-- Hook reasoning must explicitly call out WHY this is the best opener:
-  the visceral specificity, the magnitude, the contrast that makes the
-  viewer want to keep watching.
+A great hook layers FOUR things in the same scene:
+  1. STAKE — what's at risk / why this matters / who is exposed
+  2. DATA — a concrete number, percent, money amount, count, or contrast
+  3. CLAIM — the headline assertion in the narrator's words
+  4. WHY — one short line of context that earns the click
 
-## Hook quality checklist (use this to self-audit)
+A bare claim is not enough. "BitMEX is now live on Interchange" is
+narration. The HOOK must surround it with stake + data + why so the
+viewer understands in 3 seconds why they should care.
 
-Before finalizing the hook scene, confirm:
-1. Could I say this hook out loud in 3 seconds? (If not, shorten.)
-2. Does it land a CONCRETE number, claim, or contrast? (If abstract, swap.)
-3. Would it make a stranger pause their scroll? (If not, find a stronger
-   sentence in the script and use that for s01 instead.)
-4. Is the visual treatment the strongest available — counting number,
-   crashing line, or kinetic typography? (If a static aroll-text, swap.)
+### How to layer per template
+
+- **hook-bigtext** (most common opener):
+  - props.eyebrow = STAKE in 2-4 uppercase words. Examples:
+    "BILLIONS IN COLLATERAL", "INSTITUTIONAL CUSTODY",
+    "COLD STORAGE TRADING", "MYTH TOKEN", "RWA TOKENIZATION".
+  - props.title = CLAIM (the source-script sentence, verbatim).
+  - props.accentWord = the single word in title that carries the most
+    weight. The atmosphere will accent-colour just that word.
+  - props.subtext = WHY in one short line (under 18 words). Examples:
+    "First time a derivatives venue and custodian have plugged in directly."
+    "Assets stay locked in cold storage while billions trade live."
+    Pull this from RESEARCH.md when available so it's grounded.
+- **hook-statreveal** (when ONE number is the whole point):
+  - props.eyebrow = STAKE / context tag.
+  - props.value = the bare number ("99.9", "3.2", "240").
+  - props.prefix / props.suffix = "$", "%", "B" — so the counter can
+    animate from 0.
+  - props.label = WHY this number is the story, in 4-12 words.
+    "of MYTH token's all-time-high value erased since launch"
+    "of total RWA tokenization that this single chain holds"
+    NOT just "MYTH price drop" — that's a label, not a why.
+- **chart-scene** as opener (when a chart IS the hook):
+  - props.title = the source sentence, verbatim.
+  - props.subtitle = WHY this chart matters in one line.
+  - The chart must be cliff-chart, waterfall-bars, or divergence-lines
+    — something that visually IS the story without needing context.
+
+### Hook quality checklist (self-audit before finalizing)
+
+1. Could I say the title out loud in 3 seconds? If not, shorten.
+2. Does the scene contain at least one CONCRETE NUMBER (in title, value,
+   subtext, or chart)? If abstract end-to-end, find a sharper opener.
+3. Would a stranger pause their scroll? If "maybe", find a stronger
+   sentence later in the script and use IT as s01 verbatim.
+4. Is the STAKE explicit (eyebrow) AND the WHY explicit (subtext/label)?
+   A claim with no stake or why is a press release, not a hook.
+5. Is the visual treatment the strongest available — counting number,
+   crashing line, kinetic typography? Never use static aroll-text for s01.
+6. Does the reasoning name all four layers (stake/data/claim/why) and
+   show which prop carries each? If you can't name them, the hook is
+   incomplete — go back and fill them in.
 
 ## Design brief integration
 
@@ -193,6 +220,18 @@ Pick semantically. Examples:
 Pass items as objects: { text: "Standard Chartered", icon: "network" }.
 You may still pass plain strings when no icon fits.
 
+### Use the assets — defaults are a floor, not a ceiling
+
+Defaults are tuned to be "always reasonable", but a video that accepts
+every default reads as automatic. PICK DELIBERATELY: at least 3 of every
+~12 scenes should override either background or transition with a
+non-default that earns its place in the reasoning. Same for icons —
+concept-callout that doesn't use icons when 2+ items map cleanly to the
+icon library is leaving retention on the floor.
+
+A great plan reads like a director making choices. A passable plan
+reads like a template engine.
+
 ## Output
 
 Use the plan_video tool. Every scene needs:
@@ -201,9 +240,11 @@ Use the plan_video tool. Every scene needs:
 - template (id from catalog)
 - props (matching template's schema; for chart-scene, props.chart.type
   + props.chart.props matching the chart's schema; for concept-callout,
-  items may use icon objects)
+  items may use { text, icon } objects; for hook-bigtext, use eyebrow
+  for STAKE and subtext for WHY in addition to title)
 - background (optional: atmosphere preset id; omit to accept default)
 - transition (optional: transition id; omit to accept default)
 - hook: true for first ~30s
 - reasoning (2–4 sentences explaining template + chart + atmosphere
-  choice. Reference the override if you took one.)`;
+  choice. For hook scenes, the reasoning MUST name the four layers
+  stake/data/claim/why and which prop carries each.)`;
