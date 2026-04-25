@@ -7,9 +7,12 @@ import { loadAnthropicKey } from "../../anthropic/index.js";
 import { loadElevenLabsKey, readDefaultVoiceId } from "../../elevenlabs/index.js";
 import {
   planScript,
+  planSceneVariants,
   synthesizeScript,
   assembleMaster,
   loadDesignBrief,
+  loadDesignArt,
+  loadResearch,
   resolveProjectTokens,
   ScriptPlannerError,
   type Script,
@@ -73,6 +76,8 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
         maxSceneDuration: body.maxSceneDuration,
         meta: body.meta,
         designBrief: loadDesignBrief(project.dir) ?? undefined,
+        artDirection: loadDesignArt(project.dir) ?? undefined,
+        research: loadResearch(project.dir) ?? undefined,
       });
       writeJson(join(project.dir, SCRIPT_FILE), script);
       return c.json({ ok: true, script });
@@ -96,6 +101,101 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
+  });
+
+  // Generate N visual variants for a single scene. The narration text stays
+  // fixed; the planner returns alternate templates / chart types. The user
+  // picks one in the UI and we patch it into script.json via PUT /scenes/:sid.
+  api.post("/projects/:id/script/scenes/:sceneId/variants", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) {
+      return c.json({ error: "ANTHROPIC_API_KEY not set. Add it to <project>/.env." }, 401);
+    }
+
+    const sceneId = c.req.param("sceneId");
+    const path = join(project.dir, SCRIPT_FILE);
+    if (!existsSync(path)) {
+      return c.json({ error: "no script.json on disk — plan first" }, 400);
+    }
+    let script: Script;
+    try {
+      script = JSON.parse(readFileSync(path, "utf-8")) as Script;
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+    const scene = script.scenes.find((s) => s.id === sceneId);
+    if (!scene) return c.json({ error: `scene ${sceneId} not found` }, 404);
+
+    let body: { count?: number; model?: string } = {};
+    try {
+      body = (await c.req.json()) as { count?: number; model?: string };
+    } catch {
+      /* allow empty body */
+    }
+
+    try {
+      const variants = await planSceneVariants(
+        scene,
+        { meta: script.meta, allScenes: script.scenes },
+        {
+          apiKey,
+          model: body.model,
+          count: body.count,
+          designBrief: loadDesignBrief(project.dir) ?? undefined,
+          artDirection: loadDesignArt(project.dir) ?? undefined,
+          research: loadResearch(project.dir) ?? undefined,
+        },
+      );
+      return c.json({ ok: true, variants });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: msg }, err instanceof ScriptPlannerError ? 502 : 500);
+    }
+  });
+
+  // Replace a single scene in script.json (after user picks a variant).
+  api.put("/projects/:id/script/scenes/:sceneId", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const sceneId = c.req.param("sceneId");
+    const path = join(project.dir, SCRIPT_FILE);
+    if (!existsSync(path)) return c.json({ error: "no script.json on disk" }, 400);
+
+    let body: { scene?: Record<string, unknown> };
+    try {
+      body = (await c.req.json()) as { scene?: Record<string, unknown> };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body.scene || typeof body.scene !== "object") {
+      return c.json({ error: "scene is required" }, 400);
+    }
+
+    let script: Script;
+    try {
+      script = JSON.parse(readFileSync(path, "utf-8")) as Script;
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+    const idx = script.scenes.findIndex((s) => s.id === sceneId);
+    if (idx === -1) return c.json({ error: `scene ${sceneId} not found` }, 404);
+
+    // Preserve the scene's id and existing audio cache info; replace the
+    // visual treatment + reasoning from the variant.
+    const incoming = body.scene as Record<string, unknown>;
+    script.scenes[idx] = {
+      ...script.scenes[idx]!,
+      template:
+        typeof incoming.template === "string" ? incoming.template : script.scenes[idx]!.template,
+      props: (incoming.props as Record<string, unknown>) ?? script.scenes[idx]!.props,
+      reasoning:
+        typeof incoming.reasoning === "string" ? incoming.reasoning : script.scenes[idx]!.reasoning,
+      hook: typeof incoming.hook === "boolean" ? incoming.hook : script.scenes[idx]!.hook,
+    };
+    writeJson(path, script);
+    return c.json({ ok: true, scene: script.scenes[idx] });
   });
 
   // Manually update script.json (after user edits the plan in UI).
@@ -151,6 +251,8 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
           maxSceneDuration: body.planOptions?.maxSceneDuration,
           meta: body.planOptions?.meta,
           designBrief: loadDesignBrief(project.dir) ?? undefined,
+          artDirection: loadDesignArt(project.dir) ?? undefined,
+          research: loadResearch(project.dir) ?? undefined,
         });
         writeJson(join(project.dir, SCRIPT_FILE), script);
       } catch (err) {

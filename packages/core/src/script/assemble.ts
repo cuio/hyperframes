@@ -44,17 +44,26 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
   let cursor = 0;
   const sceneFragments: string[] = [];
   const audioTags: string[] = [];
-  const sceneVisibility: Array<{ id: string; start: number; duration: number }> = [];
+  const sceneVisibility: Array<{
+    id: string;
+    start: number;
+    duration: number;
+    text: string;
+    audioStart: number;
+    audioDuration: number;
+  }> = [];
 
   for (const scene of planned.scenes) {
     const tpl = BUILTIN_TEMPLATES.find((t) => t.id === scene.template);
     if (!tpl) continue;
-    const dur = sceneDuration(scene);
+    const sceneTotal = sceneTotalDuration(scene);
+    const audioStartOffset = scene.audio?.leadInSeconds ?? 0;
+    const audioDur = scene.audio?.durationSeconds ?? 0;
 
     const fragment = tpl.render(scene.props, {
       sceneId: scene.id,
       audioSrc: scene.audio?.path,
-      durationSeconds: dur,
+      durationSeconds: sceneTotal,
       isHook: scene.hook === true,
       tokens,
     });
@@ -62,12 +71,22 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     sceneFragments.push(positioned);
 
     if (scene.audio) {
+      // Audio starts AFTER the lead-in, so the visual lands first. Audio
+      // lasts only its actual duration — never bleeds into next scene.
+      const audioStart = cursor + audioStartOffset;
       audioTags.push(
-        `  <audio src="${escapeAttr(scene.audio.path)}" data-start="${cursor.toFixed(2)}" data-duration="${dur.toFixed(2)}" data-track-index="1" preload="auto"></audio>`,
+        `  <audio src="${escapeAttr(scene.audio.path)}" data-start="${audioStart.toFixed(2)}" data-duration="${audioDur.toFixed(2)}" data-track-index="1" preload="auto"></audio>`,
       );
     }
-    sceneVisibility.push({ id: scene.id, start: cursor, duration: dur });
-    cursor += dur;
+    sceneVisibility.push({
+      id: scene.id,
+      start: cursor,
+      duration: sceneTotal,
+      text: scene.text,
+      audioStart: cursor + audioStartOffset,
+      audioDuration: audioDur,
+    });
+    cursor += sceneTotal;
   }
 
   const total = cursor;
@@ -112,12 +131,166 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
         opacity: 0;
         pointer-events: none;
       }
+
+      /* ── Ambient atmosphere layer (always behind every scene) ───────── */
+      .hf-atmosphere {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        overflow: hidden;
+      }
+      .hf-atmosphere::before {
+        /* Subtle film-grain texture via tiny SVG noise */
+        content: "";
+        position: absolute;
+        inset: -100px;
+        opacity: 0.04;
+        background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.65'/></svg>");
+        mix-blend-mode: ${tokens.colors.bg === "#F2E8D5" ? "multiply" : "screen"};
+      }
+      .hf-glow-orb {
+        position: absolute;
+        width: 1400px;
+        height: 1400px;
+        border-radius: 50%;
+        filter: blur(140px);
+        opacity: 0.45;
+        will-change: transform, opacity;
+      }
+      .hf-glow-orb.a {
+        background: radial-gradient(circle, ${tokens.colors.accent}55 0%, transparent 60%);
+        top: -300px;
+        left: -200px;
+      }
+      .hf-glow-orb.b {
+        background: radial-gradient(circle, ${tokens.colors.accent2}44 0%, transparent 60%);
+        bottom: -300px;
+        right: -200px;
+      }
+      .hf-grid-bg {
+        position: absolute;
+        inset: 0;
+        background-image:
+          linear-gradient(${tokens.colors.subtle}1a 1px, transparent 1px),
+          linear-gradient(90deg, ${tokens.colors.subtle}1a 1px, transparent 1px);
+        background-size: 80px 80px;
+        opacity: 0.5;
+      }
+
+      /* ── Side decorations (always visible, persistent overlay) ─────── */
+      .hf-deco {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 50;
+        font-family: ${tokens.fonts.mono};
+        color: ${tokens.colors.muted};
+      }
+      .hf-deco .hf-rail {
+        position: absolute;
+        background: ${tokens.colors.accent};
+        opacity: 0.85;
+      }
+      .hf-deco .hf-rail.top { top: 0; left: 0; height: 6px; width: 0; }
+      .hf-deco .hf-rail.left { top: 0; left: 0; width: 4px; height: 0; }
+      .hf-deco .hf-corner {
+        position: absolute;
+        font-size: 18px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        opacity: 0;
+      }
+      .hf-deco .hf-corner.tl { top: 36px; left: 36px; }
+      .hf-deco .hf-corner.tr { top: 36px; right: 36px; text-align: right; }
+      .hf-deco .hf-corner.bl { bottom: 36px; left: 36px; }
+      .hf-deco .hf-corner.br { bottom: 36px; right: 36px; text-align: right; }
+      .hf-deco .hf-corner .hf-tick { color: ${tokens.colors.accent}; font-weight: 700; }
+      .hf-deco .hf-ticks {
+        position: absolute;
+        right: 36px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .hf-deco .hf-tick-mark {
+        width: 18px;
+        height: 1.5px;
+        background: ${tokens.colors.subtle};
+        opacity: 0.6;
+      }
+      .hf-deco .hf-tick-mark.active {
+        background: ${tokens.colors.accent};
+        opacity: 1;
+        width: 28px;
+      }
+
+      /* ── Captions: persistent track at bottom showing the active scene's
+         narration. Synced via forceSync(). Fades in/out per scene. ─────── */
+      .hf-captions {
+        position: absolute;
+        left: 50%;
+        bottom: 110px;
+        transform: translateX(-50%);
+        max-width: ${Math.min(width - 320, 1500)}px;
+        text-align: center;
+        z-index: 60;
+        pointer-events: none;
+      }
+      .hf-captions .hf-cap-bubble {
+        display: inline-block;
+        padding: 18px 32px;
+        background: ${tokens.colors.bg === "#F2E8D5" ? "rgba(26,26,26,0.86)" : "rgba(0,0,0,0.55)"};
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border-radius: 14px;
+        border: 1px solid ${
+          tokens.colors.bg === "#F2E8D5" ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.10)"
+        };
+        font-family: ${tokens.fonts.body};
+        font-size: 30px;
+        font-weight: 500;
+        line-height: 1.32;
+        letter-spacing: -0.005em;
+        color: ${tokens.colors.bg === "#F2E8D5" ? "#FAFAFA" : tokens.colors.fg};
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        max-height: 200px;
+        overflow: hidden;
+      }
+      .hf-captions.visible .hf-cap-bubble { opacity: 1; }
+      .hf-captions .hf-cap-text { display: block; }
     </style>
   </head>
   <body>
     <div class="hf-stage" id="hf-root" data-composition-id="hf-root" data-root="true" data-start="0" data-duration="${total.toFixed(2)}">
+      <!-- Persistent atmosphere layer behind every scene -->
+      <div class="hf-atmosphere" aria-hidden="true">
+        <div class="hf-grid-bg"></div>
+        <div class="hf-glow-orb a" id="hf-orb-a"></div>
+        <div class="hf-glow-orb b" id="hf-orb-b"></div>
+      </div>
 ${sceneFragments.join("\n")}
 ${audioTags.join("\n")}
+      <!-- Captions track: shown for the active scene only -->
+      <div class="hf-captions" id="hf-captions" aria-live="polite">
+        <div class="hf-cap-bubble"><span class="hf-cap-text" id="hf-cap-text"></span></div>
+      </div>
+
+      <!-- Persistent corner decorations + side ticks -->
+      <div class="hf-deco" aria-hidden="true">
+        <div class="hf-rail top" id="hf-rail-top"></div>
+        <div class="hf-rail left" id="hf-rail-left"></div>
+        <div class="hf-corner tl" id="hf-corner-tl">${escapeText(title)}</div>
+        <div class="hf-corner tr" id="hf-corner-tr"><span class="hf-tick" id="hf-scene-id">s01</span> · <span id="hf-time-code">0:00</span></div>
+        <div class="hf-corner bl" id="hf-corner-bl"><span id="hf-frame-counter">0001</span></div>
+        <div class="hf-corner br" id="hf-corner-br"><span class="hf-tick">●</span> REC</div>
+        <div class="hf-ticks" id="hf-ticks">
+${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-index="${i}"></div>`).join("\n")}
+        </div>
+      </div>
     </div>
     <script>
       // Root timeline drives master duration AND scene visibility. The
@@ -128,9 +301,31 @@ ${audioTags.join("\n")}
       (function(){
         if (!window.gsap) return;
         var SCENES = ${JSON.stringify(sceneVisibility)};
+        var TOTAL = ${total.toFixed(2)};
         var root = window.gsap.timeline({ paused: true });
         // Spacer establishes the master duration.
-        root.to({}, { duration: ${total.toFixed(2)} }, 0);
+        root.to({}, { duration: TOTAL }, 0);
+
+        // ── Atmosphere: orbs drift slowly across the full duration so the
+        // background always feels alive. Independent of scene visibility.
+        var orbA = document.getElementById('hf-orb-a');
+        var orbB = document.getElementById('hf-orb-b');
+        if (orbA) {
+          window.gsap.to(orbA, {
+            x: 600, y: 200, duration: Math.max(20, TOTAL),
+            yoyo: true, repeat: -1, ease: 'sine.inOut',
+          });
+        }
+        if (orbB) {
+          window.gsap.to(orbB, {
+            x: -500, y: -250, duration: Math.max(24, TOTAL),
+            yoyo: true, repeat: -1, ease: 'sine.inOut', delay: 1.2,
+          });
+        }
+        // Persistent decorations: rails draw in once at start.
+        window.gsap.to('#hf-rail-top', { width: '100%', duration: 1.2, ease: 'expo.out', delay: 0.2 });
+        window.gsap.to('#hf-rail-left', { height: '100%', duration: 1.4, ease: 'expo.out', delay: 0.35 });
+        window.gsap.to('.hf-corner', { opacity: 0.9, duration: 0.5, ease: 'power3.out', stagger: 0.08, delay: 0.6 });
 
         // Imperative visibility, polled on every frame via gsap.ticker.
         // We avoid the timeline's onUpdate because the studio runtime can
@@ -165,23 +360,57 @@ ${audioTags.join("\n")}
         // applied, so this is cheap. We force-apply even when "current" is
         // unchanged because external code may have flipped style.visibility.
         function forceSync(t) {
-          var active = null;
+          var activeIdx = -1;
           for (var i = 0; i < SCENES.length; i++) {
             var s = SCENES[i];
-            if (t >= s.start && t < s.start + s.duration) { active = s.id; break; }
+            if (t >= s.start && t < s.start + s.duration) { activeIdx = i; break; }
           }
-          // We use opacity only (no visibility) because the runtime media
-          // and composition adapters can flip style.visibility on us.
-          // Opacity 1 wins decisively, and pointer-events:none on .scene
-          // keeps inactive scenes from intercepting input.
+          var active = activeIdx >= 0 ? SCENES[activeIdx].id : null;
+          // Scene visibility: opacity-only so the runtime can't override us.
           for (var j = 0; j < SCENES.length; j++) {
             var sj = SCENES[j];
             var el = document.getElementById(sj.id);
             if (!el) continue;
             var want = sj.id === active ? "1" : "0";
             if (el.style.opacity !== want) el.style.opacity = want;
-            // Defensive: clear visibility:hidden if anything stamped it on us.
             if (el.style.visibility === "hidden") el.style.visibility = "";
+          }
+          // Persistent corner overlays: time code, scene id, active tick.
+          var tc = document.getElementById('hf-time-code');
+          if (tc) {
+            var mins = Math.floor(t / 60);
+            var secs = Math.floor(t % 60);
+            tc.textContent = mins + ':' + (secs < 10 ? '0' : '') + secs;
+          }
+          var sid = document.getElementById('hf-scene-id');
+          if (sid && active) sid.textContent = active;
+          var fc = document.getElementById('hf-frame-counter');
+          if (fc) {
+            var frame = Math.floor(t * 30);
+            fc.textContent = ('0000' + frame).slice(-4);
+          }
+          var ticks = document.querySelectorAll('.hf-tick-mark');
+          for (var k = 0; k < ticks.length; k++) {
+            var isActive = parseInt(ticks[k].getAttribute('data-scene-index'), 10) === activeIdx;
+            if (isActive && !ticks[k].classList.contains('active')) ticks[k].classList.add('active');
+            else if (!isActive && ticks[k].classList.contains('active')) ticks[k].classList.remove('active');
+          }
+          // Captions: visible only during the active scene's audio window.
+          // The bubble text always reflects the active scene's narration so
+          // scrubbing reveals what's being said at any frame.
+          var capWrap = document.getElementById('hf-captions');
+          var capText = document.getElementById('hf-cap-text');
+          if (capWrap && capText) {
+            if (activeIdx >= 0) {
+              var s = SCENES[activeIdx];
+              if (s.text && capText.textContent !== s.text) capText.textContent = s.text;
+              var inAudio = s.audioDuration > 0 && t >= s.audioStart - 0.05 && t <= s.audioStart + s.audioDuration + 0.1;
+              var shouldShow = !!s.text && (inAudio || s.audioDuration === 0);
+              if (shouldShow && !capWrap.classList.contains('visible')) capWrap.classList.add('visible');
+              else if (!shouldShow && capWrap.classList.contains('visible')) capWrap.classList.remove('visible');
+            } else if (capWrap.classList.contains('visible')) {
+              capWrap.classList.remove('visible');
+            }
           }
         }
         // rAF is heavily throttled inside the studio's iframe — it can fire
@@ -237,9 +466,16 @@ ${audioTags.join("\n")}
   return { outFile, totalDurationSeconds: total, sceneCount: planned.scenes.length };
 }
 
-function sceneDuration(scene: PlannedScene): number {
+function sceneTotalDuration(scene: PlannedScene): number {
+  if (typeof scene.totalDurationSeconds === "number" && scene.totalDurationSeconds > 0) {
+    return scene.totalDurationSeconds;
+  }
   if (scene.audio?.durationSeconds && scene.audio.durationSeconds > 0) {
-    return scene.audio.durationSeconds;
+    return (
+      scene.audio.durationSeconds +
+      (scene.audio.leadInSeconds ?? 0) +
+      (scene.audio.tailPadSeconds ?? 0)
+    );
   }
   if (typeof scene.durationHint === "number" && scene.durationHint > 0) return scene.durationHint;
   return 3;
