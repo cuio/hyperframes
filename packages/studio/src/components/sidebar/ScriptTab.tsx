@@ -63,7 +63,10 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
   const [text, setText] = useState("");
   const [audience, setAudience] = useState("");
   const [tone, setTone] = useState("");
-  const [target, setTarget] = useState("60");
+  // Total duration is derived from the script's natural read time — no
+  // user-set target. Removed in PR #10 because target-driven planning
+  // forced the AI to truncate or pad scenes to hit a number, which read
+  // as either rushed or stretched. The script's length IS the duration.
   const [script, setScript] = useState<Script | null>(null);
   const [busy, setBusy] = useState<BusyState>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
@@ -255,7 +258,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text,
-          targetDurationSeconds: target ? parseFloat(target) : undefined,
+          // No targetDurationSeconds — duration follows the script's natural length
           fidelity,
           meta: {
             audience: audience.trim() || undefined,
@@ -275,7 +278,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     } finally {
       setBusy({ kind: "idle" });
     }
-  }, [projectId, text, target, audience, tone, fidelity]);
+  }, [projectId, text, audience, tone, fidelity]);
 
   const handleGenerate = useCallback(async () => {
     if (!script) return;
@@ -366,16 +369,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
           />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
-          <label className="text-[10px] text-neutral-500">Target (s)</label>
-          <input
-            type="number"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-            min={10}
-            max={600}
-            className="h-7 w-20 bg-neutral-900 border border-neutral-800 rounded-md px-2 text-[11px] text-neutral-200 focus:outline-none focus:border-neutral-700"
-          />
-          <label className="text-[10px] text-neutral-500 ml-1">Fidelity</label>
+          <label className="text-[10px] text-neutral-500">Fidelity</label>
           <select
             value={fidelity}
             onChange={(e) => setFidelity(e.target.value as "verbatim" | "split-merge" | "refine")}

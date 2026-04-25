@@ -226,12 +226,233 @@ const NOISE_GRAIN: AtmospherePreset = {
   },
 };
 
+/**
+ * Concentric pulsing rings emanating from the canvas centre. Reads as a
+ * single big-number scene that's "transmitting" — perfect under
+ * hook-statreveal where the eye should anchor on the number.
+ */
+const RADIAL_PULSE: AtmospherePreset = {
+  id: "radial-pulse",
+  description:
+    "Concentric ring pulses radiating from centre. Magnetises the eye to the middle of the canvas — best under hook-statreveal or any scene whose hero element sits centred.",
+  render(ctx) {
+    const id = ctx.sceneId;
+    const t = ctx.tokens;
+    const isDark = isDarkColor(t.colors.bg);
+    const blend = isDark ? "screen" : "multiply";
+    return `
+<style>
+  #${id} .hf-atmo-pulse { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  #${id} .hf-atmo-pulse::before, #${id} .hf-atmo-pulse::after {
+    content: ""; position: absolute; left: 50%; top: 50%; width: 200vmax; height: 200vmax;
+    border-radius: 50%; transform: translate(-50%, -50%) scale(0.05);
+    border: 2px solid ${t.colors.accent}; opacity: 0;
+    mix-blend-mode: ${blend};
+    will-change: transform, opacity;
+  }
+  #${id} .hf-atmo-pulse::before {
+    animation: hf-pulse-${id} 5.2s cubic-bezier(0.2, 0.6, 0.2, 1) infinite;
+  }
+  #${id} .hf-atmo-pulse::after {
+    border-color: ${t.colors.accent2};
+    animation: hf-pulse-${id} 5.2s cubic-bezier(0.2, 0.6, 0.2, 1) infinite;
+    animation-delay: 1.7s;
+  }
+  @keyframes hf-pulse-${id} {
+    0%   { transform: translate(-50%, -50%) scale(0.04); opacity: 0; border-width: 4px; }
+    20%  { opacity: 0.85; }
+    100% { transform: translate(-50%, -50%) scale(1.0); opacity: 0; border-width: 1px; }
+  }
+</style>
+<div class="hf-atmo hf-atmo-pulse"></div>`.trim();
+  },
+};
+
+/**
+ * Particle field's bigger sibling — fewer, larger, brighter dots that
+ * twinkle, plus two slow-drifting "stars" with halos. Cosmic / sci-fi feel
+ * for hooks and outros where you want depth without competing with text.
+ */
+const COSMIC_DUST: AtmospherePreset = {
+  id: "cosmic-dust",
+  description:
+    "Sparse bright dots that twinkle, plus two large halo'd stars drifting slowly. Cosmic depth — best under hooks/outros that need a feeling of scale.",
+  render(ctx) {
+    const id = ctx.sceneId;
+    const t = ctx.tokens;
+    const isDark = isDarkColor(t.colors.bg);
+    const blend = isDark ? "screen" : "multiply";
+    const stars = [
+      [60, 90, 4],
+      [200, 220, 3],
+      [400, 80, 5],
+      [520, 280, 3.5],
+      [120, 380, 4.5],
+      [340, 430, 3],
+      [480, 480, 5],
+      [200, 540, 3.5],
+      [60, 250, 3],
+      [380, 320, 4.5],
+      [110, 160, 2.5],
+      [290, 110, 3],
+    ];
+    const circles = stars.map(([x, y, r]) => `<circle cx='${x}' cy='${y}' r='${r}'/>`).join("");
+    const starSvg =
+      `<svg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'><g fill='${t.colors.accent}' fill-opacity='0.85'>${circles}</g></svg>`
+        .replace(/#/g, "%23")
+        .replace(/"/g, "'");
+    return `
+<style>
+  #${id} .hf-atmo-cosmic { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  #${id} .hf-atmo-cosmic::before {
+    content: ""; position: absolute; inset: -200px;
+    background-image: url("data:image/svg+xml;utf8,${starSvg}");
+    background-repeat: repeat;
+    mix-blend-mode: ${blend};
+    will-change: transform, opacity;
+    animation: hf-cosmic-drift-${id} 110s linear infinite, hf-cosmic-twinkle-${id} 4.5s ease-in-out infinite;
+  }
+  #${id} .hf-atmo-cosmic .hf-cosmic-halo {
+    position: absolute; width: 420px; height: 420px; border-radius: 50%;
+    background: radial-gradient(circle, ${t.colors.accent}66 0%, ${t.colors.accent2}44 35%, transparent 65%);
+    filter: blur(40px);
+    mix-blend-mode: ${blend};
+    will-change: transform, opacity;
+  }
+  #${id} .hf-atmo-cosmic .hf-cosmic-halo.a { left: 18%; top: 22%; animation: hf-cosmic-halo-a-${id} 24s ease-in-out infinite; }
+  #${id} .hf-atmo-cosmic .hf-cosmic-halo.b { right: 14%; bottom: 18%; animation: hf-cosmic-halo-b-${id} 32s ease-in-out infinite; }
+  @keyframes hf-cosmic-drift-${id} {
+    from { transform: translate3d(0, 0, 0); }
+    to   { transform: translate3d(-600px, -600px, 0); }
+  }
+  @keyframes hf-cosmic-twinkle-${id} {
+    0%, 100% { opacity: 0.95; }
+    50%      { opacity: 0.55; }
+  }
+  @keyframes hf-cosmic-halo-a-${id} {
+    0%, 100% { transform: translate(0, 0) scale(1);   opacity: 0.9; }
+    50%      { transform: translate(60px, 30px) scale(1.18); opacity: 1; }
+  }
+  @keyframes hf-cosmic-halo-b-${id} {
+    0%, 100% { transform: translate(0, 0) scale(1);   opacity: 0.85; }
+    50%      { transform: translate(-50px, -40px) scale(1.22); opacity: 1; }
+  }
+</style>
+<div class="hf-atmo hf-atmo-cosmic">
+  <div class="hf-cosmic-halo a"></div>
+  <div class="hf-cosmic-halo b"></div>
+</div>`.trim();
+  },
+};
+
+/**
+ * Animated isometric grid — diagonal accent lines pulsing slowly. Reads
+ * as "data infrastructure" — pairs well with chart-scene and comparison
+ * when the brand wants a futuristic / engineering aesthetic.
+ */
+const GEOMETRIC_GRID: AtmospherePreset = {
+  id: "geometric-grid",
+  description:
+    "Diagonal isometric grid lines drifting and pulsing. Engineering/infrastructure aesthetic — pairs with chart-scene, comparison.",
+  render(ctx) {
+    const id = ctx.sceneId;
+    const t = ctx.tokens;
+    const isDark = isDarkColor(t.colors.bg);
+    const blend = isDark ? "screen" : "multiply";
+    return `
+<style>
+  #${id} .hf-atmo-grid { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  #${id} .hf-atmo-grid::before {
+    content: ""; position: absolute; inset: -25%;
+    background-image:
+      repeating-linear-gradient( 30deg, transparent 0px, transparent 79px, ${t.colors.accent}55 79px, ${t.colors.accent}55 80px),
+      repeating-linear-gradient(-30deg, transparent 0px, transparent 79px, ${t.colors.accent2}48 79px, ${t.colors.accent2}48 80px);
+    mix-blend-mode: ${blend};
+    opacity: 0.7;
+    will-change: transform, opacity;
+    animation: hf-grid-drift-${id} 38s linear infinite, hf-grid-pulse-${id} 6s ease-in-out infinite;
+  }
+  #${id} .hf-atmo-grid::after {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(ellipse 80% 70% at center, transparent 50%, ${t.colors.bg}cc 100%);
+    pointer-events: none;
+  }
+  @keyframes hf-grid-drift-${id} {
+    from { transform: translate3d(0, 0, 0); }
+    to   { transform: translate3d(-160px, 92px, 0); }
+  }
+  @keyframes hf-grid-pulse-${id} {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 0.95; }
+  }
+</style>
+<div class="hf-atmo hf-atmo-grid"></div>`.trim();
+  },
+};
+
+/**
+ * Horizontal flow lines — wavy SVG paths that slowly translate across the
+ * canvas. Audio-waveform vibe; works under quote scenes (the "wavelength
+ * of voice") and chart-scene when the data is time-series.
+ */
+const FLOW_LINES: AtmospherePreset = {
+  id: "flow-lines",
+  description:
+    "Wavy horizontal lines slowly drifting — audio waveform feel. Best under quote scenes and time-series chart-scene.",
+  render(ctx) {
+    const id = ctx.sceneId;
+    const t = ctx.tokens;
+    const isDark = isDarkColor(t.colors.bg);
+    const blend = isDark ? "screen" : "multiply";
+    // Three nested SVG path variants drawn at different offsets and amplitudes.
+    const wavePath = (amp: number, baseY: number) => {
+      const points: string[] = [];
+      for (let x = -100; x <= 1700; x += 80) {
+        const y = baseY + Math.sin((x / 200) * Math.PI) * amp;
+        points.push(`${x},${y.toFixed(1)}`);
+      }
+      return `M${points.join(" L")}`;
+    };
+    const svg =
+      `<svg xmlns='http://www.w3.org/2000/svg' width='1600' height='400' viewBox='0 0 1600 400' fill='none'><path d='${wavePath(40, 100)}' stroke='${t.colors.accent}' stroke-width='2' stroke-opacity='0.7'/><path d='${wavePath(60, 200)}' stroke='${t.colors.accent2}' stroke-width='2' stroke-opacity='0.6'/><path d='${wavePath(50, 300)}' stroke='${t.colors.accent3}' stroke-width='2' stroke-opacity='0.55'/></svg>`
+        .replace(/#/g, "%23")
+        .replace(/"/g, "'");
+    return `
+<style>
+  #${id} .hf-atmo-flow { position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+  #${id} .hf-atmo-flow::before, #${id} .hf-atmo-flow::after {
+    content: ""; position: absolute; left: -200px; right: -200px;
+    background-image: url("data:image/svg+xml;utf8,${svg}");
+    background-repeat: repeat;
+    background-size: 1600px 400px;
+    mix-blend-mode: ${blend};
+    will-change: transform;
+  }
+  #${id} .hf-atmo-flow::before { top: 18%; height: 400px; opacity: 0.7; animation: hf-flow-a-${id} 28s linear infinite; }
+  #${id} .hf-atmo-flow::after { bottom: 12%; height: 400px; opacity: 0.55; transform: scaleY(-1); animation: hf-flow-b-${id} 36s linear infinite reverse; }
+  @keyframes hf-flow-a-${id} {
+    from { transform: translate3d(0, 0, 0); }
+    to   { transform: translate3d(-1600px, 0, 0); }
+  }
+  @keyframes hf-flow-b-${id} {
+    from { transform: translate3d(0, 0, 0) scaleY(-1); }
+    to   { transform: translate3d(-1600px, 0, 0) scaleY(-1); }
+  }
+</style>
+<div class="hf-atmo hf-atmo-flow"></div>`.trim();
+  },
+};
+
 export const BUILTIN_ATMOSPHERES: readonly AtmospherePreset[] = [
   STUDIO_FLAT,
   AURORA,
   GRADIENT_MESH,
   PARTICLE_FIELD,
   NOISE_GRAIN,
+  RADIAL_PULSE,
+  COSMIC_DUST,
+  GEOMETRIC_GRID,
+  FLOW_LINES,
 ];
 
 export const ATMOSPHERE_IDS = BUILTIN_ATMOSPHERES.map((a) => a.id);

@@ -1,6 +1,7 @@
 import type { Template } from "./types.js";
-import { escapeHtml, asString, asStringArray, formatSec } from "./util.js";
+import { escapeHtml, asString, formatSec } from "./util.js";
 import { BUILTIN_CHARTS } from "../charts/index.js";
+import { ICON_IDS, hasIcon, renderIcon } from "../icons/index.js";
 
 /**
  * Premium template set. Each renders an HTML fragment with self-contained
@@ -29,11 +30,20 @@ const HOOK_BIGTEXT: Template = {
   propsSchema: {
     type: "object",
     properties: {
-      eyebrow: { type: "string", description: "Small label above the title (optional)" },
+      eyebrow: {
+        type: "string",
+        description:
+          "Small label above the title — use to set THE STAKE (e.g. 'BILLIONS AT RISK', 'INSTITUTIONAL CUSTODY', 'COLD STORAGE TRADING'). 2-4 words, uppercase reads. REQUIRED for hook scenes.",
+      },
       title: { type: "string", description: "The headline text — keep under 12 words" },
       accentWord: {
         type: "string",
         description: "One word from the title to highlight in the accent color (optional)",
+      },
+      subtext: {
+        type: "string",
+        description:
+          "One short line below the title that adds STAKE / DATA / WHY context — explains why the headline matters. e.g. 'First time a derivatives venue and custodian have plugged in directly.' Keep under 18 words. Strongly recommended for hook scenes.",
       },
     },
     required: ["title"],
@@ -42,6 +52,7 @@ const HOOK_BIGTEXT: Template = {
     const title = asString(props.title) || "Untitled";
     const eyebrow = asString(props.eyebrow);
     const accentWord = asString(props.accentWord);
+    const subtext = asString(props.subtext);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
     // Split the title into words → letters for kinetic per-letter reveal.
@@ -73,6 +84,7 @@ const HOOK_BIGTEXT: Template = {
     #${ctx.sceneId} .hb-word.hb-accent { color: ${t.colors.accent}; font-style: italic; }
     #${ctx.sceneId} .hb-letter { display: inline-block; opacity: 0; transform: translateY(60px) rotateX(-90deg); transform-origin: 50% 100%; will-change: transform, opacity; }
     #${ctx.sceneId} .hb-space { display: inline-block; width: 0.32em; }
+    #${ctx.sceneId} .hb-subtext { font-size: 26px; font-weight: 400; line-height: 1.32; max-width: 1200px; color: ${t.colors.muted}; opacity: 0; transform: translateY(14px); position: relative; padding-left: 14px; border-left: 3px solid ${t.colors.accent2}; }
     #${ctx.sceneId} .hb-meta { display: flex; gap: 24px; align-items: center; font-family: ${t.fonts.mono}; font-size: 16px; letter-spacing: 0.18em; text-transform: uppercase; color: ${t.colors.muted}; opacity: 0; }
     #${ctx.sceneId} .hb-meta .hb-meta-dot { width: 6px; height: 6px; border-radius: 50%; background: ${t.colors.accent}; }
   </style>
@@ -80,6 +92,7 @@ const HOOK_BIGTEXT: Template = {
   <div class="hb-rule"></div>
   ${eyebrow ? `<div class="hb-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
   <div class="hb-title">${letterHtml}</div>
+  ${subtext ? `<div class="hb-subtext">${escapeHtml(subtext)}</div>` : ""}
   <div class="hb-meta"><span class="hb-meta-dot"></span><span>OPEN</span></div>
   <script>
     (function(){
@@ -108,8 +121,12 @@ const HOOK_BIGTEXT: Template = {
         ease: 'expo.out',
         stagger: { each: 0.025, from: 'start' },
       }, 0.25);
+      // Subtext (stake/data/why) lands AFTER the title cascades, so the
+      // viewer's eye reaches it second. Quick fade + small lift.
+      var sub = s.querySelector('.hb-subtext');
+      if (sub) tl.to(sub, { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out' }, 0.7);
       // Meta line settles in last.
-      tl.to(s.querySelector('.hb-meta'), { opacity: 1, duration: 0.4, ease: 'power3.out' }, 0.85);
+      tl.to(s.querySelector('.hb-meta'), { opacity: 1, duration: 0.4, ease: 'power3.out' }, sub ? 1.0 : 0.85);
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
     })();
@@ -365,8 +382,25 @@ const CONCEPT_CALLOUT: Template = {
       title: { type: "string", description: "Short title for the list" },
       items: {
         type: "array",
-        items: { type: "string" },
-        description: "Bullet items, 2 to 5 entries, each under 8 words",
+        items: {
+          oneOf: [
+            { type: "string" },
+            {
+              type: "object",
+              properties: {
+                text: { type: "string", description: "The label text" },
+                icon: {
+                  type: "string",
+                  enum: ICON_IDS,
+                  description: "Optional icon id from the icon library; replaces the number badge",
+                },
+              },
+              required: ["text"],
+            },
+          ],
+        },
+        description:
+          "Bullet items, 2-5 entries each under 8 words. Pass each as either a plain string OR an object {text, icon} where icon is one of the registered icon ids. Icons replace the number badge; pick semantically (lock for security, network for partnerships, bolt for speed, etc.).",
       },
     },
     required: ["title", "items"],
@@ -374,7 +408,21 @@ const CONCEPT_CALLOUT: Template = {
   render(props, ctx) {
     const title = asString(props.title) || "";
     const eyebrow = asString(props.eyebrow);
-    const items = asStringArray(props.items).slice(0, 5);
+    // Items can be either plain strings (legacy) or {text, icon} objects.
+    // Normalise to a single shape, drop empties, cap at 5.
+    const rawItems = Array.isArray(props.items) ? props.items.slice(0, 5) : [];
+    const items: { text: string; icon?: string }[] = rawItems
+      .map((it: unknown) => {
+        if (typeof it === "string") return { text: it.trim() };
+        if (it && typeof it === "object") {
+          const obj = it as { text?: unknown; icon?: unknown };
+          const text = typeof obj.text === "string" ? obj.text.trim() : "";
+          const icon = typeof obj.icon === "string" && hasIcon(obj.icon) ? obj.icon : undefined;
+          return { text, icon };
+        }
+        return { text: "" };
+      })
+      .filter((i) => i.text.length > 0);
     const t = ctx.tokens;
     const dur = formatSec(ctx.durationSeconds);
     // Per-item stagger spaced so the last badge lands well before the scene
@@ -384,7 +432,7 @@ const CONCEPT_CALLOUT: Template = {
     const itemsHtml = items
       .map((item, i) => {
         // Per-word reveal inside each item label.
-        const words = item
+        const words = item.text
           .split(/(\s+)/)
           .map((w) =>
             /^\s+$/.test(w)
@@ -392,7 +440,11 @@ const CONCEPT_CALLOUT: Template = {
               : `<span class="co-iword">${escapeHtml(w)}</span>`,
           )
           .join("");
-        return `<div class="co-item" data-idx="${i}"><span class="co-badge">${String(i + 1).padStart(2, "0")}</span><span class="co-label">${words}</span></div>`;
+        // Badge content: icon if provided (semantic), else two-digit number.
+        const badgeInner = item.icon
+          ? renderIcon(item.icon, { size: 30, color: t.colors.bg, strokeWidth: 2.2 })
+          : String(i + 1).padStart(2, "0");
+        return `<div class="co-item" data-idx="${i}"><span class="co-badge">${badgeInner}</span><span class="co-label">${words}</span></div>`;
       })
       .join("\n    ");
     return `

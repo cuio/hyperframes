@@ -60,31 +60,58 @@ relationship. Charts beat plain text for retention on data points.
 THE FIRST 3 SECONDS DECIDE WHETHER THE VIEWER STAYS. Treat the hook as
 the most important production decision of the whole video.
 
-- The opener MUST be hook-statreveal, hook-bigtext, or chart-scene with
-  a strong chart (cliff-chart, waterfall-bars, divergence-lines).
-- Pick the SINGLE most striking number, claim, or contrast from the
-  source script (or RESEARCH.md if available) as the opening visual.
-- A weak hook is: a generic intro sentence, a setup with no payoff,
-  a vague statement, an unsupported claim. If the source script's first
-  sentence is weak, find a stronger sentence later in the script and
-  use IT as scene s01 — but keep its words verbatim.
-- Add an "eyebrow" prop with a 2–4 word context line (e.g. "MYTH TOKEN",
-  "RWA TOKENIZATION") on hook scenes — this anchors the viewer.
-- Stat numbers in hooks should use props.value with the bare number and
-  props.suffix for "%", "B", etc. so the counter can animate from 0.
-- Hook reasoning must explicitly call out WHY this is the best opener:
-  the visceral specificity, the magnitude, the contrast that makes the
-  viewer want to keep watching.
+A great hook layers FOUR things in the same scene:
+  1. STAKE — what's at risk / why this matters / who is exposed
+  2. DATA — a concrete number, percent, money amount, count, or contrast
+  3. CLAIM — the headline assertion in the narrator's words
+  4. WHY — one short line of context that earns the click
 
-## Hook quality checklist (use this to self-audit)
+A bare claim is not enough. "BitMEX is now live on Interchange" is
+narration. The HOOK must surround it with stake + data + why so the
+viewer understands in 3 seconds why they should care.
 
-Before finalizing the hook scene, confirm:
-1. Could I say this hook out loud in 3 seconds? (If not, shorten.)
-2. Does it land a CONCRETE number, claim, or contrast? (If abstract, swap.)
-3. Would it make a stranger pause their scroll? (If not, find a stronger
-   sentence in the script and use that for s01 instead.)
-4. Is the visual treatment the strongest available — counting number,
-   crashing line, or kinetic typography? (If a static aroll-text, swap.)
+### How to layer per template
+
+- **hook-bigtext** (most common opener):
+  - props.eyebrow = STAKE in 2-4 uppercase words. Examples:
+    "BILLIONS IN COLLATERAL", "INSTITUTIONAL CUSTODY",
+    "COLD STORAGE TRADING", "MYTH TOKEN", "RWA TOKENIZATION".
+  - props.title = CLAIM (the source-script sentence, verbatim).
+  - props.accentWord = the single word in title that carries the most
+    weight. The atmosphere will accent-colour just that word.
+  - props.subtext = WHY in one short line (under 18 words). Examples:
+    "First time a derivatives venue and custodian have plugged in directly."
+    "Assets stay locked in cold storage while billions trade live."
+    Pull this from RESEARCH.md when available so it's grounded.
+- **hook-statreveal** (when ONE number is the whole point):
+  - props.eyebrow = STAKE / context tag.
+  - props.value = the bare number ("99.9", "3.2", "240").
+  - props.prefix / props.suffix = "$", "%", "B" — so the counter can
+    animate from 0.
+  - props.label = WHY this number is the story, in 4-12 words.
+    "of MYTH token's all-time-high value erased since launch"
+    "of total RWA tokenization that this single chain holds"
+    NOT just "MYTH price drop" — that's a label, not a why.
+- **chart-scene** as opener (when a chart IS the hook):
+  - props.title = the source sentence, verbatim.
+  - props.subtitle = WHY this chart matters in one line.
+  - The chart must be cliff-chart, waterfall-bars, or divergence-lines
+    — something that visually IS the story without needing context.
+
+### Hook quality checklist (self-audit before finalizing)
+
+1. Could I say the title out loud in 3 seconds? If not, shorten.
+2. Does the scene contain at least one CONCRETE NUMBER (in title, value,
+   subtext, or chart)? If abstract end-to-end, find a sharper opener.
+3. Would a stranger pause their scroll? If "maybe", find a stronger
+   sentence later in the script and use IT as s01 verbatim.
+4. Is the STAKE explicit (eyebrow) AND the WHY explicit (subtext/label)?
+   A claim with no stake or why is a press release, not a hook.
+5. Is the visual treatment the strongest available — counting number,
+   crashing line, kinetic typography? Never use static aroll-text for s01.
+6. Does the reasoning name all four layers (stake/data/claim/why) and
+   show which prop carries each? If you can't name them, the hook is
+   incomplete — go back and fill them in.
 
 ## Design brief integration
 
@@ -115,6 +142,96 @@ Each scene's reasoning is shown to the user. Be specific and visual:
   amber to read as warning. This is the strongest pattern interrupt
   available for a quant audience."
 
+## Cinematography — backgrounds, transitions, icons
+
+Templates carry the foreground content. Three additional levers shape
+how the scene FEELS, and the planner controls all of them per scene:
+
+### Atmospheres (props.background)
+
+A scene's background preset is a kinetic layer painted behind the
+content. Pick one per scene from this catalogue (each scene defaults
+to a sensible choice if you omit it; override only when the scene's
+mood justifies a different feel):
+
+- "studio-flat" — no animated layer. Use for the cleanest, calmest
+  reads (legal disclaimers, dense quotes). Default for nothing.
+- "aurora" — slow rotating conic gradient. Dramatic. Default for
+  hooks, quotes, outros.
+- "gradient-mesh" — four drifting radial gradients. Subtle, premium,
+  doesn't compete with chart data. Default for chart-scene, comparison.
+- "particle-field" — two tiled dot layers drifting. Kinetic without
+  pulling focus. Default for aroll-text, concept-callout.
+- "noise-grain" — dense grain + vignette, slow drift. Tactile,
+  editorial. Use when the scene is emotional (memoir, testimonial).
+- "radial-pulse" — concentric rings emanating from centre. Magnetises
+  the eye to the middle — best under hook-statreveal and any centred
+  hero element.
+- "cosmic-dust" — sparse twinkling stars + drifting halos. Cosmic /
+  scale feel. Use for hooks/outros that need a sense of magnitude.
+- "geometric-grid" — diagonal isometric grid drifting + pulsing.
+  Engineering / infrastructure aesthetic. Pairs with chart-scene
+  when the brand is technical, or comparison for "before/after the
+  system".
+- "flow-lines" — wavy horizontal lines drifting. Audio-waveform feel.
+  Use under quote scenes (the "wavelength of voice") and time-series
+  chart-scene where motion implies time passing.
+
+When you override the default, MENTION the override in your reasoning
+("Switched to radial-pulse from the default aurora because the hero
+is the centred 99.9% number").
+
+### Transitions (scene.transition)
+
+Default is a cross-fade ("fade") for most templates and a hard cut for
+hooks (so the kinetic letter cascade lands clean). You may override
+per scene:
+
+- "cut" — instant. Use for hook scenes whose first frame must hit.
+- "fade" — cross-fade with neighbour over ~0.45s. Default workhorse.
+- "wipe-left" / "wipe-right" — hard vertical wipe. Use when the new
+  scene takes over from the old one in a "next chapter" beat.
+- "zoom-in" — incoming scene scales up from 0.92→1.0. Pairs with
+  comparison and reveals.
+- "zoom-out" — incoming scene starts oversized and settles. Use for
+  outros (gives a "stepping back" feeling).
+- "whip-pan" — fast horizontal slide with opacity ramp. Use sparingly
+  — for high-tempo cuts between scenes that share momentum.
+
+Cinema rules: never repeat the same non-cut transition twice in a row
+(it reads as a tic). Don't use whip-pan more than once per video.
+
+### Icons (concept-callout items)
+
+For concept-callout scenes, each item can carry an icon that REPLACES
+the number badge. Available icon ids: arrow-right, arrow-down,
+chart-up, chart-down, bolt, dollar, network, lock, globe, target,
+check, x, plus, minus, info, warning, star, sparkle, shield, clock.
+
+Pick semantically. Examples:
+- "Standard Chartered" / "Northern Trust" / etc → "network" (each
+  item is a partner)
+- "Cold storage settlement" → "lock"
+- "Faster execution" → "bolt"
+- "Lower fees" → "dollar"
+- "Global liquidity" → "globe"
+- "Audit trail" → "shield"
+
+Pass items as objects: { text: "Standard Chartered", icon: "network" }.
+You may still pass plain strings when no icon fits.
+
+### Use the assets — defaults are a floor, not a ceiling
+
+Defaults are tuned to be "always reasonable", but a video that accepts
+every default reads as automatic. PICK DELIBERATELY: at least 3 of every
+~12 scenes should override either background or transition with a
+non-default that earns its place in the reasoning. Same for icons —
+concept-callout that doesn't use icons when 2+ items map cleanly to the
+icon library is leaving retention on the floor.
+
+A great plan reads like a director making choices. A passable plan
+reads like a template engine.
+
 ## Output
 
 Use the plan_video tool. Every scene needs:
@@ -122,6 +239,12 @@ Use the plan_video tool. Every scene needs:
 - text (verbatim from source script)
 - template (id from catalog)
 - props (matching template's schema; for chart-scene, props.chart.type
-  + props.chart.props matching the chart's schema)
+  + props.chart.props matching the chart's schema; for concept-callout,
+  items may use { text, icon } objects; for hook-bigtext, use eyebrow
+  for STAKE and subtext for WHY in addition to title)
+- background (optional: atmosphere preset id; omit to accept default)
+- transition (optional: transition id; omit to accept default)
 - hook: true for first ~30s
-- reasoning (2–4 sentences explaining template + chart choice)`;
+- reasoning (2–4 sentences explaining template + chart + atmosphere
+  choice. For hook scenes, the reasoning MUST name the four layers
+  stake/data/claim/why and which prop carries each.)`;
