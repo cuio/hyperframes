@@ -1,11 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BUILTIN_TEMPLATES, DEFAULT_TOKENS, type DesignTokens } from "./templates/index.js";
-import type { Template } from "./templates/types.js";
+import type { ImageRef, Template } from "./templates/types.js";
 import { defaultAtmosphereForTemplate, renderAtmosphere } from "./atmosphere/index.js";
 import { TRANSITION_DURATIONS, defaultTransitionForTemplate } from "./transitions/index.js";
 import { getLoadedThemeByName } from "./themes/index.js";
 import type { PlannedScene, PlannedScript, SceneTransition } from "./types.js";
+import type { ImageEntry, ImageManifest } from "../images/index.js";
+import type { VisualDirectionPlan } from "./visualDirector.js";
 
 export interface AssembleOptions {
   projectDir: string;
@@ -26,6 +28,23 @@ export interface AssembleOptions {
    * references — unknown ids are silently skipped.
    */
   templates?: readonly Template[];
+  /**
+   * Optional images manifest. When supplied alongside a directionPlan,
+   * the assembler resolves each scene's directorial imageId, builds an
+   * ImageRef, and passes it as ctx.image to the template. Scenes whose
+   * planned template is image-scene also pull their imageId from props.
+   */
+  imagesManifest?: ImageManifest;
+  /**
+   * Per-scene visual direction (image + treatment) emitted by
+   * planVisualDirection. When present, scenes with imageId+treatment are
+   * routed through the `image-scene` template even if the original
+   * planner picked a different template — the director gets the final
+   * say on visual presentation while the planner still decides scene
+   * text and structural placement. Scenes with imageId: null fall
+   * through to the planner's original template.
+   */
+  directionPlan?: VisualDirectionPlan;
 }
 
 export interface AssembleResult {
@@ -68,9 +87,10 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
   }> = [];
 
   const templates = opts.templates ?? BUILTIN_TEMPLATES;
+  // Build a quick directionPlan lookup by sceneId.
+  const directionByScene = new Map((opts.directionPlan?.scenes ?? []).map((d) => [d.sceneId, d]));
   for (const scene of planned.scenes) {
-    const tpl = templates.find((t) => t.id === scene.template);
-    if (!tpl) continue;
+    const direction = directionByScene.get(scene.id);
     const sceneTotal = sceneTotalDuration(scene);
     const audioStartOffset = scene.audio?.leadInSeconds ?? 0;
     const audioDur = scene.audio?.durationSeconds ?? 0;
@@ -85,12 +105,45 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
       ? (getLoadedThemeByName(requestedSceneTheme)?.tokens ?? tokens)
       : tokens;
 
-    const fragment = tpl.render(scene.props, {
+    // Decide which template + props to render. Three paths:
+    //   1. Director assigned an imageId+treatment → route through image-scene
+    //      with director-derived props (headline = first sentence of scene text,
+    //      eyebrow = original eyebrow, etc.).
+    //   2. Planner already picked image-scene and props.imageId is set → resolve
+    //      the image from the manifest and pass it through as-is.
+    //   3. Default: planner's chosen template + props with no image context.
+    let renderTemplateId = scene.template;
+    let renderProps: Record<string, unknown> = scene.props;
+    let resolvedImage: ImageRef | undefined;
+
+    if (direction && direction.imageId && direction.treatment && opts.imagesManifest) {
+      const entry = opts.imagesManifest.images.find((i) => i.id === direction.imageId);
+      if (entry) {
+        renderTemplateId = "image-scene";
+        renderProps = directorPropsFor(scene, direction.treatment);
+        resolvedImage = toImageRef(entry, direction.focalOverride);
+      }
+    } else if (
+      scene.template === "image-scene" &&
+      typeof scene.props.imageId === "string" &&
+      opts.imagesManifest
+    ) {
+      const entry = opts.imagesManifest.images.find((i) => i.id === scene.props.imageId);
+      if (entry) {
+        resolvedImage = toImageRef(entry);
+      }
+    }
+
+    const tpl = templates.find((t) => t.id === renderTemplateId);
+    if (!tpl) continue;
+
+    const fragment = tpl.render(renderProps, {
       sceneId: scene.id,
       audioSrc: scene.audio?.path,
       durationSeconds: sceneTotal,
       isHook: scene.hook === true,
       tokens: sceneTokens,
+      ...(resolvedImage ? { image: resolvedImage } : {}),
     });
     const positioned = fragment.replace(`data-start="0"`, `data-start="${cursor.toFixed(2)}"`);
     // Inject the per-scene atmosphere as the first child of the scene div.
@@ -677,4 +730,64 @@ function escapeAttr(value: string): string {
 
 function escapeText(value: string): string {
   return value.replace(/[<>&]/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+/**
+ * When the visual director chose an image+treatment but the scene's
+ * original template was something else (chart-scene / aroll-text / ...),
+ * we route the scene through image-scene with props derived from the
+ * planner's text. The first sentence of the narration becomes the
+ * headline; remaining text becomes the subhead. Original eyebrow / title
+ * are preserved when they exist.
+ */
+function directorPropsFor(scene: PlannedScene, treatment: string): Record<string, unknown> {
+  const props = scene.props ?? {};
+  const originalEyebrow = typeof props.eyebrow === "string" ? props.eyebrow : undefined;
+  const originalTitle = typeof props.title === "string" ? props.title : undefined;
+  const originalSubtext = typeof props.subtext === "string" ? props.subtext : undefined;
+  const accentBlock = typeof props.accentBlock === "string" ? props.accentBlock : undefined;
+  const accentWord = typeof props.accentWord === "string" ? props.accentWord : undefined;
+
+  // Split scene text into first sentence + rest. Treat any of `.`, `!`, `?`
+  // as a terminator. If the planner already gave us a title, prefer that.
+  const text = (scene.text ?? "").trim();
+  let headline = originalTitle;
+  let subhead = originalSubtext;
+  if (!headline) {
+    const match = text.match(/^([^.!?]+[.!?])\s*(.*)$/s);
+    if (match) {
+      headline = match[1]?.trim();
+      if (!subhead) subhead = match[2]?.trim() || undefined;
+    } else {
+      headline = text || "Untitled";
+    }
+  } else if (!subhead) {
+    subhead = text || undefined;
+  }
+
+  return {
+    imageId: undefined, // assembler injects via ctx.image, not props
+    treatment,
+    headline,
+    ...(subhead ? { subhead } : {}),
+    ...(originalEyebrow ? { eyebrow: originalEyebrow } : {}),
+    ...(accentBlock ? { accentBlock } : {}),
+    ...(accentWord ? { accentWord } : {}),
+  };
+}
+
+/** Convert an ImageEntry to the leaner ImageRef the templates consume. */
+function toImageRef(entry: ImageEntry, focalOverride?: { x: number; y: number }): ImageRef {
+  return {
+    id: entry.id,
+    src: entry.src,
+    width: entry.width,
+    height: entry.height,
+    aspect: entry.aspect,
+    dominantColor: entry.dominantColor,
+    palette: entry.palette,
+    description: entry.description,
+    focalPoint: focalOverride ?? entry.focalPoint,
+    role: entry.role,
+  };
 }
