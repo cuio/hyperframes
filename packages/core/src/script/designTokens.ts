@@ -7,16 +7,24 @@ import type { DesignTokens } from "./templates/types.js";
 /**
  * Heuristic parser for DESIGN.md → DesignTokens. Looks for a "Colors" section
  * with a markdown table that includes hex codes, then matches role keywords
- * (background, accent, primary, muted, etc.) to slots. Falls back to defaults
- * for anything missing. Best-effort — humans write DESIGN.md however they want.
+ * (background, accent, primary, muted, etc.) to slots. Falls back to the
+ * supplied base (or DEFAULT_TOKENS) for anything missing. Best-effort —
+ * humans write DESIGN.md however they want.
+ *
+ * `base` lets callers stack DESIGN.md ON TOP of a named theme: pick the theme
+ * as a reasonable starting palette, then let DESIGN.md override only the
+ * roles it actually specifies.
  */
-export function parseDesignBriefToTokens(brief: string | null | undefined): DesignTokens {
-  if (!brief || !brief.trim()) return DEFAULT_TOKENS;
+export function parseDesignBriefToTokens(
+  brief: string | null | undefined,
+  base: DesignTokens = DEFAULT_TOKENS,
+): DesignTokens {
+  if (!brief || !brief.trim()) return base;
 
   const next: DesignTokens = {
-    colors: { ...DEFAULT_TOKENS.colors },
-    fonts: { ...DEFAULT_TOKENS.fonts },
-    motion: { ...DEFAULT_TOKENS.motion },
+    colors: { ...base.colors },
+    fonts: { ...base.fonts },
+    motion: { ...base.motion },
   };
 
   // Extract hex codes with surrounding role context.
@@ -115,10 +123,18 @@ function stripFontWeight(name: string): string {
 }
 
 /**
- * Resolve the design tokens for a project. Precedence:
- *   1. hyperframes.json `design.theme` — explicit user choice always wins.
- *   2. DESIGN.md (or design.md) parsed via parseDesignBriefToTokens().
- *   3. DEFAULT_TOKENS (currently HackerNoon FT).
+ * Resolve the design tokens for a project. Composition order (later beats
+ * earlier on a per-role basis):
+ *   1. DEFAULT_TOKENS (currently HackerNoon FT).
+ *   2. hyperframes.json `design.theme` — replaces base if the name resolves.
+ *   3. DESIGN.md — overlays only the roles its parser actually finds, so
+ *      a project can pick a named theme as its starting palette and tweak
+ *      individual hex codes in DESIGN.md without losing the whole base.
+ *
+ * Earlier behaviour treated step 2 as a hard short-circuit: a theme name
+ * meant DESIGN.md was ignored. That made it impossible for the planner to
+ * see a project's actual colours when both existed (which is the common
+ * case after `hyperframes init`).
  *
  * `briefOverride` lets callers inject a brief they've already loaded.
  */
@@ -126,7 +142,8 @@ export function resolveProjectTokens(
   projectDir: string,
   briefOverride?: string | null,
 ): DesignTokens {
-  // Step 1: explicit theme name in hyperframes.json takes precedence.
+  let base: DesignTokens = DEFAULT_TOKENS;
+  // Step 2: explicit theme name in hyperframes.json swaps the base.
   const configPath = join(projectDir, "hyperframes.json");
   if (existsSync(configPath)) {
     try {
@@ -136,16 +153,15 @@ export function resolveProjectTokens(
       const themeName = json?.design?.theme;
       if (typeof themeName === "string") {
         const themed = getThemeByName(themeName);
-        if (themed) return themed;
+        if (themed) base = themed;
       }
     } catch {
       /* ignore — fall through */
     }
   }
-  // Step 2: parse DESIGN.md if present.
+  // Step 3: parse DESIGN.md (or supplied brief) over the base.
   if (briefOverride && briefOverride.trim()) {
-    return parseDesignBriefToTokens(briefOverride);
+    return parseDesignBriefToTokens(briefOverride, base);
   }
-  // Step 3: ship default.
-  return DEFAULT_TOKENS;
+  return base;
 }
