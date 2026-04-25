@@ -1,6 +1,6 @@
 ---
 title: Claude Design
-description: "Create HyperFrames video drafts in Claude Design using a template-first skill, then refine in any AI coding agent."
+description: "Create HyperFrames video drafts in Claude Design, then refine in any AI coding agent."
 ---
 
 Claude Design produces a **valid first draft** of a HyperFrames video — brand identity, scene content, layout, animations, and transitions. You then download the ZIP and refine in any AI coding agent (Claude Code, Cursor, Codex, Windsurf, etc.) with linting and live preview.
@@ -8,14 +8,14 @@ Claude Design produces a **valid first draft** of a HyperFrames video — brand 
 ## Get started
 
 <Steps>
-  <Step title="Download the skill">
-    Right-click [`SKILL.md`](https://raw.githubusercontent.com/heygen-com/hyperframes/main/skills/claude-design-hyperframes/SKILL.md) → **Save Link As** to download. (Clicking opens it as text in a new tab.)
+  <Step title="Download the instruction file">
+    Open [`claude-design-hyperframes.md`](https://github.com/heygen-com/hyperframes/blob/main/docs/guides/claude-design-hyperframes.md) on GitHub and click the download button (↓) to save it. Or right-click [`this raw link`](https://raw.githubusercontent.com/heygen-com/hyperframes/main/docs/guides/claude-design-hyperframes.md) → **Save Link As**.
   </Step>
   <Step title="Open Claude Design">
     Start a new chat at [claude.ai](https://claude.ai) with Claude Design enabled.
   </Step>
-  <Step title="Attach the skill + describe your video">
-    Drag the SKILL.md file into the chat. Describe what you want — include screenshots, brand assets, or a palette if you have them.
+  <Step title="Attach the file + describe your video">
+    Drag the `claude-design-hyperframes.md` file into the chat. Describe what you want — include screenshots, brand assets, or a palette if you have them.
   </Step>
   <Step title="Download the ZIP">
     Claude Design produces `index.html`, `preview.html`, `README.md`, and `DESIGN.md`. Download the ZIP.
@@ -38,27 +38,27 @@ Claude Design produces a **valid first draft** of a HyperFrames video — brand 
 
 | Surface                     | Recommended setup                                                                                                             |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Claude Design               | Right-click [`SKILL.md`](https://raw.githubusercontent.com/heygen-com/hyperframes/main/skills/claude-design-hyperframes/SKILL.md) → Save Link As, then attach to your chat |
+| Claude Design               | Download [`claude-design-hyperframes.md`](https://raw.githubusercontent.com/heygen-com/hyperframes/main/docs/guides/claude-design-hyperframes.md) and attach to your chat |
 | Claude Code                 | `npx skills add heygen-com/hyperframes`, then use `/hyperframes`                                                              |
 | Cursor / Codex / Gemini CLI | `npx skills add heygen-com/hyperframes`                                                                                       |
 
-## How the skill works
+## How it works
 
-The skill gives Claude Design **pre-valid HTML skeletons** — the structural rules (data attributes, timeline registration, scene visibility, preview token forwarding) are already embedded. Claude Design fills in the creative work:
+The instruction file gives Claude Design **pre-valid HTML skeletons** — the structural rules (data attributes, timeline registration, scene visibility, preview token forwarding) are already embedded. Claude Design fills in the creative work:
 
 1. **Palette + typography** — CSS custom properties on `:root`
 2. **Scene content** — text, images, layout inside `.scene-content` wrappers
 3. **Animations** — GSAP entrance tweens and mid-scene activity
 4. **Transitions** — hard cuts for most scenes, shader transitions at 2-3 key moments
 
-This template-first approach means the output passes `npx hyperframes lint` with zero errors on first download — Claude Code can start refining immediately without structural fixes.
+This template-first approach means the output passes `npx hyperframes lint` with zero errors on first download — your coding agent can start refining immediately without structural fixes.
 
 ## Example prompts
 
 <CardGroup cols={1}>
-  <Card title="Feature announcement (attach SKILL.md)">
+  <Card title="Feature announcement">
     ```text
-    Use the attached skill. I just shipped dark mode for my app. Make me a
+    Use the attached file. I just shipped dark mode for my app. Make me a
     15-second Instagram reel announcing it.
 
     - App name: Taskflow
@@ -67,9 +67,9 @@ This template-first approach means the output passes `npx hyperframes lint` with
     - Key stat: "47% of users requested this"
     ```
   </Card>
-  <Card title="Founder pitch (attach SKILL.md)">
+  <Card title="Founder pitch">
     ```text
-    Use the attached skill. 25-second LinkedIn video for my startup.
+    Use the attached file. 25-second LinkedIn video for my startup.
 
     Problem: Sales teams waste 3 hours/day on manual CRM updates.
     Solution: AutoCRM — AI that logs every call, email, and meeting.
@@ -79,9 +79,9 @@ This template-first approach means the output passes `npx hyperframes lint` with
     Professional but not corporate. Think Linear or Vercel energy.
     ```
   </Card>
-  <Card title="Stat highlight (attach SKILL.md)">
+  <Card title="Stat highlight">
     ```text
-    Use the attached skill. 10-second reel. Just one big number:
+    Use the attached file. 10-second reel. Just one big number:
 
     "$4.2 billion processed in Q1 2026"
 
@@ -89,12 +89,12 @@ This template-first approach means the output passes `npx hyperframes lint` with
     confident. End with logo placeholder and "stripe.com"
     ```
   </Card>
-  <Card title="Sparse brief (attach SKILL.md, let it ask)">
+  <Card title="Sparse brief (let it ask)">
     ```text
-    Use the attached skill. Make a 30-second launch video for Orbit.
+    Use the attached file. Make a 30-second launch video for Orbit.
     ```
 
-    The skill asks ONE short clarifying question before generating.
+    The instructions tell Claude Design to ask ONE short clarifying question before generating.
   </Card>
 </CardGroup>
 
@@ -115,9 +115,9 @@ The more specific your prompt, the better the output. Include palette, fonts, du
 
 - **In-pane preview** — scrubbing is unreliable in Claude Design's iframe sandbox. Download and use `npx hyperframes preview` locally for reliable playback.
 - **No linting** — Claude Design can't run `npx hyperframes lint`. The template-first skeletons handle structural validity, but the self-review checklist is the only QA before download.
-- **Shaders work at any aspect ratio** — vertical (1080x1920), landscape (1920x1080), and square (1080x1080) all supported. HyperShader reads dimensions from `data-width`/`data-height` on the composition root.
-- **3 fetch limit** — Claude Design limits web fetches per turn. All critical rules are inlined in the skill; external references are for edge cases only.
-- **Seeking backwards** — scrubbing backwards in the in-pane preview can show blank frames (async capture race condition). Forward seeking usually works.
+- **Shaders work at any aspect ratio** — vertical (1080x1920), landscape (1920x1080), and square (1080x1080) all supported.
+- **3 fetch limit** — Claude Design limits web fetches per turn. All critical rules are inlined; external references are for edge cases only.
+- **Seeking backwards** — scrubbing backwards in the in-pane preview can show blank frames. Forward seeking usually works.
 
 ## The handoff to your coding agent
 
