@@ -725,4 +725,123 @@ describe("GSAP rules", () => {
     const finding = result.findings.find((f) => f.code === "gsap_infinite_repeat");
     expect(finding).toBeUndefined();
   });
+
+  it("errors when GSAP animates width/height on a <video> directly", () => {
+    const html = `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080">
+    <video id="el-video" muted data-start="0" data-track-index="0" src="./assets/v.mp4"
+           style="width: 1920px; height: 1080px"></video>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.to("#el-video", { width: 500, height: 280, duration: 0.5 }, 4);
+    window.__timelines["main"] = tl;
+  </script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "gsap_animates_video_dimensions");
+    expect(finding).toBeDefined();
+    expect(finding?.elementId).toBe("el-video");
+    expect(finding?.severity).toBe("error");
+    expect(finding?.message).toContain("width");
+    expect(finding?.message).toContain("height");
+    expect(finding?.fixHint).toContain("wrapper");
+  });
+
+  it("errors when GSAP animates x/y/top/left on a <video> directly", () => {
+    const html = `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080">
+    <video id="hero-vid" muted data-start="0" data-track-index="0" src="./assets/v.mp4"></video>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.fromTo("#hero-vid", { x: 0, y: 0 }, { x: 200, top: 50, duration: 0.4 }, 1);
+    window.__timelines["main"] = tl;
+  </script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "gsap_animates_video_dimensions");
+    expect(finding).toBeDefined();
+    expect(finding?.elementId).toBe("hero-vid");
+  });
+
+  it("does NOT fire when GSAP animates safe props on a <video> (opacity, scale, filter)", () => {
+    const html = `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080">
+    <video id="el-video" muted data-start="0" data-track-index="0" src="./assets/v.mp4"></video>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.to("#el-video", { opacity: 0.6, scale: 1.05, filter: "blur(2px)", duration: 0.5 }, 0);
+    window.__timelines["main"] = tl;
+  </script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "gsap_animates_video_dimensions");
+    expect(finding).toBeUndefined();
+  });
+
+  it("does NOT fire when the dimension tween targets a wrapper <div>, not the <video>", () => {
+    const html = `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080">
+    <div id="pip-wrapper" style="position: absolute; width: 1920px; height: 1080px">
+      <video id="el-video" muted data-start="0" data-track-index="0" src="./assets/v.mp4"
+             style="width: 100%; height: 100%"></video>
+    </div>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.to("#pip-wrapper", { width: 500, height: 280, top: 700, left: 1400, duration: 0.6 }, 26);
+    window.__timelines["main"] = tl;
+  </script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "gsap_animates_video_dimensions");
+    expect(finding).toBeUndefined();
+  });
+
+  it("does NOT fire on dimension tweens against non-video elements", () => {
+    const html = `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080">
+    <div id="card" class="clip" data-start="0" data-duration="3" data-track-index="0">A</div>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.to("#card", { width: 500, height: 200, duration: 0.5 }, 0);
+    window.__timelines["main"] = tl;
+  </script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "gsap_animates_video_dimensions");
+    expect(finding).toBeUndefined();
+  });
+
+  it("does NOT fire on a class-selector tween that happens to match a video's class", () => {
+    // Class/attribute selectors avoid false positives — only direct id selectors fire.
+    const html = `
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080">
+    <video id="bg-vid" class="bg" muted data-start="0" data-track-index="0" src="./assets/v.mp4"></video>
+  </div>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.to(".bg", { width: 800, duration: 0.5 }, 0);
+    window.__timelines["main"] = tl;
+  </script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "gsap_animates_video_dimensions");
+    expect(finding).toBeUndefined();
+  });
 });
