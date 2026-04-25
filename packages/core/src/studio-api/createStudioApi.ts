@@ -9,6 +9,7 @@ import { registerThumbnailRoutes } from "./routes/thumbnail.js";
 import { registerElevenLabsRoutes } from "./routes/elevenlabs.js";
 import { registerAnthropicRoutes } from "./routes/anthropic.js";
 import { registerScriptRoutes } from "./routes/script.js";
+import { registerCostsRoutes } from "./routes/costs.js";
 
 /**
  * Create a Hono sub-app with all studio API routes.
@@ -28,6 +29,7 @@ export function createStudioApi(adapter: StudioApiAdapter): Hono {
   registerElevenLabsRoutes(api, adapter);
   registerAnthropicRoutes(api, adapter);
   registerScriptRoutes(api, adapter);
+  registerCostsRoutes(api, adapter);
 
   return api;
 }
