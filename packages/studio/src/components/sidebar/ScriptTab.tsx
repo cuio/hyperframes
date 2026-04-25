@@ -5,6 +5,26 @@ interface ScriptTabProps {
   projectId: string;
 }
 
+const CAPTIONS_STORAGE_KEY = "hf-captions-visible";
+const CAPTIONS_CHANNEL = "hf-captions";
+
+function readStoredCaptionsVisible(): boolean {
+  try {
+    const stored = localStorage.getItem(CAPTIONS_STORAGE_KEY);
+    return stored !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeStoredCaptionsVisible(visible: boolean): void {
+  try {
+    localStorage.setItem(CAPTIONS_STORAGE_KEY, visible ? "1" : "0");
+  } catch {
+    /* private mode / disabled storage */
+  }
+}
+
 interface SceneRef {
   id: string;
   text: string;
@@ -61,7 +81,7 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     hasResearch: boolean;
   } | null>(null);
   const [scaffolding, setScaffolding] = useState(false);
-  const [captionsVisible, setCaptionsVisible] = useState(true);
+  const [captionsVisible, setCaptionsVisible] = useState<boolean>(readStoredCaptionsVisible);
 
   const loadAnthropicKeyStatus = useCallback(async () => {
     try {
@@ -128,19 +148,58 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
     [projectId],
   );
 
-  const toggleCaptions = useCallback(() => {
-    const next = !captionsVisible;
-    setCaptionsVisible(next);
-    // Find every preview iframe and postMessage the toggle into it.
+  const broadcastCaptions = useCallback((visible: boolean) => {
+    writeStoredCaptionsVisible(visible);
+    // BroadcastChannel reaches same-origin windows (other studio tabs and any
+    // already-mounted preview iframes that subscribe). New iframes that mount
+    // after the toggle hydrate from localStorage on load — that's why we
+    // write storage above, not just inside the player's message handler.
+    try {
+      const ch = new BroadcastChannel(CAPTIONS_CHANNEL);
+      ch.postMessage({ type: "captions", visible });
+      ch.close();
+    } catch {
+      /* unsupported */
+    }
+    // Back-compat: also postMessage into existing iframes for projects whose
+    // assembled HTML predates the BroadcastChannel listener.
     const iframes = document.querySelectorAll("iframe");
     for (const f of iframes) {
       try {
-        f.contentWindow?.postMessage({ source: "hf-host", type: "captions", visible: next }, "*");
+        f.contentWindow?.postMessage({ source: "hf-host", type: "captions", visible }, "*");
       } catch {
         /* ignore cross-origin */
       }
     }
-  }, [captionsVisible]);
+  }, []);
+
+  const toggleCaptions = useCallback(() => {
+    setCaptionsVisible((prev) => {
+      const next = !prev;
+      broadcastCaptions(next);
+      return next;
+    });
+  }, [broadcastCaptions]);
+
+  // Subscribe to broadcasts from other studio tabs so the toggle stays in sync.
+  // eslint-disable-next-line no-restricted-syntax
+  useEffect(() => {
+    let ch: BroadcastChannel | null = null;
+    try {
+      ch = new BroadcastChannel(CAPTIONS_CHANNEL);
+      ch.onmessage = (ev) => {
+        const data = ev.data as { type?: string; visible?: boolean } | null;
+        if (data?.type === "captions" && typeof data.visible === "boolean") {
+          setCaptionsVisible(data.visible);
+        }
+      };
+    } catch {
+      /* unsupported */
+    }
+    return () => {
+      ch?.close();
+    };
+  }, []);
 
   const loadDefaultVoice = useCallback(async () => {
     try {
@@ -402,44 +461,70 @@ export const ScriptTab = memo(function ScriptTab({ projectId }: ScriptTabProps) 
               {script.meta.overallReasoning}
             </div>
           )}
-          {script.meta.warnings && script.meta.warnings.length > 0 && (
-            <div className="mb-2 rounded-md border border-amber-900/40 bg-amber-950/30 px-2 py-1.5">
-              <div className="text-[9px] uppercase tracking-wider text-amber-400 mb-1">
-                Planner warnings
-              </div>
-              <ul className="text-[10px] text-amber-200/80 space-y-0.5">
-                {script.meta.warnings.map((w, i) => (
-                  <li key={i}>· {w}</li>
-                ))}
-              </ul>
-              {filesStatus && (!filesStatus.hasResearch || !filesStatus.hasDesignArt) && (
-                <div className="mt-2 pt-2 border-t border-amber-900/40 flex flex-wrap gap-1.5">
-                  {!filesStatus.hasResearch && (
-                    <button
-                      type="button"
-                      onClick={() => void scaffoldFiles({ research: true })}
-                      disabled={scaffolding}
-                      className="h-6 px-2 rounded-md text-[10px] font-medium border border-amber-700/40 bg-amber-900/20 text-amber-200 hover:bg-amber-900/30 disabled:opacity-40"
-                      title="Create RESEARCH.md from a starter template"
-                    >
-                      + Create RESEARCH.md
-                    </button>
-                  )}
-                  {!filesStatus.hasDesignArt && (
-                    <button
-                      type="button"
-                      onClick={() => void scaffoldFiles({ designArt: true })}
-                      disabled={scaffolding}
-                      className="h-6 px-2 rounded-md text-[10px] font-medium border border-amber-700/40 bg-amber-900/20 text-amber-200 hover:bg-amber-900/30 disabled:opacity-40"
-                      title="Create DESIGN-ART.md from a starter template"
-                    >
-                      + Create DESIGN-ART.md
-                    </button>
-                  )}
+          {(() => {
+            const rawWarnings = script.meta.warnings ?? [];
+            // Suppress "No FOO.md found" presence checks once the file exists.
+            // Other warnings (e.g. orphan numeric claims) require a re-plan to
+            // re-validate, so they stay visible until the next plan.
+            const visibleWarnings = rawWarnings.filter((w) => {
+              if (!filesStatus) return true;
+              if (filesStatus.hasResearch && w.includes("No RESEARCH.md found")) return false;
+              if (filesStatus.hasDesignArt && w.includes("No DESIGN-ART.md found")) return false;
+              if (filesStatus.hasDesign && w.includes("No DESIGN.md found")) return false;
+              return true;
+            });
+            if (visibleWarnings.length === 0) return null;
+            const showScaffold =
+              filesStatus && (!filesStatus.hasResearch || !filesStatus.hasDesignArt);
+            return (
+              <div className="mb-2 rounded-md border border-amber-900/40 bg-amber-950/30 px-2 py-1.5">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-[9px] uppercase tracking-wider text-amber-400">
+                    Planner warnings
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void loadFilesStatus()}
+                    className="text-[9px] uppercase tracking-wider text-amber-400/70 hover:text-amber-300"
+                    title="Re-check which design files exist on disk"
+                  >
+                    ⟳ Re-validate
+                  </button>
                 </div>
-              )}
-            </div>
-          )}
+                <ul className="text-[10px] text-amber-200/80 space-y-0.5">
+                  {visibleWarnings.map((w, i) => (
+                    <li key={i}>· {w}</li>
+                  ))}
+                </ul>
+                {showScaffold && (
+                  <div className="mt-2 pt-2 border-t border-amber-900/40 flex flex-wrap gap-1.5">
+                    {!filesStatus.hasResearch && (
+                      <button
+                        type="button"
+                        onClick={() => void scaffoldFiles({ research: true })}
+                        disabled={scaffolding}
+                        className="h-6 px-2 rounded-md text-[10px] font-medium border border-amber-700/40 bg-amber-900/20 text-amber-200 hover:bg-amber-900/30 disabled:opacity-40"
+                        title="Create RESEARCH.md from a starter template"
+                      >
+                        + Create RESEARCH.md
+                      </button>
+                    )}
+                    {!filesStatus.hasDesignArt && (
+                      <button
+                        type="button"
+                        onClick={() => void scaffoldFiles({ designArt: true })}
+                        disabled={scaffolding}
+                        className="h-6 px-2 rounded-md text-[10px] font-medium border border-amber-700/40 bg-amber-900/20 text-amber-200 hover:bg-amber-900/30 disabled:opacity-40"
+                        title="Create DESIGN-ART.md from a starter template"
+                      >
+                        + Create DESIGN-ART.md
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="mb-2 flex items-center gap-1.5 flex-wrap">
             <button
               type="button"

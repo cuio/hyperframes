@@ -328,14 +328,22 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
         window.gsap.to('#hf-rail-left', { height: '100%', duration: 1.4, ease: 'expo.out', delay: 0.35 });
         window.gsap.to('.hf-corner', { opacity: 0.9, duration: 0.5, ease: 'power3.out', stagger: 0.08, delay: 0.6 });
 
-        // Cross-frame caption visibility toggle. Studio (or any embedder) can
-        // postMessage({ source: 'hf-host', type: 'captions', visible: false })
-        // to hide the caption bubble. URL hash captions=off also disables.
+        // Cross-frame caption visibility toggle. Two delivery paths:
+        //   1. BroadcastChannel('hf-captions') — preferred; reaches every
+        //      same-origin window without the host needing to enumerate iframes.
+        //   2. window.postMessage({ source: 'hf-host', type: 'captions', ... })
+        //      — back-compat path for hosts that don't broadcast.
+        // localStorage acts as the persistence layer so a freshly-mounted
+        // iframe picks up the latest state without any message at all.
+        // URL hash captions=off forces hidden regardless of stored state.
         function applyCaptionVisibility(visible) {
           var cap = document.getElementById('hf-captions');
           if (!cap) return;
           if (visible) cap.classList.remove('hidden');
           else cap.classList.add('hidden');
+        }
+        function persistCaptionVisibility(visible) {
+          try { localStorage.setItem('hf-captions-visible', visible ? '1' : '0'); } catch (e) {}
         }
         if (window.location.hash.indexOf('captions=off') !== -1) applyCaptionVisibility(false);
         try {
@@ -345,9 +353,19 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
         window.addEventListener('message', function(ev) {
           var d = ev.data;
           if (!d || d.source !== 'hf-host' || d.type !== 'captions') return;
-          applyCaptionVisibility(d.visible !== false);
-          try { localStorage.setItem('hf-captions-visible', d.visible === false ? '0' : '1'); } catch (e) {}
+          var visible = d.visible !== false;
+          applyCaptionVisibility(visible);
+          persistCaptionVisibility(visible);
         });
+        try {
+          var capCh = new BroadcastChannel('hf-captions');
+          capCh.onmessage = function(ev) {
+            var d = ev.data;
+            if (!d || d.type !== 'captions' || typeof d.visible !== 'boolean') return;
+            applyCaptionVisibility(d.visible);
+            persistCaptionVisibility(d.visible);
+          };
+        } catch (e) {}
 
         // Imperative visibility, polled on every frame via gsap.ticker.
         // We avoid the timeline's onUpdate because the studio runtime can
