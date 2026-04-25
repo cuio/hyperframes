@@ -2,6 +2,7 @@ import type { Template } from "./types.js";
 import { escapeHtml, asString, formatSec } from "./util.js";
 import { BUILTIN_CHARTS } from "../charts/index.js";
 import { ICON_IDS, hasIcon, renderIcon } from "../icons/index.js";
+import { IMAGE_SCENE_TEMPLATE } from "./image-scene.js";
 
 /**
  * Premium template set. Each renders an HTML fragment with self-contained
@@ -872,6 +873,7 @@ export const BUILTIN_TEMPLATES: readonly Template[] = [
   QUOTE,
   CHART_SCENE,
   OUTRO_CTA,
+  IMAGE_SCENE_TEMPLATE,
 ];
 
 export function getTemplate(id: string): Template | undefined {

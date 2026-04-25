@@ -21,6 +21,32 @@ export interface TemplateRenderContext {
   isHook: boolean;
   /** Project-wide design tokens (Phase 4 fills these out properly). */
   tokens: DesignTokens;
+  /**
+   * Resolved image entry for image-aware templates. Populated by the
+   * assembler when scene.props.imageId references an entry in the
+   * project's images manifest. Other templates ignore this.
+   */
+  image?: ImageRef;
+}
+
+/**
+ * Subset of the full ImageEntry that templates need at render time. Kept
+ * here (vs. importing from ../../images) so the templates module stays
+ * decoupled from the manifest write path.
+ */
+export interface ImageRef {
+  id: string;
+  /** Path relative to the project root, e.g. "assets/images/cowboy.webp". */
+  src: string;
+  width: number;
+  height: number;
+  aspect: number;
+  dominantColor: string;
+  palette: string[];
+  description: string;
+  focalPoint: { x: number; y: number };
+  /** "hero" | "subject" | "atmosphere" | "graphic" | null. */
+  role: string | null;
 }
 
 export interface DesignTokens {
