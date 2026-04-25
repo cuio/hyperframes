@@ -1,6 +1,9 @@
 import { defineCommand } from "citty";
 import type { Example } from "./_examples.js";
-import { CostLogger, type CostEntry } from "@hyperframes/core";
+import { CostLogger, DEFAULT_RATES, loadRates, type CostEntry } from "@hyperframes/core";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { c } from "../ui/colors.js";
 import { resolveProject } from "../utils/project.js";
 import { withMeta } from "../utils/updateCheck.js";
@@ -10,6 +13,9 @@ export const examples: Example[] = [
   ["Last 24 hours only", "hyperframes costs --since 1d"],
   ["Last 7 days, JSON output", "hyperframes costs --since 7d --json"],
   ["Group by operation, last month", "hyperframes costs --since 30d --by op"],
+  ["View effective pricing rates", "hyperframes costs rates"],
+  ["Set render rate to $0.05/min globally", "hyperframes costs rates set render.perMinute 0.05"],
+  ["Project-local override", "hyperframes costs rates set render.perMinute 0.20 --scope project"],
 ];
 
 interface SummaryRow {
@@ -74,13 +80,162 @@ function pad(s: string, width: number): string {
   return s + " ".repeat(width - s.length);
 }
 
+// ── rates subcommand ───────────────────────────────────────────────────────
+
+function ratesPath(scope: "global" | "project", projectDir: string | null): string {
+  if (scope === "project") {
+    if (!projectDir) {
+      throw new Error("--scope project requires running inside a project directory");
+    }
+    return join(projectDir, ".hyperframes", "cost-rates.json");
+  }
+  return join(homedir(), ".hyperframes", "cost-rates.json");
+}
+
+function readRatesFile(path: string): Record<string, unknown> {
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function setNested(obj: Record<string, unknown>, path: string[], value: unknown): void {
+  let cur: Record<string, unknown> = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i] as string;
+    const next = cur[key];
+    if (!next || typeof next !== "object") cur[key] = {};
+    cur = cur[key] as Record<string, unknown>;
+  }
+  cur[path[path.length - 1] as string] = value;
+}
+
+function parseRateValue(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`rate value must be a non-negative number, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
+const ratesCommand = defineCommand({
+  meta: { name: "rates", description: "View or override cost-rate config" },
+  args: {
+    action: {
+      type: "positional",
+      description: "Subaction: view (default) or set <path> <value>",
+      required: false,
+    },
+    key: {
+      type: "positional",
+      description: "When action=set: dotted key, e.g. render.perMinute",
+      required: false,
+    },
+    value: { type: "positional", description: "When action=set: numeric value", required: false },
+    scope: {
+      type: "string",
+      description:
+        "Where to write (global=~/.hyperframes/cost-rates.json, project=<project>/.hyperframes/cost-rates.json). Default: global.",
+      default: "global",
+    },
+    json: { type: "boolean", description: "Output as JSON", default: false },
+  },
+  async run({ args }) {
+    const action = (args.action as string | undefined) ?? "view";
+    // Best-effort project detection (don't process.exit if missing).
+    const cwdDir = resolve(".");
+    const projectDir =
+      existsSync(join(cwdDir, "index.html")) && existsSync(join(cwdDir, "hyperframes.json"))
+        ? cwdDir
+        : null;
+
+    if (action === "view") {
+      const effective = loadRates(projectDir ?? undefined);
+      if (args.json) {
+        console.log(JSON.stringify(withMeta({ defaults: DEFAULT_RATES, effective }), null, 2));
+        return;
+      }
+      console.log(c.bold("Effective cost rates"));
+      console.log(
+        c.dim(
+          "  layered: defaults → ~/.hyperframes/cost-rates.json → <project>/.hyperframes/cost-rates.json\n",
+        ),
+      );
+      console.log(c.bold("  Anthropic / Vision (per million tokens)"));
+      for (const [model, rate] of Object.entries(effective.anthropic)) {
+        console.log(
+          "    " +
+            pad(model, 30) +
+            c.dim("in  $") +
+            pad(rate.inputPerMTok.toFixed(2), 7) +
+            c.dim("  out $") +
+            pad(rate.outputPerMTok.toFixed(2), 7) +
+            (rate.cacheReadPerMTok != null
+              ? c.dim("  cache-read $") + rate.cacheReadPerMTok.toFixed(2)
+              : ""),
+        );
+      }
+      console.log(
+        "\n  " +
+          c.bold("ElevenLabs") +
+          "          " +
+          c.dim("$") +
+          effective.elevenlabs.perMChar.toFixed(2) +
+          " per million characters",
+      );
+      console.log(
+        "  " +
+          c.bold("Render") +
+          "              " +
+          c.dim("$") +
+          effective.render.perMinute.toFixed(4) +
+          " per wall-clock minute",
+      );
+      return;
+    }
+
+    if (action === "set") {
+      const key = args.key as string | undefined;
+      const value = args.value as string | undefined;
+      if (!key || value === undefined) {
+        console.error(
+          "Usage: hyperframes costs rates set <dotted-key> <value> [--scope global|project]",
+        );
+        process.exit(1);
+      }
+      const numeric = parseRateValue(value);
+      const path = ratesPath((args.scope as "global" | "project") ?? "global", projectDir);
+      const existing = readRatesFile(path);
+      setNested(existing, key.split("."), numeric);
+      mkdirSync(dirname(path), { recursive: true, mode: 0o755 });
+      writeFileSync(path, JSON.stringify(existing, null, 2) + "\n");
+      console.log(
+        c.success("✓") +
+          " " +
+          c.dim(path) +
+          "  " +
+          c.bold(key) +
+          " = " +
+          c.success(String(numeric)),
+      );
+      return;
+    }
+
+    console.error(`Unknown action "${action}". Try: view, set`);
+    process.exit(1);
+  },
+});
+
 export default defineCommand({
   meta: {
     name: "costs",
     description: "Show production cost (Anthropic, ElevenLabs, render) for a project",
   },
+  subCommands: { rates: ratesCommand },
   args: {
-    dir: { type: "positional", description: "Project directory", required: false },
+    dir: { type: "string", description: "Project directory (default: current directory)" },
     since: {
       type: "string",
       description: "Filter to entries after this time (e.g. 1d, 7d, 30d, or ISO date)",
@@ -98,6 +253,13 @@ export default defineCommand({
     json: { type: "boolean", description: "Output as JSON", default: false },
   },
   async run({ args }) {
+    // Citty calls parent run() even when a subcommand handled the input,
+    // so detect the subcommand-only invocation and exit early. Tested with
+    // `hyperframes costs rates` and `hyperframes costs rates set ...`.
+    const argv = process.argv.slice(2);
+    const idx = argv.indexOf("costs");
+    if (idx !== -1 && argv[idx + 1] === "rates") return;
+
     const project = resolveProject(args.dir as string | undefined);
     const logger = new CostLogger(project.dir);
     const allEntries = logger.read();
