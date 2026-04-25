@@ -6,8 +6,23 @@ export type {
   PlannedScene,
   PlannedScript,
 } from "./types.js";
-export { planScript, planSceneVariants, ScriptPlannerError } from "./planner.js";
-export type { PlanOptions, VariantOptions, ScriptFidelity } from "./planner.js";
+export { planScript, planSceneVariants, improveHook, ScriptPlannerError } from "./planner.js";
+export type { PlanOptions, VariantOptions, ScriptFidelity, HookCriticOptions } from "./planner.js";
+export {
+  BUILTIN_ATMOSPHERES,
+  ATMOSPHERE_IDS,
+  getAtmosphere,
+  defaultAtmosphereForTemplate,
+  renderAtmosphere,
+} from "./atmosphere/index.js";
+export type { AtmospherePreset, AtmosphereContext } from "./atmosphere/index.js";
+export {
+  TRANSITION_DURATIONS,
+  TRANSITION_IDS,
+  defaultTransitionForTemplate,
+} from "./transitions/index.js";
+export { BUILTIN_ICONS, ICON_IDS, renderIcon, hasIcon } from "./icons/index.js";
+export type { IconRenderOptions } from "./icons/index.js";
 export {
   loadDesignArt,
   loadResearch,

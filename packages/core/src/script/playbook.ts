@@ -115,6 +115,84 @@ Each scene's reasoning is shown to the user. Be specific and visual:
   amber to read as warning. This is the strongest pattern interrupt
   available for a quant audience."
 
+## Cinematography — backgrounds, transitions, icons
+
+Templates carry the foreground content. Three additional levers shape
+how the scene FEELS, and the planner controls all of them per scene:
+
+### Atmospheres (props.background)
+
+A scene's background preset is a kinetic layer painted behind the
+content. Pick one per scene from this catalogue (each scene defaults
+to a sensible choice if you omit it; override only when the scene's
+mood justifies a different feel):
+
+- "studio-flat" — no animated layer. Use for the cleanest, calmest
+  reads (legal disclaimers, dense quotes). Default for nothing.
+- "aurora" — slow rotating conic gradient. Dramatic. Default for
+  hooks, quotes, outros.
+- "gradient-mesh" — four drifting radial gradients. Subtle, premium,
+  doesn't compete with chart data. Default for chart-scene, comparison.
+- "particle-field" — two tiled dot layers drifting. Kinetic without
+  pulling focus. Default for aroll-text, concept-callout.
+- "noise-grain" — dense grain + vignette, slow drift. Tactile,
+  editorial. Use when the scene is emotional (memoir, testimonial).
+- "radial-pulse" — concentric rings emanating from centre. Magnetises
+  the eye to the middle — best under hook-statreveal and any centred
+  hero element.
+- "cosmic-dust" — sparse twinkling stars + drifting halos. Cosmic /
+  scale feel. Use for hooks/outros that need a sense of magnitude.
+- "geometric-grid" — diagonal isometric grid drifting + pulsing.
+  Engineering / infrastructure aesthetic. Pairs with chart-scene
+  when the brand is technical, or comparison for "before/after the
+  system".
+- "flow-lines" — wavy horizontal lines drifting. Audio-waveform feel.
+  Use under quote scenes (the "wavelength of voice") and time-series
+  chart-scene where motion implies time passing.
+
+When you override the default, MENTION the override in your reasoning
+("Switched to radial-pulse from the default aurora because the hero
+is the centred 99.9% number").
+
+### Transitions (scene.transition)
+
+Default is a cross-fade ("fade") for most templates and a hard cut for
+hooks (so the kinetic letter cascade lands clean). You may override
+per scene:
+
+- "cut" — instant. Use for hook scenes whose first frame must hit.
+- "fade" — cross-fade with neighbour over ~0.45s. Default workhorse.
+- "wipe-left" / "wipe-right" — hard vertical wipe. Use when the new
+  scene takes over from the old one in a "next chapter" beat.
+- "zoom-in" — incoming scene scales up from 0.92→1.0. Pairs with
+  comparison and reveals.
+- "zoom-out" — incoming scene starts oversized and settles. Use for
+  outros (gives a "stepping back" feeling).
+- "whip-pan" — fast horizontal slide with opacity ramp. Use sparingly
+  — for high-tempo cuts between scenes that share momentum.
+
+Cinema rules: never repeat the same non-cut transition twice in a row
+(it reads as a tic). Don't use whip-pan more than once per video.
+
+### Icons (concept-callout items)
+
+For concept-callout scenes, each item can carry an icon that REPLACES
+the number badge. Available icon ids: arrow-right, arrow-down,
+chart-up, chart-down, bolt, dollar, network, lock, globe, target,
+check, x, plus, minus, info, warning, star, sparkle, shield, clock.
+
+Pick semantically. Examples:
+- "Standard Chartered" / "Northern Trust" / etc → "network" (each
+  item is a partner)
+- "Cold storage settlement" → "lock"
+- "Faster execution" → "bolt"
+- "Lower fees" → "dollar"
+- "Global liquidity" → "globe"
+- "Audit trail" → "shield"
+
+Pass items as objects: { text: "Standard Chartered", icon: "network" }.
+You may still pass plain strings when no icon fits.
+
 ## Output
 
 Use the plan_video tool. Every scene needs:
@@ -122,6 +200,10 @@ Use the plan_video tool. Every scene needs:
 - text (verbatim from source script)
 - template (id from catalog)
 - props (matching template's schema; for chart-scene, props.chart.type
-  + props.chart.props matching the chart's schema)
+  + props.chart.props matching the chart's schema; for concept-callout,
+  items may use icon objects)
+- background (optional: atmosphere preset id; omit to accept default)
+- transition (optional: transition id; omit to accept default)
 - hook: true for first ~30s
-- reasoning (2–4 sentences explaining template + chart choice)`;
+- reasoning (2–4 sentences explaining template + chart + atmosphere
+  choice. Reference the override if you took one.)`;

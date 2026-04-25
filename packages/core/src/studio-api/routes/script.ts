@@ -8,6 +8,7 @@ import { loadElevenLabsKey, readDefaultVoiceId } from "../../elevenlabs/index.js
 import {
   planScript,
   planSceneVariants,
+  improveHook,
   synthesizeScript,
   assembleMaster,
   loadDesignBrief,
@@ -28,6 +29,8 @@ interface PlanBody {
   maxSceneDuration?: number;
   fidelity?: ScriptFidelity;
   meta?: { title?: string; audience?: string; tone?: string; voiceId?: string };
+  /** Run the second-pass hook critic after planning. Default true. */
+  improveHook?: boolean;
 }
 
 interface GenerateBody {
@@ -73,19 +76,54 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     if (!text) return c.json({ error: "text is required" }, 400);
 
     try {
-      const script = await planScript(text, {
+      const designBrief = loadDesignBrief(project.dir) ?? undefined;
+      const research = loadResearch(project.dir) ?? undefined;
+      const artDirection = loadDesignArt(project.dir) ?? undefined;
+      let script = await planScript(text, {
         apiKey,
         model: body.model,
         targetDurationSeconds: body.targetDurationSeconds,
         maxSceneDuration: body.maxSceneDuration,
         fidelity: body.fidelity,
         meta: body.meta,
-        designBrief: loadDesignBrief(project.dir) ?? undefined,
-        artDirection: loadDesignArt(project.dir) ?? undefined,
-        research: loadResearch(project.dir) ?? undefined,
+        designBrief,
+        artDirection,
+        research,
       });
+      // Second-pass hook critic. Defaults on; the user can set
+      // improveHook: false to skip the extra LLM round-trip when iterating.
+      // Verbatim fidelity always skips internally (contract), but we still
+      // call so the reasoning surfaces in warnings.
+      let hookSwapped = false;
+      let hookReasoning: string | null = null;
+      if (body.improveHook !== false) {
+        const result = await improveHook(script, {
+          apiKey,
+          model: body.model,
+          designBrief,
+          research,
+          fidelity: body.fidelity,
+        });
+        script = result.script;
+        hookSwapped = result.swapped;
+        hookReasoning = result.reasoning;
+        if (hookReasoning) {
+          script = {
+            ...script,
+            meta: {
+              ...script.meta,
+              warnings: [
+                ...(script.meta.warnings ?? []),
+                hookSwapped
+                  ? `Hook critic swapped opener: ${hookReasoning}`
+                  : `Hook critic kept opener: ${hookReasoning}`,
+              ],
+            },
+          };
+        }
+      }
       writeJson(join(project.dir, SCRIPT_FILE), script);
-      return c.json({ ok: true, script });
+      return c.json({ ok: true, script, hookSwapped, hookReasoning });
     } catch (err) {
       if (err instanceof ScriptPlannerError) {
         return c.json({ error: err.message }, 502);
