@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { __testing } from "./storyline";
 import type { Script } from "../../script/types";
 
-const { buildProjectIntentSystem, buildProjectIntentResponse } = __testing;
+const { buildProjectIntentSystem, buildProjectIntentResponse, pickSceneWindow } = __testing;
 
 const fakeScript: Script = {
   meta: { title: "Test" },
@@ -220,5 +220,48 @@ describe("buildProjectIntentResponse", () => {
     );
     expect(res.patches).toHaveLength(1);
     expect(res.patches[0]?.patch.template).toBe("hook-vhs-rip");
+  });
+});
+
+describe("pickSceneWindow", () => {
+  const mkScript = (n: number): Script => ({
+    meta: { title: "T" },
+    scenes: Array.from({ length: n }, (_, i) => ({
+      id: `s${String(i).padStart(2, "0")}`,
+      text: `narration ${i}`,
+      template: "aroll-text",
+      props: {},
+    })),
+  });
+
+  it("returns just the focal scene with windowSize=0", () => {
+    const w = pickSceneWindow(mkScript(5), 2, 0);
+    expect(w.map((s) => s.id)).toEqual(["s02"]);
+  });
+
+  it("returns focal + windowSize neighbours on each side by default", () => {
+    const w = pickSceneWindow(mkScript(10), 4, 2);
+    expect(w.map((s) => s.id)).toEqual(["s02", "s03", "s04", "s05", "s06"]);
+  });
+
+  it("clamps to start of script when focal is near the front", () => {
+    const w = pickSceneWindow(mkScript(10), 0, 2);
+    expect(w.map((s) => s.id)).toEqual(["s00", "s01", "s02"]);
+  });
+
+  it("clamps to end of script when focal is near the back", () => {
+    const w = pickSceneWindow(mkScript(10), 9, 2);
+    expect(w.map((s) => s.id)).toEqual(["s07", "s08", "s09"]);
+  });
+
+  it("caps the window size at 8 to keep prompt costs bounded", () => {
+    const w = pickSceneWindow(mkScript(40), 20, 100);
+    // 2*8+1 = 17 max
+    expect(w.length).toBeLessThanOrEqual(17);
+  });
+
+  it("treats fractional / negative windowSize defensively", () => {
+    expect(pickSceneWindow(mkScript(5), 2, 1.7).length).toBe(3); // floored to 1
+    expect(pickSceneWindow(mkScript(5), 2, -3).length).toBe(1); // clamped to 0
   });
 });

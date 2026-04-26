@@ -135,6 +135,22 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
   const scrollRootRef = useRef<HTMLDivElement | null>(null);
   const lastFocalIndexRef = useRef<number>(-1);
 
+  // Theme auto-apply state — when the project Director surfaces a theme
+  // suggestion we let the user "Try" it. Trying writes via the existing
+  // PUT /theme endpoint and remembers the previous theme so "Revert" can
+  // restore it. "Keep" just dismisses the trial overlay.
+  const [tryingTheme, setTryingTheme] = useState<{
+    previousThemeId: string;
+    triedThemeId: string;
+  } | null>(null);
+
+  // Keyboard navigation — which scene index is the keyboard focal. Driven by
+  // j/k and synced to the scroll-based focal index when the user scrolls
+  // (so kbd nav and scroll nav don't fight). `editFlagBySceneId` flips a
+  // per-scene boolean that the SceneCard consumes once and clears.
+  const [keyFocalIndex, setKeyFocalIndex] = useState(0);
+  const [editFlagBySceneId, setEditFlagBySceneId] = useState<Record<string, boolean>>({});
+
   // Load the planned script + the image manifest on mount, project change, and
   // after every successful write.
   useEffect(() => {
@@ -421,6 +437,160 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
     [script, applyPatch],
   );
 
+  // ── Per-scene Director ─────────────────────────────────────────────────────
+  // Same suggestion stack as per-scene Haiku actions — the response shape from
+  // /scene-intent is the storyline-intent shape (overallNote + patches), so we
+  // pull each patch out and surface it on the focal scene's card with a
+  // synthesised SceneSuggestion. Keeps the apply path single-track.
+
+  const handleSceneIntent = useCallback(
+    async (sceneId: string, intent: string): Promise<void> => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/storyline/scene-intent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sceneId, intent }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `HTTP ${res.status}`);
+        }
+        const json = (await res.json()) as { overallNote?: string; patches?: IntentPatch[] };
+        const patches = json.patches ?? [];
+        if (patches.length === 0) {
+          window.alert(
+            json.overallNote
+              ? `Haiku didn't propose changes:\n${json.overallNote}`
+              : "Haiku didn't propose any changes for that prompt.",
+          );
+          return;
+        }
+        // Convert each patch into a SceneSuggestion landed on the right card.
+        // We model scene-intent suggestions as `rePickTemplate` for label clarity
+        // (mixed patches can change template + props + reasoning); the action
+        // ID is purely a labelling concern — apply still goes through the
+        // generic merge path.
+        setSuggestionsByScene((prev) => {
+          const next = { ...prev };
+          for (const p of patches) {
+            const list = next[p.sceneId] ?? [];
+            next[p.sceneId] = [
+              ...list,
+              {
+                id: `${p.sceneId}-sceneIntent-${Date.now()}-${list.length}`,
+                action: "rePickTemplate" as AIActionId,
+                preview: `${p.preview}${p.note ? ` — ${p.note}` : ""}`,
+                rationale: json.overallNote ?? p.note ?? "",
+                patch: p.patch,
+              },
+            ];
+          }
+          return next;
+        });
+      } catch (err) {
+        window.alert(`Couldn't direct scene: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [projectId],
+  );
+
+  // ── Theme auto-apply (Try / Revert / Keep) ────────────────────────────────
+  // Project Director surfaces a non-binding theme suggestion. "Try theme"
+  // PUTs the suggested id to /theme; the studio rebuilds tokens on next
+  // assemble. We remember the previous theme so the user can revert without
+  // hunting through the Theme picker.
+
+  const tryThemeSuggestion = useCallback(
+    async (currentThemeId: string, suggestedThemeId: string): Promise<void> => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/theme`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ theme: suggestedThemeId }),
+        });
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `HTTP ${res.status}`);
+        }
+        setTryingTheme({ previousThemeId: currentThemeId, triedThemeId: suggestedThemeId });
+        setReloadKey((k) => k + 1);
+      } catch (err) {
+        window.alert(`Couldn't try theme: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [projectId],
+  );
+
+  const revertTheme = useCallback(async (): Promise<void> => {
+    if (!tryingTheme) return;
+    try {
+      const res = await fetch(`/api/projects/${projectId}/theme`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ theme: tryingTheme.previousThemeId }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error ?? `HTTP ${res.status}`);
+      }
+      setTryingTheme(null);
+      setReloadKey((k) => k + 1);
+    } catch (err) {
+      window.alert(`Couldn't revert theme: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [tryingTheme, projectId]);
+
+  const keepTriedTheme = useCallback(() => setTryingTheme(null), []);
+
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  // j / k navigate between cards (vim-style). `e` opens the focal card's
+  // headline for inline edit. `c` triggers Compress on the focal scene.
+  // Shortcuts are skipped when the user is typing in an input/textarea.
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (
+        tag === "input" ||
+        tag === "textarea" ||
+        (e.target as HTMLElement | null)?.isContentEditable
+      ) {
+        return;
+      }
+      const cards = scenesWithStart;
+      if (cards.length === 0) return;
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = Math.min(cards.length - 1, lastFocalIndexRef.current + 1);
+        lastFocalIndexRef.current = next;
+        setKeyFocalIndex(next);
+        const sceneId = cards[next]?.scene.id;
+        if (sceneId)
+          cardRefs.current.get(sceneId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const next = Math.max(0, lastFocalIndexRef.current - 1);
+        lastFocalIndexRef.current = next;
+        setKeyFocalIndex(next);
+        const sceneId = cards[next]?.scene.id;
+        if (sceneId)
+          cardRefs.current.get(sceneId)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      } else if (e.key === "e") {
+        e.preventDefault();
+        const idx = lastFocalIndexRef.current >= 0 ? lastFocalIndexRef.current : keyFocalIndex;
+        const focal = cards[idx]?.scene;
+        if (focal) setEditFlagBySceneId((prev) => ({ ...prev, [focal.id]: true }));
+      } else if (e.key === "c") {
+        e.preventDefault();
+        const idx = lastFocalIndexRef.current >= 0 ? lastFocalIndexRef.current : keyFocalIndex;
+        const focal = cards[idx]?.scene;
+        if (focal) void handleAIAction("compress", focal);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [scenesWithStart, keyFocalIndex, handleAIAction]);
+
   // ── Bulk ops: reorder / delete / insert ────────────────────────────────────
 
   const runBulkOp = useCallback(
@@ -559,6 +729,14 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
           on-screen visual decisions made around it. Use the AI buttons or the Director below to
           refine. Click any headline / subtext to edit it inline.
         </p>
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+          <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-neutral-600">
+            shortcuts
+          </span>
+          <KbdHint keys={["j", "k"]} label="prev / next" />
+          <KbdHint keys={["e"]} label="edit headline" />
+          <KbdHint keys={["c"]} label="compress" />
+        </div>
       </header>
 
       {/* Director — single textarea, two scopes. Storyline scope returns
@@ -601,7 +779,42 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
           onApplyOne={applyIntentPatch}
           onApplyAll={applyAllIntentPatches}
           onDismissAll={() => setProjectIntentResult(null)}
+          tryingTheme={tryingTheme !== null}
+          onTryTheme={tryThemeSuggestion}
         />
+      )}
+
+      {/* Theme trial overlay — shown while a Director-suggested theme is
+          live but not yet committed. Revert restores the previous theme;
+          Keep just dismisses the banner. */}
+      {tryingTheme && (
+        <section className="mb-3 rounded-lg border border-amber-500/40 bg-amber-500/[0.05] px-3 py-2">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[11px] text-amber-200">
+              Trying theme{" "}
+              <span className="font-mono text-amber-100">{tryingTheme.triedThemeId}</span>{" "}
+              <span className="text-amber-400/70">
+                (was <span className="font-mono">{tryingTheme.previousThemeId}</span>)
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={revertTheme}
+                className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-amber-500/40 text-amber-200 hover:bg-amber-500/10 transition-colors"
+              >
+                Revert
+              </button>
+              <button
+                type="button"
+                onClick={keepTriedTheme}
+                className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition-colors"
+              >
+                Keep
+              </button>
+            </div>
+          </div>
+        </section>
       )}
 
       <div className="flex flex-col gap-3">
@@ -632,6 +845,16 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
                 onMove={handleMove}
                 onDelete={handleDelete}
                 onInsertAfter={handleInsertAfter}
+                onSceneIntent={handleSceneIntent}
+                forceEditHeadline={editFlagBySceneId[scene.id] === true}
+                onConsumeEditHeadlineFlag={() =>
+                  setEditFlagBySceneId((prev) => {
+                    if (!prev[scene.id]) return prev;
+                    const next = { ...prev };
+                    delete next[scene.id];
+                    return next;
+                  })
+                }
               />
             </div>
           );
@@ -842,11 +1065,16 @@ function ProjectIntentPanel({
   onApplyOne,
   onApplyAll,
   onDismissAll,
+  tryingTheme,
+  onTryTheme,
 }: {
   result: ProjectIntentResponse;
   onApplyOne: (p: IntentPatch) => void;
   onApplyAll: () => void;
   onDismissAll: () => void;
+  /** True while a theme trial is already live — disables the Try button. */
+  tryingTheme: boolean;
+  onTryTheme: (currentThemeId: string, suggestedThemeId: string) => void;
 }) {
   const hasAnything =
     result.patches.length > 0 ||
@@ -900,12 +1128,30 @@ function ProjectIntentPanel({
         </div>
       </header>
 
-      {/* Theme suggestion — non-binding, surfaced for the user to act on
-          via the existing Theme picker in the Script tab. */}
+      {/* Theme suggestion — Try writes to hyperframes.json on a trial basis;
+          parent renders the Revert/Keep banner so the user can roll back
+          without hunting through the Theme picker. */}
       {result.themeSuggestion && (
         <div className="px-3 py-2 border-b border-studio-accent/15 bg-studio-accent/[0.02]">
-          <div className="text-[9px] uppercase tracking-[0.18em] text-neutral-500 mb-1">
-            Theme suggestion
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[9px] uppercase tracking-[0.18em] text-neutral-500">
+              Theme suggestion
+            </div>
+            <button
+              type="button"
+              disabled={tryingTheme || !result.themeSuggestion.suggestedThemeId}
+              onClick={() => {
+                if (!result.themeSuggestion?.suggestedThemeId) return;
+                onTryTheme(
+                  result.themeSuggestion.currentThemeId,
+                  result.themeSuggestion.suggestedThemeId,
+                );
+              }}
+              className="h-5 px-2 rounded text-[9px] font-semibold border border-studio-accent/50 bg-studio-accent/15 text-studio-accent hover:bg-studio-accent/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              title="Apply this theme on a trial basis — Revert / Keep banner will appear"
+            >
+              {tryingTheme ? "Trial running" : "Try theme"}
+            </button>
           </div>
           <div className="text-[12px] text-neutral-100">
             <span className="font-mono text-neutral-400">
@@ -921,9 +1167,6 @@ function ProjectIntentPanel({
               {result.themeSuggestion.rationale}
             </p>
           )}
-          <p className="text-[10px] text-neutral-600 mt-1">
-            Apply via the Theme picker in the Script tab.
-          </p>
         </div>
       )}
 
@@ -986,5 +1229,21 @@ function ProjectIntentPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function KbdHint({ keys, label }: { keys: string[]; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-neutral-500">
+      {keys.map((k, i) => (
+        <kbd
+          key={i}
+          className="px-1 min-w-[16px] h-4 text-center inline-flex items-center justify-center rounded text-[9px] font-mono bg-neutral-900 border border-neutral-800 text-neutral-400"
+        >
+          {k}
+        </kbd>
+      ))}
+      <span className="text-neutral-600">{label}</span>
+    </span>
   );
 }

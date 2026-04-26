@@ -84,6 +84,15 @@ interface SceneCardProps {
   onInsertAfter?: (sceneId: string) => void;
   /** Save an inline edit (headline / subtext / accent / words). */
   onInlineEdit?: (sceneId: string, field: string, value: string) => void | Promise<void>;
+  /** Run a per-scene Director prompt (free-form intent scoped to this card +
+   *  its neighbours). Resolves once the suggestion (if any) has been added
+   *  to the suggestion stack. */
+  onSceneIntent?: (sceneId: string, intent: string) => Promise<void>;
+  /** External flag to force this card into edit-headline mode (driven by the
+   *  storyline-level keyboard shortcut `e`). The card consumes the flag and
+   *  calls back to clear it. */
+  forceEditHeadline?: boolean;
+  onConsumeEditHeadlineFlag?: () => void;
 }
 
 const AI_ACTIONS: Array<{ id: AIActionId; label: string; tooltip: string }> = [
@@ -132,8 +141,24 @@ export const SceneCard = memo(function SceneCard({
   onDelete,
   onInsertAfter,
   onInlineEdit,
+  onSceneIntent,
+  forceEditHeadline,
+  onConsumeEditHeadlineFlag,
 }: SceneCardProps) {
   const [expandedReason, setExpandedReason] = useState(false);
+  const [sceneIntentOpen, setSceneIntentOpen] = useState(false);
+  const [sceneIntentText, setSceneIntentText] = useState("");
+  const [sceneIntentRunning, setSceneIntentRunning] = useState(false);
+  const [forceEditHeadlineLocal, setForceEditHeadlineLocal] = useState(false);
+
+  // Consume the external "open edit" flag once and clear it back at the
+  // parent so the next press of `e` can trigger another open.
+  useEffect(() => {
+    if (forceEditHeadline) {
+      setForceEditHeadlineLocal(true);
+      onConsumeEditHeadlineFlag?.();
+    }
+  }, [forceEditHeadline, onConsumeEditHeadlineFlag]);
   const summary = summarizeScene(scene);
   const headline = pickOnScreenHeadline(scene.template, scene.props);
   const subtext = pickOnScreenSubtext(scene.template, scene.props);
@@ -206,6 +231,8 @@ export const SceneCard = memo(function SceneCard({
             multiline={true}
             placeholder="(empty)"
             disabled={!onInlineEdit}
+            forceEdit={forceEditHeadlineLocal}
+            onConsumeForceEdit={() => setForceEditHeadlineLocal(false)}
             className="text-[13px] text-neutral-100 leading-snug font-medium"
             renderDisplay={(v) =>
               accent ? <HighlightAccent text={v} accent={accent} /> : <>{v}</>
@@ -365,6 +392,16 @@ export const SceneCard = memo(function SceneCard({
             </button>
           );
         })}
+        {onSceneIntent && (
+          <button
+            type="button"
+            onClick={() => setSceneIntentOpen((p) => !p)}
+            className="h-6 px-2 rounded-md text-[10px] font-medium border border-studio-accent/40 bg-studio-accent/10 text-studio-accent hover:bg-studio-accent/20 transition-colors"
+            title="Direct this scene with a free-form prompt"
+          >
+            {sceneIntentOpen ? "Close" : "✦ Direct this scene"}
+          </button>
+        )}
         {onInsertAfter && (
           <button
             type="button"
@@ -376,6 +413,74 @@ export const SceneCard = memo(function SceneCard({
           </button>
         )}
       </div>
+
+      {/* Per-scene Director prompt — collapsed by default, opens inline. */}
+      {sceneIntentOpen && onSceneIntent && (
+        <div className="border-t border-studio-accent/30 bg-studio-accent/[0.04] px-3 py-2">
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-studio-accent">
+              Scene Director
+            </span>
+            <span className="text-[9px] text-neutral-500">
+              scoped to s{summary.id} + neighbours
+            </span>
+          </div>
+          <textarea
+            value={sceneIntentText}
+            onChange={(e) => setSceneIntentText(e.target.value)}
+            rows={2}
+            disabled={sceneIntentRunning}
+            placeholder='e.g. "make this hit harder", "swap the accent to a verb"'
+            className="w-full bg-neutral-950/50 border border-neutral-800 rounded-md px-2 py-1.5 text-[12px] text-neutral-100 placeholder:text-neutral-600 focus:border-studio-accent/50 focus:outline-none resize-none"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                if (!sceneIntentText.trim() || sceneIntentRunning) return;
+                setSceneIntentRunning(true);
+                void onSceneIntent(scene.id, sceneIntentText.trim()).finally(() => {
+                  setSceneIntentRunning(false);
+                  setSceneIntentText("");
+                  setSceneIntentOpen(false);
+                });
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setSceneIntentOpen(false);
+                setSceneIntentText("");
+              }
+            }}
+            autoFocus
+          />
+          <div className="flex items-center justify-end gap-1.5 mt-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setSceneIntentOpen(false);
+                setSceneIntentText("");
+              }}
+              disabled={sceneIntentRunning}
+              className="h-6 px-2 rounded text-[10px] text-neutral-500 hover:text-neutral-300 transition-colors disabled:opacity-40"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={sceneIntentRunning || !sceneIntentText.trim()}
+              onClick={() => {
+                setSceneIntentRunning(true);
+                void onSceneIntent(scene.id, sceneIntentText.trim()).finally(() => {
+                  setSceneIntentRunning(false);
+                  setSceneIntentText("");
+                  setSceneIntentOpen(false);
+                });
+              }}
+              className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-studio-accent/50 bg-studio-accent/15 text-studio-accent hover:bg-studio-accent/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {sceneIntentRunning ? "Thinking…" : "Direct ↵"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Suggestion stack — pending Haiku proposals, applied à la carte. */}
       {suggestions && suggestions.length > 0 && (
@@ -658,6 +763,8 @@ function EditableText({
   className,
   multiline,
   renderDisplay,
+  forceEdit,
+  onConsumeForceEdit,
 }: {
   value: string;
   onSave: (next: string) => void;
@@ -666,6 +773,9 @@ function EditableText({
   className?: string;
   multiline?: boolean;
   renderDisplay?: (v: string) => ReactNode;
+  /** If true, opens edit mode immediately (used by the keyboard `e` shortcut). */
+  forceEdit?: boolean;
+  onConsumeForceEdit?: () => void;
 }): ReactNode {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -675,6 +785,13 @@ function EditableText({
   useEffect(() => {
     if (!editing) setDraft(value);
   }, [value, editing]);
+
+  useEffect(() => {
+    if (forceEdit && !disabled && !editing) {
+      setEditing(true);
+      onConsumeForceEdit?.();
+    }
+  }, [forceEdit, disabled, editing, onConsumeForceEdit]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
