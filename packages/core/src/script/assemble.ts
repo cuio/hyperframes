@@ -117,17 +117,26 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     let resolvedImage: ImageRef | undefined;
 
     if (direction && direction.imageId && direction.treatment && opts.imagesManifest) {
+      // Director picked an image-scene treatment — fully override the planner's
+      // template choice and route through image-scene with director-derived props.
       const entry = opts.imagesManifest.images.find((i) => i.id === direction.imageId);
       if (entry) {
         renderTemplateId = "image-scene";
         renderProps = directorPropsFor(scene, direction.treatment);
         resolvedImage = toImageRef(entry, direction.focalOverride);
       }
-    } else if (
-      scene.template === "image-scene" &&
-      typeof scene.props.imageId === "string" &&
-      opts.imagesManifest
-    ) {
+    } else if (direction && direction.imageId && !direction.treatment && opts.imagesManifest) {
+      // Director assigned an image but left the planner's template in place. This
+      // is the path for self-imaging templates like hook-vhs-rip and kinetic-words
+      // that paint their own photo treatment — we just resolve ctx.image so the
+      // template can render the photo, no template override.
+      const entry = opts.imagesManifest.images.find((i) => i.id === direction.imageId);
+      if (entry) {
+        resolvedImage = toImageRef(entry, direction.focalOverride);
+      }
+    } else if (typeof scene.props.imageId === "string" && opts.imagesManifest) {
+      // Planner put imageId directly in props (image-scene path or pre-director
+      // imageId persistence). Resolve and pass through ctx.image.
       const entry = opts.imagesManifest.images.find((i) => i.id === scene.props.imageId);
       if (entry) {
         resolvedImage = toImageRef(entry);
@@ -166,9 +175,11 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     if (scene.audio) {
       // Audio starts AFTER the lead-in, so the visual lands first. Audio
       // lasts only its actual duration — never bleeds into next scene.
+      // data-track-index="1" + data-timeline-group="voiceover" merges every
+      // scene's voiceover onto a single Premiere-style "Voiceover" lane.
       const audioStart = cursor + audioStartOffset;
       audioTags.push(
-        `  <audio src="${escapeAttr(scene.audio.path)}" data-start="${audioStart.toFixed(2)}" data-duration="${audioDur.toFixed(2)}" data-track-index="1" preload="auto"></audio>`,
+        `  <audio id="hf-vo-${scene.id}" src="${escapeAttr(scene.audio.path)}" data-start="${audioStart.toFixed(2)}" data-duration="${audioDur.toFixed(2)}" data-track-index="1" data-timeline-group="voiceover" data-timeline-label="Voiceover" preload="auto"></audio>`,
       );
     }
     const transitionIn: SceneTransition =
@@ -387,6 +398,12 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
       </div>
 ${sceneFragments.join("\n")}
 ${audioTags.join("\n")}
+      <!-- Timeline lane placeholders: empty Music + SFX rows so the studio
+           timeline always shows Premiere-style lanes, ready to receive
+           authored audio without rebuilding the layout. The runtime picks
+           these up via data-timeline-role="persistent-overlay". -->
+      <div id="hf-track-music" data-track-index="2" data-timeline-role="persistent-overlay" data-timeline-group="music" data-timeline-label="Music" data-start="0" data-duration="${total.toFixed(2)}" aria-hidden="true" style="position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;"></div>
+      <div id="hf-track-sfx" data-track-index="3" data-timeline-role="persistent-overlay" data-timeline-group="sfx" data-timeline-label="SFX" data-start="0" data-duration="${total.toFixed(2)}" aria-hidden="true" style="position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;"></div>
       <!-- Captions track: shown for the active scene only -->
       <div class="hf-captions" id="hf-captions" aria-live="polite">
         <div class="hf-cap-bubble"><span class="hf-cap-text" id="hf-cap-text"></span></div>

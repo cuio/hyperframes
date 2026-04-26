@@ -256,7 +256,14 @@ function buildSystem(opts: VisualDirectorOptions): string {
       `   or type-mask-fill. Atmosphere is too quiet for a hook.\n` +
       `7. **Scene template hint**: scenes already using chart-scene, hook-statreveal, or quote ` +
       `   templates often work better with no image (imageId: null) so the typography sings — ` +
-      `   override only when an atmosphere image makes the act cohere.`,
+      `   override only when an atmosphere image makes the act cohere.\n` +
+      `8. **Self-imaging templates** (hook-vhs-rip, kinetic-words): these templates paint their ` +
+      `   own photo treatment (chromatic VHS distortion, word-by-word emphasis on a blurred ` +
+      `   backdrop). Assign a hero/subject image to them via imageId, but pass **treatment: null** ` +
+      `   so the assembler keeps the planner's chosen template instead of routing through ` +
+      `   image-scene. The image will be rendered using the template's own visual language.\n` +
+      `9. **editorial-serif** scenes are typography-only by design — pass imageId: null and ` +
+      `   treatment: null. Don't try to attach an image; the breath scene needs negative space.`,
   );
 
   if (opts.themeContext?.name) {

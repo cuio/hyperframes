@@ -378,9 +378,15 @@ export function collectRuntimeTimelinePayload(params: {
         kind,
       start,
       duration,
+      // Default to track 0 when no explicit track is set. Without this, every
+      // clip gets a unique track based on DOM index, exploding the timeline UI
+      // into N rows for N scenes. With the default-0 collapse + the per-kind
+      // splitter (`normalizeTrackAssignments`), all compositions land on one row,
+      // all audio on another — Premiere-style. Authors can opt out via
+      // explicit `data-track-index` (voiceover→1, music→2, sfx→3).
       track:
         Number.parseInt(
-          node.getAttribute("data-track-index") ?? node.getAttribute("data-track") ?? String(i),
+          node.getAttribute("data-track-index") ?? node.getAttribute("data-track") ?? "0",
           10,
         ) || 0,
       kind,

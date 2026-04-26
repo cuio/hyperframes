@@ -4,6 +4,19 @@ export interface TimelineElement {
   id: string;
   key?: string;
   tag: string;
+  /**
+   * Optional human label sourced from the runtime's `data-timeline-label`
+   * attribute. Renders on the clip face in place of the raw tag when present
+   * (e.g. "Voiceover", "Music", "SFX") so persistent track lanes don't show
+   * as "DIV".
+   */
+  label?: string;
+  /**
+   * Optional track grouping sourced from `data-timeline-group` (e.g.
+   * "voiceover", "music", "sfx", "video"). Used by the studio to derive a
+   * per-lane Premiere-style label in the left gutter.
+   */
+  timelineGroup?: string;
   start: number;
   duration: number;
   track: number;

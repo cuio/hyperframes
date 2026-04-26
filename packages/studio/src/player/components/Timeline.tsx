@@ -30,7 +30,10 @@ import { getTimelinePixelsPerSecond } from "./timelineZoom";
 import { TIMELINE_ASSET_MIME } from "../../utils/timelineAssetDrop";
 
 /* ── Layout ─────────────────────────────────────────────────────── */
-const GUTTER = 32;
+// Widened from 32px to 96px so each track shows a Premiere-style text label
+// (V1, A1, MUSIC, SFX, …) next to the type icon. Exported so unit tests can
+// stay GUTTER-relative — never hard-code the numeric value.
+export const GUTTER = 96;
 const TRACK_H = 72;
 const RULER_H = 24;
 const CLIP_Y = 3; // vertical inset inside track
@@ -85,6 +88,69 @@ function getStyle(tag: string): TrackVisualStyle {
     ...trackStyle,
     icon,
   };
+}
+
+/* ── Pure helpers ───────────────────────────────────────────────── */
+
+/**
+ * Pick the largest *finite* end time across all clips, falling back to the
+ * store-reported duration. Filtering non-finite values is what prevents a
+ * single Infinity-end clip (loop-inflated GSAP timeline) from poisoning the
+ * max and collapsing trackContentWidth to zero — the symptom users saw as
+ * "rows vanish" after rapid project switches.
+ */
+export function computeEffectiveTimelineDuration(
+  elements: ReadonlyArray<{ start: number; duration: number }>,
+  storeDuration: number,
+): number {
+  const safeDur = Number.isFinite(storeDuration) ? storeDuration : 0;
+  if (elements.length === 0) return safeDur;
+  let maxEnd = safeDur;
+  for (const el of elements) {
+    const end = el.start + el.duration;
+    if (Number.isFinite(end) && end > maxEnd) maxEnd = end;
+  }
+  return Number.isFinite(maxEnd) ? maxEnd : safeDur;
+}
+
+/**
+ * Premiere-style left-gutter lane name. Prefers the explicit
+ * `data-timeline-group` (most accurate — distinguishes Music from Video when
+ * both ride DIV elements), then falls back to the clip kind. Returns short,
+ * uppercased strings that fit the 96px gutter (V1 / VOICE / MUSIC / SFX / IMG).
+ */
+const LANE_LABEL_BY_GROUP: Record<string, string> = {
+  video: "V1",
+  voiceover: "VOICE",
+  music: "MUSIC",
+  sfx: "SFX",
+  captions: "TEXT",
+};
+
+const LANE_LABEL_BY_TAG: Record<string, string> = {
+  audio: "AUDIO",
+  video: "VIDEO",
+  img: "IMG",
+  div: "VIDEO",
+};
+
+export function deriveTimelineLaneLabel(
+  elements: ReadonlyArray<{ tag?: string; timelineGroup?: string }>,
+): string {
+  if (elements.length === 0) return "TRACK";
+  // Pick the most common group across the track's clips.
+  const groupCounts = new Map<string, number>();
+  for (const el of elements) {
+    if (el.timelineGroup) {
+      groupCounts.set(el.timelineGroup, (groupCounts.get(el.timelineGroup) ?? 0) + 1);
+    }
+  }
+  if (groupCounts.size > 0) {
+    const dominant = [...groupCounts.entries()].sort(([, a], [, b]) => b - a)[0]![0];
+    return LANE_LABEL_BY_GROUP[dominant] ?? dominant.toUpperCase();
+  }
+  const tag = elements[0]?.tag ?? "";
+  return LANE_LABEL_BY_TAG[tag] ?? (tag.toUpperCase() || "TRACK");
 }
 
 /* ── Tick Generation ────────────────────────────────────────────── */
@@ -352,21 +418,39 @@ export const Timeline = memo(function Timeline({
   const [showPopover, setShowPopover] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(0);
   const roRef = useRef<ResizeObserver | null>(null);
+  const lastObservedWidthRef = useRef(0);
 
   // Callback ref: sets up ResizeObserver when the DOM element actually mounts.
   // useMountEffect can't work here because the component returns null on first
   // render (timelineReady=false), so containerRef.current is null when the
   // effect fires and the ResizeObserver is never created.
   const setContainerRef = useCallback((el: HTMLDivElement | null) => {
+    // Skip churn when React re-attaches the same element (e.g. parent re-renders).
+    // Without this guard the RO disconnects + recreates every render, briefly
+    // dropping viewportWidth to a stale value and flickering all tracks.
+    if (containerRef.current === el) return;
     if (roRef.current) {
       roRef.current.disconnect();
       roRef.current = null;
     }
     containerRef.current = el;
-    if (!el) return;
-    setViewportWidth(el.clientWidth);
+    if (!el) {
+      lastObservedWidthRef.current = 0;
+      return;
+    }
+    // Read the width SYNCHRONOUSLY before the next paint so the first rendered
+    // frame uses the correct fit-pps math instead of falling back to 100.
+    const initialWidth = el.getBoundingClientRect().width;
+    lastObservedWidthRef.current = initialWidth;
+    setViewportWidth(initialWidth);
     roRef.current = new ResizeObserver(([entry]) => {
-      setViewportWidth(entry.contentRect.width);
+      const next = entry.contentRect.width;
+      // Skip no-op updates — ResizeObserver can fire repeatedly during layout
+      // settle (scrollbar appear/disappear, transition animations) and each
+      // setState invalidates the entire timeline memo chain.
+      if (Math.abs(next - lastObservedWidthRef.current) < 0.5) return;
+      lastObservedWidthRef.current = next;
+      setViewportWidth(next);
     });
     roRef.current.observe(el);
   }, []);
@@ -374,18 +458,17 @@ export const Timeline = memo(function Timeline({
   // Clean up ResizeObserver on unmount
   useMountEffect(() => () => {
     roRef.current?.disconnect();
+    roRef.current = null;
+    lastObservedWidthRef.current = 0;
   });
 
   // Effective duration: max of store duration and the furthest element end.
   // processTimelineMessage updates elements but not duration, so elements can
   // extend beyond the store's duration — this ensures fit mode shows everything.
-  const effectiveDuration = useMemo(() => {
-    const safeDur = Number.isFinite(duration) ? duration : 0;
-    if (elements.length === 0) return safeDur;
-    const maxEnd = Math.max(...elements.map((el) => el.start + el.duration));
-    const result = Math.max(safeDur, maxEnd);
-    return Number.isFinite(result) ? result : safeDur;
-  }, [elements, duration]);
+  const effectiveDuration = useMemo(
+    () => computeEffectiveTimelineDuration(elements, duration),
+    [elements, duration],
+  );
 
   const tracks = useMemo(() => {
     const map = new Map<number, typeof elements>();
@@ -1147,7 +1230,7 @@ export const Timeline = memo(function Timeline({
                     boxShadow: `inset 0 0 0 1px ${clipStyle.accent}33`,
                   }}
                 >
-                  {element.tag}
+                  {element.label ?? element.tag}
                 </span>
               </div>
               <div className="flex items-center">
@@ -1266,11 +1349,13 @@ export const Timeline = memo(function Timeline({
                 }}
               >
                 <div
-                  className="flex-shrink-0 flex items-center justify-center"
+                  className="flex-shrink-0 flex items-center"
                   style={{
                     width: GUTTER,
                     background: theme.gutterBackground,
                     borderRight: `1px solid ${theme.gutterBorder}`,
+                    paddingLeft: 10,
+                    gap: 8,
                   }}
                 >
                   <div
@@ -1282,10 +1367,24 @@ export const Timeline = memo(function Timeline({
                       backgroundColor: ts.iconBackground,
                       border: `1px solid ${theme.gutterBorder}`,
                       color: "#fff",
+                      flexShrink: 0,
                     }}
                   >
                     {ts.icon}
                   </div>
+                  <span
+                    className="truncate"
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 600,
+                      letterSpacing: "0.12em",
+                      textTransform: "uppercase",
+                      color: ts.label,
+                      lineHeight: 1,
+                    }}
+                  >
+                    {deriveTimelineLaneLabel(els)}
+                  </span>
                 </div>
 
                 {/* Clips */}

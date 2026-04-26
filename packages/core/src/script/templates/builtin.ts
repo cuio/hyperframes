@@ -3,6 +3,11 @@ import { escapeHtml, asString, formatSec } from "./util.js";
 import { BUILTIN_CHARTS } from "../charts/index.js";
 import { ICON_IDS, hasIcon, renderIcon } from "../icons/index.js";
 import { IMAGE_SCENE_TEMPLATE } from "./image-scene.js";
+import {
+  HOOK_VHS_RIP_TEMPLATE,
+  KINETIC_WORDS_TEMPLATE,
+  EDITORIAL_SERIF_TEMPLATE,
+} from "./kinetic.js";
 
 /**
  * Premium template set. Each renders an HTML fragment with self-contained
@@ -80,10 +85,14 @@ const HOOK_BIGTEXT: Template = {
     #${ctx.sceneId} .hb-rule { position: absolute; left: 180px; top: 110px; height: 4px; width: 0; background: ${t.colors.accent}; opacity: 0.95; }
     #${ctx.sceneId} .hb-eyebrow { font-size: 20px; font-weight: 600; letter-spacing: 0.28em; text-transform: uppercase; color: ${t.colors.accent2}; font-family: ${t.fonts.mono}; opacity: 0; position: relative; padding-left: 40px; }
     #${ctx.sceneId} .hb-eyebrow::before { content: ""; position: absolute; left: 0; top: 50%; width: 28px; height: 1.5px; background: ${t.colors.accent2}; transform: translateY(-50%) scaleX(0); transform-origin: left; }
-    #${ctx.sceneId} .hb-title { font-size: 128px; font-weight: 800; line-height: 1.0; max-width: 1500px; font-family: ${t.fonts.display}; position: relative; letter-spacing: -0.025em; }
-    #${ctx.sceneId} .hb-word { display: inline-block; }
+    #${ctx.sceneId} .hb-title { font-size: 128px; font-weight: 800; line-height: 1.0; max-width: 1500px; font-family: ${t.fonts.display}; position: relative; letter-spacing: -0.025em; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
+    #${ctx.sceneId} .hb-word { display: inline-block; white-space: nowrap; }
     #${ctx.sceneId} .hb-word.hb-accent { color: ${t.colors.accent}; font-style: italic; }
-    #${ctx.sceneId} .hb-letter { display: inline-block; opacity: 0; transform: translateY(60px) rotateX(-90deg); transform-origin: 50% 100%; will-change: transform, opacity; }
+    /* Letters start at opacity 0 + lifted via inline transforms set by gsap.fromTo so the */
+    /* initial state survives any seek order. CSS keyframe is a defense-in-depth safety net: */
+    /* if GSAP fails to register the tween, every letter still reaches its visible final state. */
+    #${ctx.sceneId} .hb-letter { display: inline-block; will-change: transform, opacity; animation: hb-letter-${ctx.sceneId} 0.001s linear ${Math.max(0.01, ctx.durationSeconds - 0.05).toFixed(2)}s forwards; }
+    @keyframes hb-letter-${ctx.sceneId} { to { opacity: 1; transform: translateY(0); } }
     #${ctx.sceneId} .hb-space { display: inline-block; width: 0.32em; }
     #${ctx.sceneId} .hb-subtext { font-size: 26px; font-weight: 400; line-height: 1.32; max-width: 1200px; color: ${t.colors.muted}; opacity: 0; transform: translateY(14px); position: relative; padding-left: 14px; border-left: 3px solid ${t.colors.accent2}; }
     #${ctx.sceneId} .hb-meta { display: flex; gap: 24px; align-items: center; font-family: ${t.fonts.mono}; font-size: 16px; letter-spacing: 0.18em; text-transform: uppercase; color: ${t.colors.muted}; opacity: 0; }
@@ -113,15 +122,37 @@ const HOOK_BIGTEXT: Template = {
         tl.set(ebBefore, { '--placeholder': 0 }, 0); // satisfy linter
       }
       // Letter cascade — the kinetic typography moment.
+      // Using fromTo (not to) so GSAP records both endpoints up front. This makes the
+      // tween survive any seek order: even if the runtime seeks the scene timeline
+      // straight to its end before any forward play, GSAP applies the to-state.
       var letters = s.querySelectorAll('.hb-letter');
-      tl.to(letters, {
-        opacity: 1,
-        y: 0,
-        rotateX: 0,
-        duration: 0.55,
-        ease: 'expo.out',
-        stagger: { each: 0.025, from: 'start' },
-      }, 0.25);
+      var letterCount = letters.length;
+      var sceneDur = ${ctx.durationSeconds.toFixed(2)};
+      var cascadeStart = 0.25;
+      var cascadeTail = 0.55; // safety margin after last letter starts
+      var letterDuration = 0.5;
+      // Cascade must complete by sceneDur - tailGap so the final frame is fully revealed.
+      var tailGap = 0.25;
+      var maxCascadeWindow = Math.max(0.3, sceneDur - cascadeStart - cascadeTail - tailGap);
+      var eachStagger = Math.min(0.025, maxCascadeWindow / Math.max(1, letterCount));
+      tl.fromTo(letters,
+        { opacity: 0, y: 50 },
+        {
+          opacity: 1,
+          y: 0,
+          duration: letterDuration,
+          ease: 'expo.out',
+          stagger: { each: eachStagger, from: 'start' },
+        },
+        cascadeStart);
+      // Defense-in-depth: snap all letters to final state at a time that ALWAYS lands
+      // inside the scene window. If the cascade math drifts under load, the last frame
+      // is still correct.
+      var finalStateAt = Math.min(
+        sceneDur - 0.05,
+        cascadeStart + letterCount * eachStagger + letterDuration
+      );
+      tl.set(letters, { opacity: 1, y: 0, clearProps: 'transform' }, Math.max(cascadeStart, finalStateAt));
       // Subtext (stake/data/why) lands AFTER the title cascades, so the
       // viewer's eye reaches it second. Quick fade + small lift.
       var sub = s.querySelector('.hb-subtext');
@@ -866,8 +897,11 @@ const CHART_SCENE: Template = {
 
 export const BUILTIN_TEMPLATES: readonly Template[] = [
   HOOK_BIGTEXT,
+  HOOK_VHS_RIP_TEMPLATE,
   HOOK_STATREVEAL,
   AROLL_TEXT,
+  KINETIC_WORDS_TEMPLATE,
+  EDITORIAL_SERIF_TEMPLATE,
   CONCEPT_CALLOUT,
   COMPARISON,
   QUOTE,

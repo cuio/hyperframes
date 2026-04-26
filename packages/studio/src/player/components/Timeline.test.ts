@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
+  computeEffectiveTimelineDuration,
+  deriveTimelineLaneLabel,
   generateTicks,
   getDefaultDroppedTrack,
   getTimelineCanvasHeight,
+  GUTTER,
   resolveTimelineAssetDrop,
   getTimelinePlayheadLeft,
   getTimelineScrollLeftForZoomTransition,
@@ -118,6 +121,94 @@ describe("formatTime", () => {
   });
 });
 
+describe("computeEffectiveTimelineDuration", () => {
+  it("returns the store duration when there are no elements", () => {
+    expect(computeEffectiveTimelineDuration([], 12)).toBe(12);
+  });
+
+  it("zero-fallback when both store duration and elements are absent", () => {
+    expect(computeEffectiveTimelineDuration([], Number.NaN)).toBe(0);
+    expect(computeEffectiveTimelineDuration([], Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it("returns the largest element end when it exceeds store duration", () => {
+    expect(
+      computeEffectiveTimelineDuration(
+        [
+          { start: 0, duration: 5 },
+          { start: 10, duration: 8 },
+        ],
+        12,
+      ),
+    ).toBe(18);
+  });
+
+  it("ignores Infinity-ended clips so a loop-inflated GSAP timeline does not poison the max", () => {
+    // Regression: previously `Math.max(...)` over an Infinity end returned Infinity,
+    // the result was non-finite, and the memo fell back to the store duration of 0,
+    // which collapsed trackContentWidth and made every track row appear to vanish.
+    expect(
+      computeEffectiveTimelineDuration(
+        [
+          { start: 0, duration: 5 },
+          { start: 10, duration: Number.POSITIVE_INFINITY },
+        ],
+        12,
+      ),
+    ).toBe(12);
+  });
+
+  it("ignores NaN-ended clips", () => {
+    expect(computeEffectiveTimelineDuration([{ start: Number.NaN, duration: 5 }], 8)).toBe(8);
+  });
+});
+
+describe("deriveTimelineLaneLabel", () => {
+  it("returns TRACK for an empty list", () => {
+    expect(deriveTimelineLaneLabel([])).toBe("TRACK");
+  });
+
+  it("prefers timelineGroup when set (Voiceover lane)", () => {
+    expect(
+      deriveTimelineLaneLabel([
+        { tag: "audio", timelineGroup: "voiceover" },
+        { tag: "audio", timelineGroup: "voiceover" },
+      ]),
+    ).toBe("VOICE");
+  });
+
+  it("disambiguates Music DIVs from Video DIVs by group", () => {
+    // Both Music placeholders and scene compositions ride DIV elements; the group
+    // is the only signal that distinguishes them.
+    expect(deriveTimelineLaneLabel([{ tag: "div", timelineGroup: "music" }])).toBe("MUSIC");
+    expect(deriveTimelineLaneLabel([{ tag: "div" }])).toBe("VIDEO");
+  });
+
+  it("renders SFX label", () => {
+    expect(deriveTimelineLaneLabel([{ tag: "div", timelineGroup: "sfx" }])).toBe("SFX");
+  });
+
+  it("falls back to clip kind when no group is set", () => {
+    expect(deriveTimelineLaneLabel([{ tag: "audio" }])).toBe("AUDIO");
+    expect(deriveTimelineLaneLabel([{ tag: "img" }])).toBe("IMG");
+    expect(deriveTimelineLaneLabel([{ tag: "video" }])).toBe("VIDEO");
+  });
+
+  it("upper-cases unknown groups for forward compatibility", () => {
+    expect(deriveTimelineLaneLabel([{ tag: "audio", timelineGroup: "ambient" }])).toBe("AMBIENT");
+  });
+
+  it("picks the dominant group when clips disagree", () => {
+    expect(
+      deriveTimelineLaneLabel([
+        { tag: "audio", timelineGroup: "voiceover" },
+        { tag: "audio", timelineGroup: "voiceover" },
+        { tag: "audio", timelineGroup: "music" },
+      ]),
+    ).toBe("VOICE");
+  });
+});
+
 describe("shouldAutoScrollTimeline", () => {
   it("never auto-scrolls in fit mode", () => {
     expect(shouldAutoScrollTimeline("fit", 1200, 800)).toBe(false);
@@ -147,12 +238,12 @@ describe("getTimelineScrollLeftForZoomTransition", () => {
 
 describe("getTimelinePlayheadLeft", () => {
   it("converts time to a pixel offset from the gutter", () => {
-    expect(getTimelinePlayheadLeft(4, 20)).toBe(112);
+    expect(getTimelinePlayheadLeft(4, 20)).toBe(GUTTER + 4 * 20);
   });
 
   it("guards invalid input", () => {
-    expect(getTimelinePlayheadLeft(Number.NaN, 20)).toBe(32);
-    expect(getTimelinePlayheadLeft(4, Number.NaN)).toBe(32);
+    expect(getTimelinePlayheadLeft(Number.NaN, 20)).toBe(GUTTER);
+    expect(getTimelinePlayheadLeft(4, Number.NaN)).toBe(GUTTER);
   });
 });
 
@@ -198,6 +289,7 @@ describe("getDefaultDroppedTrack", () => {
 
 describe("resolveTimelineAssetDrop", () => {
   it("maps drop coordinates to a start time and visible track", () => {
+    // Aim the cursor 300px past the rectLeft+GUTTER, expect start = 300px / 100pps = 3.00s
     expect(
       resolveTimelineAssetDrop(
         {
@@ -210,13 +302,14 @@ describe("resolveTimelineAssetDrop", () => {
           trackHeight: 72,
           trackOrder: [0, 3, 7],
         },
-        432,
+        100 + GUTTER + 300,
         310,
       ),
     ).toEqual({ start: 3, track: 3 });
   });
 
   it("can create a new bottom track when dropped below the last visible row", () => {
+    // 118px past rectLeft+GUTTER → 1.18s.
     expect(
       resolveTimelineAssetDrop(
         {
@@ -229,7 +322,7 @@ describe("resolveTimelineAssetDrop", () => {
           trackHeight: 72,
           trackOrder: [0, 3, 7],
         },
-        250,
+        100 + GUTTER + 118,
         600,
       ),
     ).toEqual({ start: 1.18, track: 8 });

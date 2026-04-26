@@ -51,9 +51,45 @@ The right visual for a sentence depends on what's IN the sentence:
 | Direct quote / citation                     | quote                      |
 | Bold one-line claim with no data            | hook-bigtext               |
 | Generic explanation, no specific structure  | aroll-text                 |
+| Pattern-interrupt opener with photo (Reels) | hook-vhs-rip               |
+| One sentence whose closing word is the punch| kinetic-words              |
+| Light breath / divider between dense scenes | editorial-serif            |
 
 PREFER chart-scene whenever the sentence contains 2 or more numbers in a
 relationship. Charts beat plain text for retention on data points.
+
+## Visual copy budget — terse beats verbose
+
+The on-screen text is NOT the narration. The narration is what the audience
+hears; the visual is the **poster card** that survives a scroll. Cinematic
+reels keep it short: "deliver insane results" (3 words), "chase trends" (2),
+"you can be incredibly skilled" (5). Compress hard.
+
+Per-template budgets — the planner MUST NOT exceed these:
+
+| Template          | On-screen text budget                                  |
+|-------------------|--------------------------------------------------------|
+| hook-bigtext      | title ≤ 8 words. Eyebrow ≤ 4 words. Subtext ≤ 14 words.|
+| hook-vhs-rip      | title ≤ 5 words. Eyebrow ≤ 3 words.                    |
+| kinetic-words     | words array: 3–6 entries. NO sentences here.           |
+| editorial-serif   | phrase ≤ 4 words. Lowercase reads best.                |
+| hook-statreveal   | label ≤ 12 words.                                      |
+| aroll-text        | title ≤ 10 words. Body ≤ 28 words.                     |
+
+**The narration can be a long sentence.** Extract the EMOTIONAL CORE — the
+3–5 word fragment that delivers the punch — and put THAT on screen. The
+audience reads it as the headline; the narration fills in the details.
+Examples:
+
+- Narration: "Between 2022 and 2025, U.S. crypto venture funding dropped 58%."
+  → On-screen (kinetic-words): ["funding", "dropped", "fifty-eight", "percent"] · emphasis 3
+- Narration: "However, that progress has stalled in the Senate."
+  → On-screen (hook-vhs-rip): title "STALLED IN THE SENATE" · eyebrow "S08 / WASHINGTON"
+- Narration: "The numbers bear this out."
+  → On-screen (editorial-serif): phrase "the numbers"
+
+If you can't fit the visual within budget, you picked the wrong template —
+fall back to aroll-text. Don't cram a 15-word sentence into a 5-word slot.
 
 ## Hook scenes (first ~30s) — special rules
 
@@ -97,6 +133,28 @@ viewer understands in 3 seconds why they should care.
   - props.subtitle = WHY this chart matters in one line.
   - The chart must be cliff-chart, waterfall-bars, or divergence-lines
     — something that visually IS the story without needing context.
+- **hook-vhs-rip** (Reels-style scroll-stopper, photo-first):
+  - Use when the project has a hero/subject image AND the script's first
+    line is a punchy claim under 6 words. The chromatic VHS distortion is
+    the pattern interrupt — it announces "this is not a normal post."
+  - props.title = the claim (≤6 words). Punchy, declarative.
+  - props.eyebrow = a faux-broadcast tag, e.g. "INCOMING TRANSMISSION",
+    "[ STAGE 1 / 5 ]", "CHANNEL 03". 2–4 words, mono.
+  - props.imageId = a hero/subject image (assigned by the visual director).
+- **kinetic-words** (the closing-word-is-the-punch pattern):
+  - Use when one sentence has a clear closing word that carries the
+    payoff ("you can be incredibly … skilled"; "we don't need more
+    talent — we need taste"). Pulls focus to that final word.
+  - props.words = the 2-7 word array, in order. Each word reveals on
+    its own beat. Lowercase except the emphasis word.
+  - props.emphasisIndex = optional 0-based index of the punch word.
+    Defaults to the last word.
+  - props.imageId = optional photo backdrop. If present, the photo
+    sits behind the words with heavy blur + tint.
+- **editorial-serif** (breathing scene, not a hook itself):
+  - Reserve for divider scenes between dense sections. NEVER use as s01.
+  - props.phrase = 2-4 italic words. Lowercase.
+  - props.orientation = "light" or "dark" depending on neighbour scenes.
 
 ### Hook quality checklist (self-audit before finalizing)
 
