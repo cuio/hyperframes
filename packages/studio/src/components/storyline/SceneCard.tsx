@@ -33,6 +33,23 @@ import {
  * the editing pipeline lands.
  */
 
+export type AIActionId = "compress" | "suggestEmphasis" | "refineReasoning" | "rePickTemplate";
+
+/**
+ * One pending suggestion produced by a Haiku action. Rendered inline beneath
+ * the action bar so the user can scan multiple proposals at once and apply
+ * them à la carte. Each suggestion holds the partial-scene patch the apply
+ * step PUTs to the existing /script/scenes/:id endpoint.
+ */
+export interface SceneSuggestion {
+  id: string;
+  action: AIActionId;
+  preview: string;
+  rationale: string;
+  /** Partial scene fields the client merges into the existing scene on apply. */
+  patch: { template?: string; props?: Record<string, unknown>; reasoning?: string };
+}
+
 interface SceneCardProps {
   scene: StorylineSceneInput;
   projectId: string;
@@ -40,15 +57,30 @@ interface SceneCardProps {
   index: number;
   /** Cumulative seconds before this scene starts (for "@ 0:21" badge). */
   startSeconds: number;
+  /** Total scene count — drives whether reorder buttons are enabled at edges. */
+  totalScenes: number;
   /** Image-manifest dominant color, used to tint the image badge. Optional. */
   imageDominantColor?: string;
   /** Optional handler invoked when the user fires a Haiku action. */
   onAIAction?: (action: AIActionId, scene: StorylineSceneInput) => Promise<void> | void;
   /** Status per AI action, surfaced as a spinner / disabled state on the button. */
   aiActionStatus?: Partial<Record<AIActionId, "idle" | "running" | "error">>;
+  /** Pending suggestions to render under the actions bar. */
+  suggestions?: SceneSuggestion[];
+  /** Apply a suggestion's patch — invoked when the user clicks "Apply". */
+  onApplySuggestion?: (
+    suggestion: SceneSuggestion,
+    scene: StorylineSceneInput,
+  ) => void | Promise<void>;
+  /** Dismiss a suggestion without applying it. */
+  onDismissSuggestion?: (suggestionId: string) => void;
+  /** Move this scene up/down in the storyline. */
+  onMove?: (sceneId: string, direction: "up" | "down") => void;
+  /** Delete this scene. */
+  onDelete?: (sceneId: string) => void;
+  /** Insert a blank scene below this one. */
+  onInsertAfter?: (sceneId: string) => void;
 }
-
-export type AIActionId = "compress" | "suggestEmphasis" | "refineReasoning" | "rePickTemplate";
 
 const AI_ACTIONS: Array<{ id: AIActionId; label: string; tooltip: string }> = [
   {
@@ -85,9 +117,16 @@ export const SceneCard = memo(function SceneCard({
   projectId,
   index,
   startSeconds,
+  totalScenes,
   imageDominantColor,
   onAIAction,
   aiActionStatus,
+  suggestions,
+  onApplySuggestion,
+  onDismissSuggestion,
+  onMove,
+  onDelete,
+  onInsertAfter,
 }: SceneCardProps) {
   const [expandedReason, setExpandedReason] = useState(false);
   const summary = summarizeScene(scene);
@@ -122,6 +161,10 @@ export const SceneCard = memo(function SceneCard({
         hook={summary.hook}
         index={index}
         startSeconds={startSeconds}
+        canMoveUp={index > 0}
+        canMoveDown={index < totalScenes - 1}
+        {...(onMove ? { onMove: (dir: "up" | "down") => onMove(scene.id, dir) } : {})}
+        {...(onDelete ? { onDelete: () => onDelete(scene.id) } : {})}
       />
 
       {/* Audio strip — the center of gravity. Transcript reads as caption beneath.
@@ -237,7 +280,7 @@ export const SceneCard = memo(function SceneCard({
       </Section>
 
       {/* AI actions — Haiku-powered, cheap, per-scene. */}
-      <div className="flex items-center gap-1.5 px-3 py-2 border-t border-neutral-800 bg-neutral-950/40">
+      <div className="flex items-center gap-1.5 px-3 py-2 border-t border-neutral-800 bg-neutral-950/40 flex-wrap">
         {AI_ACTIONS.map((action) => {
           const status = aiActionStatus?.[action.id] ?? "idle";
           const running = status === "running";
@@ -254,7 +297,31 @@ export const SceneCard = memo(function SceneCard({
             </button>
           );
         })}
+        {onInsertAfter && (
+          <button
+            type="button"
+            onClick={() => onInsertAfter(scene.id)}
+            className="ml-auto h-6 px-2 rounded-md text-[10px] font-medium border border-neutral-800 text-neutral-500 hover:text-neutral-200 hover:border-neutral-600 transition-colors"
+            title="Insert a blank scene below this one"
+          >
+            + Insert below
+          </button>
+        )}
       </div>
+
+      {/* Suggestion stack — pending Haiku proposals, applied à la carte. */}
+      {suggestions && suggestions.length > 0 && (
+        <div className="border-t border-studio-accent/30 bg-studio-accent/[0.03]">
+          {suggestions.map((s) => (
+            <SuggestionRow
+              key={s.id}
+              suggestion={s}
+              {...(onApplySuggestion ? { onApply: () => onApplySuggestion(s, scene) } : {})}
+              {...(onDismissSuggestion ? { onDismiss: () => onDismissSuggestion(s.id) } : {})}
+            />
+          ))}
+        </div>
+      )}
     </article>
   );
 });
@@ -268,6 +335,10 @@ function Header({
   hook,
   index,
   startSeconds,
+  canMoveUp,
+  canMoveDown,
+  onMove,
+  onDelete,
 }: {
   sceneId: string;
   template: string;
@@ -275,6 +346,10 @@ function Header({
   hook: boolean;
   index: number;
   startSeconds: number;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMove?: (direction: "up" | "down") => void;
+  onDelete?: () => void;
 }): ReactNode {
   const startLabel = `${Math.floor(startSeconds / 60)}:${String(Math.floor(startSeconds % 60)).padStart(2, "0")}`;
   return (
@@ -296,7 +371,131 @@ function Header({
         <span>·</span>
         <span>{durationLabel}</span>
       </div>
+      {(onMove || onDelete) && (
+        <div className="flex items-center gap-0.5 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {onMove && (
+            <>
+              <IconButton
+                onClick={() => onMove("up")}
+                disabled={!canMoveUp}
+                title="Move scene up"
+                aria-label={`Move scene ${sceneId} up`}
+              >
+                ▲
+              </IconButton>
+              <IconButton
+                onClick={() => onMove("down")}
+                disabled={!canMoveDown}
+                title="Move scene down"
+                aria-label={`Move scene ${sceneId} down`}
+              >
+                ▼
+              </IconButton>
+            </>
+          )}
+          {onDelete && (
+            <IconButton
+              onClick={onDelete}
+              title="Delete this scene"
+              aria-label={`Delete scene ${sceneId}`}
+              tone="danger"
+            >
+              ✕
+            </IconButton>
+          )}
+        </div>
+      )}
     </header>
+  );
+}
+
+function IconButton({
+  children,
+  onClick,
+  disabled,
+  title,
+  tone = "neutral",
+  ...rest
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  title?: string;
+  tone?: "neutral" | "danger";
+  "aria-label"?: string;
+}): ReactNode {
+  const palette =
+    tone === "danger"
+      ? "text-neutral-500 hover:text-rose-400 hover:bg-rose-500/10"
+      : "text-neutral-500 hover:text-neutral-200 hover:bg-neutral-800";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`w-5 h-5 flex items-center justify-center rounded text-[9px] font-mono transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${palette}`}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SuggestionRow({
+  suggestion,
+  onApply,
+  onDismiss,
+}: {
+  suggestion: SceneSuggestion;
+  onApply?: () => void;
+  onDismiss?: () => void;
+}): ReactNode {
+  const labelByAction: Record<AIActionId, string> = {
+    compress: "Compressed copy",
+    suggestEmphasis: "Emphasis",
+    refineReasoning: "Reasoning",
+    rePickTemplate: "Alt template",
+  };
+  return (
+    <div className="px-3 py-2 border-b border-studio-accent/20 last:border-b-0 flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-studio-accent">
+            {labelByAction[suggestion.action]}
+          </span>
+          <span className="text-[9px] text-neutral-600">Haiku</span>
+        </div>
+        <div className="text-[12px] text-neutral-100 leading-snug font-medium">
+          {suggestion.preview || <span className="italic text-neutral-500">(empty)</span>}
+        </div>
+        {suggestion.rationale && (
+          <div className="text-[10px] text-neutral-500 leading-relaxed mt-1 italic">
+            {suggestion.rationale}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        {onApply && (
+          <button
+            type="button"
+            onClick={onApply}
+            className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-studio-accent/50 bg-studio-accent/15 text-studio-accent hover:bg-studio-accent/25 transition-colors"
+          >
+            Apply
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="h-5 px-2 rounded text-[9px] text-neutral-500 hover:text-neutral-300 transition-colors"
+          >
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
