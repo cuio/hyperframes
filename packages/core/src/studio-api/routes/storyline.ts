@@ -6,6 +6,7 @@ import { AnthropicError, callStructuredTool, loadAnthropicKey } from "../../anth
 import type { ToolDefinition } from "../../anthropic/index.js";
 import { CostLogger, loggerSink } from "../../telemetry/cost.js";
 import type { Script, SceneRef } from "../../script/types.js";
+import { listAvailableThemes, loadDesignBrief, resolveActiveTheme } from "../../script/index.js";
 
 type Scene = SceneRef;
 
@@ -217,6 +218,76 @@ export function registerStorylineRoutes(api: Hono, adapter: StudioApiAdapter): v
         { sceneCount: script.scenes.length, intentLen: intent.length },
       );
       return c.json(buildIntentResponse(result, script));
+    } catch (err) {
+      if (err instanceof AnthropicError) {
+        return c.json({ error: `Haiku call failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // POST /api/projects/:id/storyline/project-intent
+  // Project-level Director: same free-form intent as /intent but with the
+  // active theme + design brief + image manifest summary in scope. Returns
+  // scene patches *plus* optional theme suggestion + design-brief addendum.
+  // Theme/brief recommendations are non-binding — the user applies them via
+  // the existing Theme picker / design-brief edit flow.
+  api.post("/projects/:id/storyline/project-intent", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: { intent?: string };
+    try {
+      body = (await c.req.json()) as { intent?: string };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const intent = (body.intent ?? "").trim();
+    if (!intent) return c.json({ error: "intent is required" }, 400);
+    if (intent.length > 1500) return c.json({ error: "intent too long (max 1500 chars)" }, 400);
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) return c.json({ error: "ANTHROPIC_API_KEY not set" }, 401);
+
+    const activeTheme = resolveActiveTheme(project.dir);
+    const allThemes = listAvailableThemes(project.dir);
+    const designBrief = loadDesignBrief(project.dir, 4000);
+    const imageSummary = loadImageManifestSummary(project.dir);
+    const projectContext: ProjectIntentContext = {
+      activeTheme: {
+        id: activeTheme.id,
+        name: activeTheme.name,
+        description: activeTheme.description,
+      },
+      themeChoices: allThemes.map((t) => ({ id: t.id, name: t.name, description: t.description })),
+      designBrief: designBrief ?? "",
+      imageSummary,
+    };
+
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+    try {
+      const { result, usage } = await callStructuredTool<ProjectIntentToolInput>(apiKey, {
+        model: HAIKU_MODEL,
+        system: buildProjectIntentSystem(projectContext),
+        user: buildProjectIntentUser(script, intent, projectContext),
+        tool: PROJECT_INTENT_TOOL,
+        maxTokens: 2000,
+        temperature: 0.5,
+      });
+      onCostEvent(
+        "script.storyline.projectIntent",
+        {
+          kind: "anthropic",
+          model: HAIKU_MODEL,
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+        },
+        Date.now() - start,
+        { sceneCount: script.scenes.length, intentLen: intent.length },
+      );
+      return c.json(buildProjectIntentResponse(result, script, projectContext));
     } catch (err) {
       if (err instanceof AnthropicError) {
         return c.json({ error: `Haiku call failed: ${err.message}` }, 502);
@@ -918,3 +989,276 @@ function applyBulkOps(script: Script, ops: BulkOp[]): void {
     }
   }
 }
+
+// ── Project-level intent ─────────────────────────────────────────────────────
+
+interface ProjectIntentContext {
+  activeTheme: { id: string; name: string; description: string };
+  themeChoices: Array<{ id: string; name: string; description: string }>;
+  designBrief: string;
+  imageSummary: string;
+}
+
+interface ProjectIntentToolInput {
+  overallNote?: string;
+  themeSuggestion?: { suggestedThemeId?: string; rationale?: string };
+  designBriefAddendum?: { text?: string; rationale?: string };
+  scenes?: Array<{
+    sceneId?: string;
+    template?: string;
+    props?: Record<string, unknown>;
+    reasoning?: string;
+    note?: string;
+  }>;
+}
+
+interface ProjectIntentResponse {
+  overallNote: string;
+  themeSuggestion: {
+    currentThemeId: string;
+    suggestedThemeId: string | null;
+    rationale: string;
+  } | null;
+  designBriefAddendum: { text: string; rationale: string } | null;
+  patches: Array<{
+    sceneId: string;
+    preview: string;
+    note: string;
+    patch: ScenePatch;
+  }>;
+}
+
+const PROJECT_INTENT_TOOL: ToolDefinition = {
+  name: "propose_project_revisions",
+  description:
+    "Given a project-level directorial intent and full theme/brief/script context, return scene patches plus optional theme + design-brief recommendations.",
+  input_schema: {
+    type: "object",
+    properties: {
+      overallNote: {
+        type: "string",
+        description: "1-2 sentences on the strategy you took.",
+      },
+      themeSuggestion: {
+        type: "object",
+        description:
+          "Optional. Only emit if a different theme would serve the intent better than the active one. Otherwise omit.",
+        properties: {
+          suggestedThemeId: {
+            type: "string",
+            description: "A theme id from the available list.",
+          },
+          rationale: {
+            type: "string",
+            description: "One sentence on why this theme lands the intent.",
+          },
+        },
+        required: ["suggestedThemeId", "rationale"],
+      },
+      designBriefAddendum: {
+        type: "object",
+        description:
+          "Optional. A short markdown snippet to append to DESIGN.md when the brief should evolve. Skip if the existing brief covers the intent.",
+        properties: {
+          text: {
+            type: "string",
+            description: "Markdown snippet, ≤ 600 characters. No top-level heading.",
+          },
+          rationale: {
+            type: "string",
+            description: "One sentence on what this snippet adds.",
+          },
+        },
+        required: ["text", "rationale"],
+      },
+      scenes: {
+        type: "array",
+        description: "Per-scene patches. Skip scenes that should not change.",
+        items: {
+          type: "object",
+          properties: {
+            sceneId: { type: "string" },
+            template: {
+              type: "string",
+              description: "Optional — only set if the template should change.",
+            },
+            props: {
+              type: "object",
+              description: "Optional partial props patch.",
+            },
+            reasoning: { type: "string" },
+            note: {
+              type: "string",
+              description: "One sentence on what this patch does for the intent.",
+            },
+          },
+          required: ["sceneId", "note"],
+        },
+      },
+    },
+    required: ["overallNote", "scenes"],
+  },
+};
+
+function buildProjectIntentSystem(ctx: ProjectIntentContext): string {
+  return [
+    "# Project-level revision",
+    "",
+    "You're a creative director reviewing a planned video against a project-level intent the user gave.",
+    "Unlike storyline-level intent, you can suggest changes that cross individual scenes:",
+    "  - propose a different THEME (only if a swap genuinely serves the intent)",
+    "  - propose a DESIGN BRIEF ADDENDUM that nudges all future planning",
+    "  - propose per-scene patches (template / props / reasoning) that move the script toward the intent",
+    "",
+    "Rules:",
+    "1. NARRATION IS FIXED. Audio's been recorded — never propose text changes.",
+    "2. Theme / brief suggestions are non-binding — only emit them when they'd materially change the result.",
+    "3. Per-scene patches are partial: only include fields that should change.",
+    "4. Honour per-template word budgets for on-screen copy.",
+    "5. Keep the addendum short (≤ 600 chars) and complementary to the existing brief, not a rewrite.",
+    "",
+    `## Active theme: ${ctx.activeTheme.name} (id: ${ctx.activeTheme.id})`,
+    ctx.activeTheme.description ? `Description: ${ctx.activeTheme.description}` : "",
+    "",
+    `## Other available themes (${ctx.themeChoices.length})`,
+    ctx.themeChoices
+      .map((t) => `- ${t.id}: ${t.name} — ${t.description || "(no description)"}`)
+      .join("\n"),
+    "",
+    ctx.designBrief.trim()
+      ? `## Existing design brief (DESIGN.md, truncated)\n${ctx.designBrief}`
+      : "## Existing design brief\n(none — DESIGN.md is empty or missing)",
+    "",
+    ctx.imageSummary ? `## Image manifest\n${ctx.imageSummary}` : "## Image manifest\n(empty)",
+  ]
+    .filter((s) => s.length > 0)
+    .join("\n");
+}
+
+function buildProjectIntentUser(
+  script: Script,
+  intent: string,
+  _ctx: ProjectIntentContext,
+): string {
+  const sceneSummary = script.scenes
+    .map((s, i) => {
+      const headline =
+        typeof s.props.title === "string"
+          ? s.props.title
+          : Array.isArray(s.props.words)
+            ? (s.props.words as unknown[]).join(" ")
+            : "";
+      return `${i + 1}. ${s.id} · ${s.template}${s.hook ? " · HOOK" : ""}\n   narration: ${s.text}\n   visual: ${headline.slice(0, 80)}`;
+    })
+    .join("\n");
+  return [
+    "## Director's intent (project-level)",
+    intent,
+    "",
+    "## Current script",
+    sceneSummary,
+    "",
+    "Now call the structured tool. Emit theme + brief suggestions ONLY if they'd materially serve the intent — skip otherwise.",
+  ].join("\n");
+}
+
+function buildProjectIntentResponse(
+  raw: ProjectIntentToolInput,
+  script: Script,
+  ctx: ProjectIntentContext,
+): ProjectIntentResponse {
+  const sceneById = new Map(script.scenes.map((s) => [s.id, s]));
+  const patches: ProjectIntentResponse["patches"] = [];
+  for (const entry of raw.scenes ?? []) {
+    if (!entry.sceneId) continue;
+    const scene = sceneById.get(entry.sceneId);
+    if (!scene) continue;
+    const patch: ScenePatch = {};
+    if (typeof entry.template === "string" && entry.template !== scene.template) {
+      patch.template = entry.template;
+    }
+    if (entry.props && typeof entry.props === "object") {
+      patch.props = { ...scene.props, ...entry.props };
+    }
+    if (typeof entry.reasoning === "string") patch.reasoning = entry.reasoning;
+    if (Object.keys(patch).length === 0) continue;
+    patches.push({
+      sceneId: entry.sceneId,
+      preview: summarisePatch(patch, scene.template),
+      note: entry.note ?? "",
+      patch,
+    });
+  }
+
+  // Theme suggestion is only valid if the suggested id is actually known and
+  // different from the active one. Otherwise drop it — don't show stale picks.
+  let themeSuggestion: ProjectIntentResponse["themeSuggestion"] = null;
+  const proposed = raw.themeSuggestion?.suggestedThemeId;
+  if (
+    typeof proposed === "string" &&
+    proposed !== ctx.activeTheme.id &&
+    ctx.themeChoices.some((t) => t.id === proposed)
+  ) {
+    themeSuggestion = {
+      currentThemeId: ctx.activeTheme.id,
+      suggestedThemeId: proposed,
+      rationale: raw.themeSuggestion?.rationale ?? "",
+    };
+  }
+
+  let designBriefAddendum: ProjectIntentResponse["designBriefAddendum"] = null;
+  const addText = raw.designBriefAddendum?.text;
+  if (typeof addText === "string" && addText.trim().length > 0) {
+    designBriefAddendum = {
+      text: addText.trim().slice(0, 1200),
+      rationale: raw.designBriefAddendum?.rationale ?? "",
+    };
+  }
+
+  return {
+    overallNote: raw.overallNote ?? "",
+    themeSuggestion,
+    designBriefAddendum,
+    patches,
+  };
+}
+
+/**
+ * Cheap one-line summary of the project's image manifest, used as Haiku
+ * context for project-intent. Reads `assets/images/images.json` if present
+ * and returns "<n> images: hero, subject, atmosphere — <ids>" or "" when
+ * nothing is on disk.
+ */
+function loadImageManifestSummary(projectDir: string): string {
+  const path = join(projectDir, "assets/images/images.json");
+  if (!existsSync(path)) return "";
+  try {
+    const json = JSON.parse(readFileSync(path, "utf-8")) as {
+      images?: Array<{ id?: string; role?: string; description?: string }>;
+    };
+    const images = json.images ?? [];
+    if (images.length === 0) return "";
+    const byRole = new Map<string, number>();
+    for (const img of images) {
+      if (img.role) byRole.set(img.role, (byRole.get(img.role) ?? 0) + 1);
+    }
+    const roleSummary = Array.from(byRole.entries())
+      .map(([role, count]) => `${count} ${role}`)
+      .join(", ");
+    const ids = images
+      .slice(0, 8)
+      .map((i) => i.id ?? "?")
+      .join(", ");
+    return `${images.length} images${roleSummary ? ` (${roleSummary})` : ""}; ids: ${ids}${images.length > 8 ? ", …" : ""}`;
+  } catch {
+    return "";
+  }
+}
+
+// Exported for unit tests so the prompt-context builder can be exercised
+// without mocking the whole route stack.
+export const __testing = {
+  buildProjectIntentSystem,
+  buildProjectIntentResponse,
+  loadImageManifestSummary,
+};

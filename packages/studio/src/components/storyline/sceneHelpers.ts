@@ -221,3 +221,128 @@ export function summarizeScene(scene: StorylineSceneInput): {
     hook: scene.hook === true,
   };
 }
+
+/**
+ * For each template, the prop name that carries the on-screen headline. Lets
+ * the inline-edit UI write back the user's text without knowing each
+ * template's contract by hand. Mirrors the server-side TEMPLATE_HEADLINE_FIELD
+ * map — kept in sync by intent so a missed entry on either side falls through
+ * to the safe default ("title").
+ */
+export const TEMPLATE_HEADLINE_FIELD: Record<string, string> = {
+  "hook-bigtext": "title",
+  "hook-vhs-rip": "title",
+  "aroll-text": "title",
+  "concept-callout": "title",
+  "image-scene": "headline",
+  "chart-scene": "title",
+  comparison: "title",
+  quote: "quote",
+  "outro-cta": "title",
+  "editorial-serif": "phrase",
+  "hook-statreveal": "label",
+};
+
+export const TEMPLATE_SUBTEXT_FIELD: Record<string, string> = {
+  "hook-bigtext": "subtext",
+  "hook-vhs-rip": "sourceTag",
+  "aroll-text": "body",
+  "concept-callout": "subtitle",
+  "image-scene": "subhead",
+  "chart-scene": "subtitle",
+  comparison: "subtitle",
+  quote: "attribution",
+  "outro-cta": "subtitle",
+  "editorial-serif": "eyebrow",
+  "hook-statreveal": "label",
+};
+
+/**
+ * Returns the prop key that the inline-edit UI should write the headline back
+ * to. For kinetic-words there's no single key (the headline is an array) —
+ * caller should branch on `null` and fall back to a different editor.
+ */
+export function getEditableHeadlineField(template: string): string | null {
+  if (template === "kinetic-words") return null;
+  return TEMPLATE_HEADLINE_FIELD[template] ?? "title";
+}
+
+export function getEditableSubtextField(template: string): string | null {
+  return TEMPLATE_SUBTEXT_FIELD[template] ?? null;
+}
+
+/**
+ * Build an updated props blob with a single edit applied. Used by the inline
+ * editor — the caller passes the existing props, the field name, and the new
+ * value; we return the merged blob ready to PUT.
+ *
+ * For kinetic-words the headline is `words[]` rather than a string field.
+ * The caller passes `field === "words"` and a whitespace-separated string;
+ * we split into the right shape.
+ */
+export function applyInlineEdit(
+  props: Record<string, unknown>,
+  field: string,
+  value: string,
+): Record<string, unknown> {
+  if (field === "words") {
+    const words = value
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 0);
+    return {
+      ...props,
+      words,
+      // Re-anchor emphasis to the final word so the punch stays at the end
+      // of the array unless the user intentionally moves it elsewhere.
+      emphasisIndex: Math.max(0, words.length - 1),
+    };
+  }
+  return { ...props, [field]: value };
+}
+
+/**
+ * Decide which scene is "focal" given the current scroll position of a
+ * vertical card list. The focal scene is the one whose card most overlaps a
+ * horizontal "focus line" near the top of the viewport — typically 1/3 of
+ * the way down. Returns the index of the focal card, or -1 when no card
+ * intersects the focus line.
+ *
+ * Kept pure (no DOM access) so it's cheap to test. Callers measure card
+ * tops + heights against the viewport and feed this helper rectangles.
+ */
+export interface CardRect {
+  /** Card top, relative to the scroll container's viewport top (px). */
+  top: number;
+  /** Card height in px. */
+  height: number;
+}
+
+export function pickFocalCardIndex(
+  cards: CardRect[],
+  viewportHeight: number,
+  focusLineFraction = 0.33,
+): number {
+  if (cards.length === 0 || viewportHeight <= 0) return -1;
+  const focusLine = viewportHeight * focusLineFraction;
+  // First pass: any card straddling the focus line wins.
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i]!;
+    const bottom = c.top + c.height;
+    if (c.top <= focusLine && bottom >= focusLine) return i;
+  }
+  // Fallback: pick the card whose center is closest to the focus line.
+  // Useful when no card straddles (e.g. spacing is wider than card height).
+  let bestIdx = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < cards.length; i++) {
+    const c = cards[i]!;
+    const center = c.top + c.height / 2;
+    const dist = Math.abs(center - focusLine);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
+}
