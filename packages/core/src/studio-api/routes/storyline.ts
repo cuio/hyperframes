@@ -226,6 +226,69 @@ export function registerStorylineRoutes(api: Hono, adapter: StudioApiAdapter): v
     }
   });
 
+  // POST /api/projects/:id/storyline/scene-intent
+  // Per-card free-form intent: the user types a prompt scoped to one scene
+  // ("make this hit harder", "swap the accent to a verb"). Haiku gets only
+  // the focal scene + a small window of neighbours (default ±2) for context,
+  // not the whole script — so the prompt is cheaper and the model stays on
+  // task. Returns patches limited to scenes inside the window.
+  api.post("/projects/:id/storyline/scene-intent", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: { sceneId?: string; intent?: string; windowSize?: number };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body.sceneId) return c.json({ error: "sceneId is required" }, 400);
+    const intent = (body.intent ?? "").trim();
+    if (!intent) return c.json({ error: "intent is required" }, 400);
+    if (intent.length > 800) return c.json({ error: "intent too long (max 800 chars)" }, 400);
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+    const focalIdx = script.scenes.findIndex((s) => s.id === body.sceneId);
+    if (focalIdx < 0) return c.json({ error: `scene ${body.sceneId} not in script` }, 404);
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) return c.json({ error: "ANTHROPIC_API_KEY not set" }, 401);
+
+    const window = pickSceneWindow(script, focalIdx, body.windowSize ?? 2);
+
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+    try {
+      const { result, usage } = await callStructuredTool<IntentToolInput>(apiKey, {
+        model: HAIKU_MODEL,
+        system: buildSceneIntentSystem(),
+        user: buildSceneIntentUser(window, focalIdx, intent),
+        tool: INTENT_TOOL,
+        maxTokens: 800,
+        temperature: 0.4,
+      });
+      onCostEvent(
+        "script.storyline.sceneIntent",
+        {
+          kind: "anthropic",
+          model: HAIKU_MODEL,
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+        },
+        Date.now() - start,
+        { sceneId: body.sceneId, windowSize: window.length, intentLen: intent.length },
+      );
+      // Reuse the same response builder as storyline-level intent — it filters
+      // to scenes that exist in the script, so any out-of-window patches the
+      // model accidentally proposes are dropped automatically.
+      return c.json(buildIntentResponse(result, script));
+    } catch (err) {
+      if (err instanceof AnthropicError) {
+        return c.json({ error: `Haiku call failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
   // POST /api/projects/:id/storyline/project-intent
   // Project-level Director: same free-form intent as /intent but with the
   // active theme + design brief + image manifest summary in scope. Returns
@@ -897,6 +960,69 @@ function buildIntentUser(script: Script, intent: string): string {
   ].join("\n");
 }
 
+/**
+ * Pick a window of scenes around `focalIdx` for the per-scene intent prompt.
+ * Returns up to `2 * windowSize + 1` scenes, clamped to script bounds.
+ * Pure helper — exported for tests via __testing.
+ */
+export function pickSceneWindow(
+  script: { scenes: SceneRef[] },
+  focalIdx: number,
+  windowSize: number,
+): SceneRef[] {
+  const w = Math.max(0, Math.min(8, Math.floor(windowSize)));
+  const start = Math.max(0, focalIdx - w);
+  const end = Math.min(script.scenes.length, focalIdx + w + 1);
+  return script.scenes.slice(start, end);
+}
+
+function buildSceneIntentSystem(): string {
+  return [
+    "# Per-scene revision",
+    "",
+    "You're a director with a tightly-scoped intent for ONE scene in a planned video.",
+    "You see that scene plus a small window of neighbours for context. Touch only the focal scene unless an adjacent scene MUST change to keep the storyline coherent.",
+    "",
+    "Rules:",
+    "1. NARRATION IS FIXED. Never propose text changes.",
+    "2. Default scope is the focal scene. Patch a neighbour only when removing your focal change would break it.",
+    "3. Honour per-template word budgets for on-screen copy.",
+    "4. Each patch is partial — only the fields you want to change.",
+    "5. One-sentence note per patch explaining what it does for the intent.",
+  ].join("\n");
+}
+
+function buildSceneIntentUser(window: SceneRef[], focalIdx: number, intent: string): string {
+  const summary = window
+    .map((s) => {
+      const isFocal =
+        // The window's index of the focal scene = focalIdx clamped against the
+        // actual list, so we mark it by id rather than by position to be robust.
+        s.id === window[focalIdx]?.id || (window.length === 1 && true);
+      const headline =
+        typeof s.props.title === "string"
+          ? s.props.title
+          : Array.isArray(s.props.words)
+            ? (s.props.words as unknown[]).join(" ")
+            : "";
+      return [
+        `${isFocal ? "→ FOCAL · " : "   "}${s.id} · ${s.template}${s.hook ? " · HOOK" : ""}`,
+        `   narration: ${s.text}`,
+        `   visual: ${headline.slice(0, 80)}`,
+      ].join("\n");
+    })
+    .join("\n");
+  return [
+    "## Director's intent (this scene)",
+    intent,
+    "",
+    "## Window",
+    summary,
+    "",
+    "Patch the focal scene first. Touch neighbours only if doing so is required to keep the storyline coherent.",
+  ].join("\n");
+}
+
 interface IntentResponse {
   overallNote: string;
   patches: Array<{ sceneId: string; preview: string; note: string; patch: ScenePatch }>;
@@ -1261,4 +1387,5 @@ export const __testing = {
   buildProjectIntentSystem,
   buildProjectIntentResponse,
   loadImageManifestSummary,
+  pickSceneWindow,
 };
