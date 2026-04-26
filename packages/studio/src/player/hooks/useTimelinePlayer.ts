@@ -32,6 +32,7 @@ interface ClipManifestClip {
   parentCompositionId: string | null;
   compositionSrc: string | null;
   assetUrl: string | null;
+  timelineGroup?: string | null;
 }
 
 interface ClipManifest {
@@ -583,6 +584,18 @@ export function useTimelinePlayer() {
           duration: clip.duration,
           track: clip.track,
         };
+        // Surface a human label when the runtime supplied one and it differs
+        // from the auto-derived id/tag fallbacks. This is what makes persistent
+        // lanes (Music, SFX, Voiceover) read as their friendly name on the clip
+        // face rather than as the raw HTML tag (DIV / AUDIO).
+        if (clip.label && clip.label !== id && clip.label !== entry.tag) {
+          entry.label = clip.label;
+        }
+        // Pass through the data-timeline-group so the timeline can derive a
+        // per-lane label (Voiceover / Music / SFX / Video) in the left gutter.
+        if (clip.timelineGroup) {
+          entry.timelineGroup = clip.timelineGroup;
+        }
         try {
           const iframeDoc = iframeRef.current?.contentDocument;
           if (iframeDoc && entry.id) {

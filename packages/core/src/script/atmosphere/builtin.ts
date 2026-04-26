@@ -482,6 +482,15 @@ export function defaultAtmosphereForTemplate(templateId: string): string {
     case "chart-scene":
     case "comparison":
       return "gradient-mesh";
+    case "hook-vhs-rip":
+    case "kinetic-words":
+      // These templates already paint their own dense visual layer (photo + tint
+      // + scanlines + chromatic split). An additional kinetic atmosphere on top
+      // muddies the read. Stay flat.
+      return "studio-flat";
+    case "editorial-serif":
+      // Pure-typography breath scene — keep the negative space pristine.
+      return "studio-flat";
     default:
       return "noise-grain";
   }
