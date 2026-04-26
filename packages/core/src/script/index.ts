@@ -32,6 +32,12 @@ export {
 } from "./projectFiles.js";
 export { synthesizeScript } from "./audio.js";
 export type { SynthesizeScriptOptions } from "./audio.js";
+export { planVisualDirection, VisualDirectorError } from "./visualDirector.js";
+export type {
+  VisualDirectorOptions,
+  VisualDirectionEntry,
+  VisualDirectionPlan,
+} from "./visualDirector.js";
 export { assembleMaster } from "./assemble.js";
 export type { AssembleOptions, AssembleResult } from "./assemble.js";
 export { BUILTIN_TEMPLATES, getTemplate, DEFAULT_TOKENS } from "./templates/index.js";

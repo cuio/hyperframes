@@ -10,6 +10,7 @@ import {
   planScript,
   planSceneVariants,
   improveHook,
+  planVisualDirection,
   synthesizeScript,
   assembleMaster,
   loadDesignBrief,
@@ -20,11 +21,14 @@ import {
   resolveProjectTokens,
   resolveTemplateRegistry,
   ScriptPlannerError,
+  VisualDirectorError,
   DESIGN_ART_TEMPLATE,
   RESEARCH_TEMPLATE,
   type Script,
   type ScriptFidelity,
+  type VisualDirectionPlan,
 } from "../../script/index.js";
+import { readManifest as readImagesManifest } from "../../images/index.js";
 import { validateAgainstSchema } from "../../script/themes/validateProps.js";
 import { CostLogger, loggerSink } from "../../telemetry/cost.js";
 import { OpsLogger, opsFireAndForget } from "../../telemetry/ops.js";
@@ -54,6 +58,7 @@ interface GenerateBody {
 
 const SCRIPT_FILE = "script.json";
 const PLANNED_FILE = "script.generated.json";
+const DIRECTION_FILE = "script.visual-direction.json";
 
 export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void {
   // Run the AI planner against raw text. Returns a Script DSL and writes it
@@ -530,6 +535,97 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
     return c.json({ ok: true });
   });
 
+  // Run the visual director — second-pass LLM that picks image+treatment
+  // per scene from the project's images manifest. Persists the plan to
+  // <project>/script.visual-direction.json so subsequent /script/generate
+  // calls automatically route director-tagged scenes through image-scene.
+  api.post("/projects/:id/script/visual-direction", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) {
+      return c.json({ error: "ANTHROPIC_API_KEY not set." }, 401);
+    }
+
+    const scriptPath = join(project.dir, SCRIPT_FILE);
+    if (!existsSync(scriptPath)) {
+      return c.json({ error: "no script.json on disk — plan first" }, 400);
+    }
+    let script: Script;
+    try {
+      script = JSON.parse(readFileSync(scriptPath, "utf-8")) as Script;
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+
+    const manifest = readImagesManifest(project.dir);
+    if (manifest.images.length === 0) {
+      return c.json(
+        { error: "no images in manifest — drop some via the Studio Images tab first" },
+        400,
+      );
+    }
+
+    const designBrief = loadDesignBrief(project.dir) ?? undefined;
+    const activeTheme = resolveActiveTheme(project.dir, designBrief);
+
+    let body: { model?: string; temperature?: number } = {};
+    try {
+      body = (await c.req.json()) as { model?: string; temperature?: number };
+    } catch {
+      /* allow empty body */
+    }
+
+    const ops = new OpsLogger(project.dir);
+    const opsStart = Date.now();
+    try {
+      const plan = await planVisualDirection({
+        apiKey,
+        model: body.model,
+        script,
+        manifest,
+        themeContext: {
+          name: activeTheme.name,
+          designBrief,
+          tokens: activeTheme.tokens,
+        },
+        temperature: body.temperature,
+        onCostEvent: loggerSink(new CostLogger(project.dir)),
+      });
+      writeJson(join(project.dir, DIRECTION_FILE), plan);
+      const imageScenes = plan.scenes.filter((s) => s.imageId != null).length;
+      opsFireAndForget(ops, {
+        op: "script.visualDirection",
+        message: `${imageScenes}/${plan.scenes.length} scenes assigned imagery`,
+        wallMs: Date.now() - opsStart,
+        meta: { sceneCount: plan.scenes.length, imageSceneCount: imageScenes },
+      });
+      return c.json({ ok: true, plan });
+    } catch (err) {
+      void ops.logError("script.visualDirection", err);
+      if (err instanceof VisualDirectorError) {
+        return c.json({ error: err.message }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // Read the current visual direction plan (or null if the user hasn't
+  // run the director yet).
+  api.get("/projects/:id/script/visual-direction", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const path = join(project.dir, DIRECTION_FILE);
+    if (!existsSync(path)) return c.json({ plan: null });
+    try {
+      const plan = JSON.parse(readFileSync(path, "utf-8")) as VisualDirectionPlan;
+      return c.json({ plan });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err), plan: null }, 500);
+    }
+  });
+
   // End-to-end: synthesize audio + assemble master index.html.
   api.post("/projects/:id/script/generate", async (c) => {
     const project = await adapter.resolveProject(c.req.param("id"));
@@ -624,17 +720,37 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       const briefForAssemble = loadDesignBrief(project.dir);
       const tokens = resolveProjectTokens(project.dir, briefForAssemble);
       const templates = resolveTemplateRegistry(project.dir, briefForAssemble);
+      // Load any persisted visual direction + images manifest so the
+      // assembler can route director-tagged scenes through image-scene.
+      const directionPath = join(project.dir, DIRECTION_FILE);
+      let directionPlan: VisualDirectionPlan | undefined;
+      if (existsSync(directionPath)) {
+        try {
+          directionPlan = JSON.parse(readFileSync(directionPath, "utf-8")) as VisualDirectionPlan;
+        } catch (err) {
+          console.warn("[script] visual-direction.json is malformed; ignoring", err);
+        }
+      }
+      const imagesManifest = readImagesManifest(project.dir);
       const result = assembleMaster(planned, {
         projectDir: project.dir,
         outFile,
         tokens,
         templates,
+        ...(directionPlan ? { directionPlan } : {}),
+        imagesManifest,
       });
       opsFireAndForget(generateOps, {
         op: "script.generate",
         message: `${planned.scenes.length} scenes synthesized → ${outFile}`,
         wallMs: Date.now() - generateStart,
-        meta: { sceneCount: planned.scenes.length, outFile },
+        meta: {
+          sceneCount: planned.scenes.length,
+          outFile,
+          imageScenes: directionPlan
+            ? directionPlan.scenes.filter((d) => d.imageId != null).length
+            : 0,
+        },
       });
       return c.json({ ok: true, planned, result });
     } catch (err) {

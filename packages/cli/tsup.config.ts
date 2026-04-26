@@ -37,6 +37,7 @@ var __dirname = __hf_dirname(__filename);`,
     "esbuild",
     "giget",
     "postcss",
+    "sharp",
   ],
   noExternal: [
     "@hyperframes/core",

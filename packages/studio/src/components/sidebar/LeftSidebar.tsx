@@ -4,9 +4,10 @@ import { CompositionsTab } from "./CompositionsTab";
 import { AssetsTab } from "./AssetsTab";
 import { VoicesTab } from "./VoicesTab";
 import { ScriptTab } from "./ScriptTab";
+import { ImagesTab } from "./ImagesTab";
 import { FileTree } from "../editor/FileTree";
 
-type SidebarTab = "compositions" | "assets" | "code" | "voices" | "script";
+type SidebarTab = "compositions" | "assets" | "code" | "voices" | "script" | "images";
 
 const STORAGE_KEY = "hf-studio-sidebar-tab";
 
@@ -16,6 +17,7 @@ function getPersistedTab(): SidebarTab {
   if (stored === "code") return "code";
   if (stored === "voices") return "voices";
   if (stored === "script") return "script";
+  if (stored === "images") return "images";
   return "compositions";
 }
 
@@ -89,6 +91,10 @@ export const LeftSidebar = memo(function LeftSidebar({
         e.preventDefault();
         selectTab("script");
       }
+      if (e.key === "5") {
+        e.preventDefault();
+        selectTab("images");
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -156,6 +162,17 @@ export const LeftSidebar = memo(function LeftSidebar({
         >
           Script
         </button>
+        <button
+          type="button"
+          onClick={() => selectTab("images")}
+          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
+            tab === "images"
+              ? "text-neutral-200 border-b-2 border-studio-accent"
+              : "text-neutral-500 hover:text-neutral-400"
+          }`}
+        >
+          Images
+        </button>
       </div>
 
       {/* Tab content */}
@@ -178,6 +195,7 @@ export const LeftSidebar = memo(function LeftSidebar({
       )}
       {tab === "voices" && <VoicesTab projectId={projectId} />}
       {tab === "script" && <ScriptTab projectId={projectId} />}
+      {tab === "images" && <ImagesTab projectId={projectId} />}
       {tab === "code" && (
         <div className="flex flex-1 min-h-0">
           {(fileProp?.length ?? 0) > 0 && (
