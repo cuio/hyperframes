@@ -268,6 +268,18 @@ export function StudioApp() {
   }, [captionHasSelection, captionEditMode]);
   const [globalDragOver, setGlobalDragOver] = useState(false);
   const [appToast, setAppToast] = useState<AppToast | null>(null);
+  // Studio mode: Direct (creative cockpit — Storyline/Script/Images, no
+  // timeline) vs Edit (technical surface — code, compositions, timeline).
+  // Persisted across sessions; defaults to Direct so new users land on the
+  // creative view rather than the timeline.
+  const [studioMode, setStudioMode] = useState<"direct" | "edit">(() => {
+    try {
+      const stored = localStorage.getItem("hf-studio-mode");
+      return stored === "edit" ? "edit" : "direct";
+    } catch {
+      return "direct";
+    }
+  });
   const [timelineVisible, setTimelineVisible] = useState(true);
   const [timelineEditorHintDismissed, setTimelineEditorHintState] = useState(
     getTimelineEditorHintDismissed,
@@ -1343,6 +1355,56 @@ export function StudioApp() {
         </div>
         {/* Right: toolbar buttons */}
         <div className="flex items-center gap-1.5">
+          {/* Direct ←→ Edit mode toggle. Direct hides the timeline + technical
+              tabs and surfaces the Storyline cockpit. Edit reveals everything. */}
+          <div
+            className="h-7 flex items-center rounded-md border border-neutral-800 bg-neutral-900 p-0.5"
+            role="tablist"
+            aria-label="Studio mode"
+          >
+            <button
+              type="button"
+              role="tab"
+              aria-selected={studioMode === "direct"}
+              onClick={() => {
+                setStudioMode("direct");
+                try {
+                  localStorage.setItem("hf-studio-mode", "direct");
+                } catch {
+                  /* private mode */
+                }
+              }}
+              className={`h-full px-2.5 rounded text-[10px] font-medium tracking-wide uppercase transition-colors ${
+                studioMode === "direct"
+                  ? "bg-studio-accent/15 text-studio-accent"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+              title="Direct: storyline-first creative cockpit"
+            >
+              Direct
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={studioMode === "edit"}
+              onClick={() => {
+                setStudioMode("edit");
+                try {
+                  localStorage.setItem("hf-studio-mode", "edit");
+                } catch {
+                  /* private mode */
+                }
+              }}
+              className={`h-full px-2.5 rounded text-[10px] font-medium tracking-wide uppercase transition-colors ${
+                studioMode === "edit"
+                  ? "bg-studio-accent/15 text-studio-accent"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+              title="Edit: timeline + code + compositions"
+            >
+              Edit
+            </button>
+          </div>
           <button
             onClick={() => setLeftCollapsed((v) => !v)}
             className={`h-7 w-7 flex items-center justify-center rounded-md border transition-colors ${
@@ -1467,6 +1529,7 @@ export function StudioApp() {
             }
             onLint={handleLint}
             linting={linting}
+            mode={studioMode}
           />
         )}
 
@@ -1569,7 +1632,7 @@ export function StudioApp() {
                 </div>
               ) : undefined
             }
-            timelineVisible={timelineVisible}
+            timelineVisible={studioMode === "direct" ? false : timelineVisible}
             onToggleTimeline={toggleTimelineVisibility}
           />
         </div>

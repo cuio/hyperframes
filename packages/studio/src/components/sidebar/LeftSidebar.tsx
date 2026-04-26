@@ -5,20 +5,30 @@ import { AssetsTab } from "./AssetsTab";
 import { VoicesTab } from "./VoicesTab";
 import { ScriptTab } from "./ScriptTab";
 import { ImagesTab } from "./ImagesTab";
+import { StorylineTab } from "./StorylineTab";
 import { FileTree } from "../editor/FileTree";
 
-type SidebarTab = "compositions" | "assets" | "code" | "voices" | "script" | "images";
+export type StudioMode = "direct" | "edit";
+type SidebarTab = "storyline" | "compositions" | "assets" | "code" | "voices" | "script" | "images";
 
 const STORAGE_KEY = "hf-studio-sidebar-tab";
 
-function getPersistedTab(): SidebarTab {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === "assets") return "assets";
-  if (stored === "code") return "code";
-  if (stored === "voices") return "voices";
-  if (stored === "script") return "script";
-  if (stored === "images") return "images";
-  return "compositions";
+/**
+ * Tabs the user can see in each studio mode. "Direct" is the creative
+ * cockpit — script, storyline, images, voices. "Edit" exposes the technical
+ * surface (code, compositions, assets) on top. Storyline is the default in
+ * Direct mode; Compositions is the default in Edit mode.
+ */
+const TABS_BY_MODE: Record<StudioMode, ReadonlyArray<SidebarTab>> = {
+  direct: ["storyline", "script", "images", "voices"],
+  edit: ["code", "compositions", "assets", "voices", "script", "images", "storyline"],
+};
+
+function getPersistedTab(mode: StudioMode): SidebarTab {
+  const stored = localStorage.getItem(STORAGE_KEY) as SidebarTab | null;
+  const allowed = TABS_BY_MODE[mode];
+  if (stored && (allowed as readonly string[]).includes(stored)) return stored;
+  return allowed[0] ?? "compositions";
 }
 
 interface LeftSidebarProps {
@@ -41,7 +51,19 @@ interface LeftSidebarProps {
   codeChildren?: ReactNode;
   onLint?: () => void;
   linting?: boolean;
+  /** Direct (creative) hides the technical tabs; Edit shows everything. */
+  mode?: StudioMode;
 }
+
+const TAB_LABELS: Record<SidebarTab, string> = {
+  storyline: "Storyline",
+  code: "Code",
+  compositions: "Compositions",
+  assets: "Assets",
+  voices: "Voices",
+  script: "Script",
+  images: "Images",
+};
 
 export const LeftSidebar = memo(function LeftSidebar({
   width = 240,
@@ -63,8 +85,20 @@ export const LeftSidebar = memo(function LeftSidebar({
   codeChildren,
   onLint,
   linting,
+  mode = "edit",
 }: LeftSidebarProps) {
-  const [tab, setTab] = useState<SidebarTab>(getPersistedTab);
+  const visibleTabs = TABS_BY_MODE[mode];
+  const [tab, setTab] = useState<SidebarTab>(() => getPersistedTab(mode));
+
+  // If the active tab isn't visible in the current mode, snap to the first
+  // visible tab. Lets the user toggle modes without landing on a hidden view.
+  if (!(visibleTabs as readonly string[]).includes(tab)) {
+    const fallback = visibleTabs[0];
+    if (fallback && fallback !== tab) {
+      // Note: scheduling via Promise.resolve().then to avoid setState during render.
+      Promise.resolve().then(() => setTab(fallback));
+    }
+  }
 
   const selectTab = useCallback((t: SidebarTab) => {
     setTab(t);
@@ -105,77 +139,26 @@ export const LeftSidebar = memo(function LeftSidebar({
       className="flex flex-col h-full bg-neutral-950 border-r border-neutral-800/50"
       style={{ width }}
     >
-      {/* Tabs — Code first */}
+      {/* Tabs — visible set depends on the studio mode (Direct vs Edit). */}
       <div className="flex border-b border-neutral-800/50 flex-shrink-0">
-        <button
-          type="button"
-          onClick={() => selectTab("code")}
-          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
-            tab === "code"
-              ? "text-neutral-200 border-b-2 border-studio-accent"
-              : "text-neutral-500 hover:text-neutral-400"
-          }`}
-        >
-          Code
-        </button>
-        <button
-          type="button"
-          onClick={() => selectTab("compositions")}
-          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
-            tab === "compositions"
-              ? "text-neutral-200 border-b-2 border-studio-accent"
-              : "text-neutral-500 hover:text-neutral-400"
-          }`}
-        >
-          Compositions
-        </button>
-        <button
-          type="button"
-          onClick={() => selectTab("assets")}
-          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
-            tab === "assets"
-              ? "text-neutral-200 border-b-2 border-studio-accent"
-              : "text-neutral-500 hover:text-neutral-400"
-          }`}
-        >
-          Assets
-        </button>
-        <button
-          type="button"
-          onClick={() => selectTab("voices")}
-          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
-            tab === "voices"
-              ? "text-neutral-200 border-b-2 border-studio-accent"
-              : "text-neutral-500 hover:text-neutral-400"
-          }`}
-        >
-          Voices
-        </button>
-        <button
-          type="button"
-          onClick={() => selectTab("script")}
-          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
-            tab === "script"
-              ? "text-neutral-200 border-b-2 border-studio-accent"
-              : "text-neutral-500 hover:text-neutral-400"
-          }`}
-        >
-          Script
-        </button>
-        <button
-          type="button"
-          onClick={() => selectTab("images")}
-          className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
-            tab === "images"
-              ? "text-neutral-200 border-b-2 border-studio-accent"
-              : "text-neutral-500 hover:text-neutral-400"
-          }`}
-        >
-          Images
-        </button>
+        {visibleTabs.map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => selectTab(t)}
+            className={`flex-1 py-2 text-[11px] font-medium transition-colors ${
+              tab === t
+                ? "text-neutral-200 border-b-2 border-studio-accent"
+                : "text-neutral-500 hover:text-neutral-400"
+            }`}
+          >
+            {TAB_LABELS[t]}
+          </button>
+        ))}
       </div>
 
       {/* Tab content */}
+      {tab === "storyline" && <StorylineTab projectId={projectId} />}
       {tab === "compositions" && (
         <CompositionsTab
           projectId={projectId}
