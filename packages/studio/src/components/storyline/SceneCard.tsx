@@ -1,8 +1,10 @@
-import { memo, useCallback, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AudioWaveform } from "../../player/components/AudioWaveform";
 import {
   auditWordBudget,
   extractDataPoints,
+  getEditableHeadlineField,
+  getEditableSubtextField,
   pickAccentWord,
   pickImageId,
   pickOnScreenHeadline,
@@ -80,6 +82,8 @@ interface SceneCardProps {
   onDelete?: (sceneId: string) => void;
   /** Insert a blank scene below this one. */
   onInsertAfter?: (sceneId: string) => void;
+  /** Save an inline edit (headline / subtext / accent / words). */
+  onInlineEdit?: (sceneId: string, field: string, value: string) => void | Promise<void>;
 }
 
 const AI_ACTIONS: Array<{ id: AIActionId; label: string; tooltip: string }> = [
@@ -127,6 +131,7 @@ export const SceneCard = memo(function SceneCard({
   onMove,
   onDelete,
   onInsertAfter,
+  onInlineEdit,
 }: SceneCardProps) {
   const [expandedReason, setExpandedReason] = useState(false);
   const summary = summarizeScene(scene);
@@ -185,31 +190,94 @@ export const SceneCard = memo(function SceneCard({
         <p className="text-[12px] text-neutral-200 leading-relaxed">{scene.text}</p>
       </Section>
 
-      {/* Visual block — what shows on screen, with budget chip. */}
+      {/* Visual block — what shows on screen, with budget chip.
+          Click any text field to edit it inline. Headline + subtext + accent
+          are all click-to-edit; on blur, the change is saved via the same
+          PUT pipeline as Haiku suggestions. Escape cancels. */}
       <Section
         label="On screen"
         rightSlot={
           <WordBudgetChip status={budget.status} count={budget.count} budget={budget.budget} />
         }
       >
-        {headline ? (
-          <div className="text-[13px] text-neutral-100 leading-snug font-medium">
-            {accent ? <HighlightAccent text={headline} accent={accent} /> : headline}
-          </div>
+        {headline !== null ? (
+          <EditableText
+            value={headline}
+            multiline={true}
+            placeholder="(empty)"
+            disabled={!onInlineEdit}
+            className="text-[13px] text-neutral-100 leading-snug font-medium"
+            renderDisplay={(v) =>
+              accent ? <HighlightAccent text={v} accent={accent} /> : <>{v}</>
+            }
+            onSave={(next) => {
+              if (!onInlineEdit) return;
+              const field =
+                scene.template === "kinetic-words"
+                  ? "words"
+                  : (getEditableHeadlineField(scene.template) ?? "title");
+              void onInlineEdit(scene.id, field, next);
+            }}
+          />
         ) : (
           <div className="text-[11px] text-neutral-600 italic">
             (Template emits visuals from script.text — no explicit headline.)
           </div>
         )}
-        {subtext && (
-          <div className="text-[11px] text-neutral-400 leading-relaxed mt-1.5">{subtext}</div>
-        )}
-        {accent && (
-          <div className="mt-2 inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-[0.18em] border border-studio-accent/30 bg-studio-accent/5 text-studio-accent">
-            accent ·{" "}
-            <span className="font-semibold normal-case tracking-normal text-[10px]">{accent}</span>
-          </div>
-        )}
+        {(() => {
+          const subtextField = getEditableSubtextField(scene.template);
+          if (subtext) {
+            return (
+              <EditableText
+                value={subtext}
+                multiline={true}
+                placeholder="(empty subtext)"
+                disabled={!onInlineEdit || !subtextField}
+                className="text-[11px] text-neutral-400 leading-relaxed mt-1.5"
+                onSave={(next) => {
+                  if (!onInlineEdit || !subtextField) return;
+                  void onInlineEdit(scene.id, subtextField, next);
+                }}
+              />
+            );
+          }
+          if (subtextField && onInlineEdit) {
+            return (
+              <EditableText
+                value=""
+                multiline={true}
+                placeholder="+ add subtext"
+                className="text-[11px] text-neutral-500 leading-relaxed mt-1.5 italic"
+                onSave={(next) => {
+                  if (!next.trim()) return;
+                  void onInlineEdit(scene.id, subtextField, next);
+                }}
+              />
+            );
+          }
+          return null;
+        })()}
+        {(() => {
+          if (scene.template === "kinetic-words") return null;
+          if (accent) {
+            return (
+              <div className="mt-2 inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[9px] uppercase tracking-[0.18em] border border-studio-accent/30 bg-studio-accent/5 text-studio-accent">
+                accent ·
+                <EditableText
+                  value={accent}
+                  placeholder=""
+                  disabled={!onInlineEdit}
+                  className="font-semibold normal-case tracking-normal text-[10px] text-studio-accent"
+                  onSave={(next) => {
+                    if (!onInlineEdit) return;
+                    void onInlineEdit(scene.id, "accentWord", next.trim());
+                  }}
+                />
+              </div>
+            );
+          }
+          return null;
+        })()}
       </Section>
 
       {/* Image badge — assignment is via the visual director, surfaced here. */}
@@ -569,5 +637,140 @@ function HighlightAccent({ text, accent }: { text: string; accent: string }): Re
       <em className="not-italic font-semibold text-studio-accent">{matched}</em>
       {after}
     </>
+  );
+}
+
+/**
+ * Click-to-edit text field. Display mode: a span / div rendering
+ * `renderDisplay(value)` (defaults to plain text). Click → input mode with
+ * the cursor focused and the value selected. Blur saves; Escape cancels.
+ *
+ * Multiline option drives `<textarea>` vs `<input>`; useful for headlines and
+ * subtexts that can wrap. The on-blur save is debounced via a refs trick:
+ * if the user pressed Escape, we set `cancelledRef.current = true` and skip
+ * the save in the blur handler that fires next.
+ */
+function EditableText({
+  value,
+  onSave,
+  placeholder,
+  disabled,
+  className,
+  multiline,
+  renderDisplay,
+}: {
+  value: string;
+  onSave: (next: string) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  multiline?: boolean;
+  renderDisplay?: (v: string) => ReactNode;
+}): ReactNode {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const cancelledRef = useRef(false);
+  const inputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [value, editing]);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  if (disabled || !editing) {
+    const displayContent =
+      value.length > 0 ? (renderDisplay ? renderDisplay(value) : value) : (placeholder ?? "");
+    const isEmpty = value.length === 0;
+    return (
+      <span
+        role={disabled ? undefined : "button"}
+        tabIndex={disabled ? undefined : 0}
+        onClick={() => {
+          if (!disabled) setEditing(true);
+        }}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setEditing(true);
+          }
+        }}
+        className={`${className ?? ""} ${
+          disabled ? "" : "cursor-text rounded -mx-1 px-1 hover:bg-neutral-800/60 transition-colors"
+        } ${isEmpty ? "italic" : ""} block`}
+        title={disabled ? undefined : "Click to edit"}
+      >
+        {displayContent}
+      </span>
+    );
+  }
+
+  const commit = () => {
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      setEditing(false);
+      setDraft(value);
+      return;
+    }
+    setEditing(false);
+    if (draft !== value) onSave(draft);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      cancelledRef.current = true;
+      setEditing(false);
+      setDraft(value);
+      return;
+    }
+    if (e.key === "Enter" && !multiline) {
+      e.preventDefault();
+      commit();
+      return;
+    }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      commit();
+    }
+  };
+
+  const sharedClass = `${className ?? ""} -mx-1 px-1 bg-neutral-950/70 border border-studio-accent/40 rounded outline-none focus:border-studio-accent w-full`;
+
+  if (multiline) {
+    return (
+      <textarea
+        ref={(el) => {
+          inputRef.current = el;
+        }}
+        rows={Math.min(4, draft.split("\n").length + 1)}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={onKeyDown}
+        className={`${sharedClass} resize-none`}
+        placeholder={placeholder}
+      />
+    );
+  }
+  return (
+    <input
+      ref={(el) => {
+        inputRef.current = el;
+      }}
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={onKeyDown}
+      className={sharedClass}
+      placeholder={placeholder}
+    />
   );
 }

@@ -107,6 +107,20 @@ export const NLELayout = memo(function NLELayout({
     refreshPlayer();
   }, [refreshKey, refreshPlayer]);
 
+  // Listen for the Storyline tab's focal-scene events and seek the preview
+  // accordingly. The Storyline tab dispatches `hf:storyline-focal` when the
+  // user scrolls past the focus line; we route that to the player's seek so
+  // the right-panel preview tracks what the user's reading.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ time?: number }>).detail;
+      if (!detail || typeof detail.time !== "number") return;
+      seek(detail.time);
+    };
+    window.addEventListener("hf:storyline-focal", handler);
+    return () => window.removeEventListener("hf:storyline-focal", handler);
+  }, [seek]);
+
   // Wrap onIframeLoad to also notify parent of iframe ref
   const onIframeLoad = useCallback(() => {
     baseOnIframeLoad();

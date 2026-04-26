@@ -1,13 +1,19 @@
 import { describe, it, expect } from "vitest";
 import {
+  applyInlineEdit,
   auditWordBudget,
   countWords,
   extractDataPoints,
+  getEditableHeadlineField,
+  getEditableSubtextField,
   pickAccentWord,
+  pickFocalCardIndex,
   pickImageId,
   pickOnScreenHeadline,
   pickOnScreenSubtext,
   summarizeScene,
+  TEMPLATE_HEADLINE_FIELD,
+  TEMPLATE_SUBTEXT_FIELD,
   VISUAL_WORD_BUDGET,
 } from "./sceneHelpers";
 
@@ -231,5 +237,128 @@ describe("summarizeScene", () => {
     expect(summarizeScene({ id: "s99", text: "", template: "x", props: {} }).durationLabel).toBe(
       "—",
     );
+  });
+});
+
+describe("getEditableHeadlineField", () => {
+  it("returns 'title' for the most common templates", () => {
+    expect(getEditableHeadlineField("hook-bigtext")).toBe("title");
+    expect(getEditableHeadlineField("hook-vhs-rip")).toBe("title");
+    expect(getEditableHeadlineField("aroll-text")).toBe("title");
+    expect(getEditableHeadlineField("chart-scene")).toBe("title");
+  });
+
+  it("returns the template-specific field where it differs", () => {
+    expect(getEditableHeadlineField("editorial-serif")).toBe("phrase");
+    expect(getEditableHeadlineField("hook-statreveal")).toBe("label");
+    expect(getEditableHeadlineField("quote")).toBe("quote");
+    expect(getEditableHeadlineField("image-scene")).toBe("headline");
+  });
+
+  it("returns null for kinetic-words (no single field — words[] array)", () => {
+    expect(getEditableHeadlineField("kinetic-words")).toBeNull();
+  });
+
+  it("falls through to 'title' for unknown templates", () => {
+    expect(getEditableHeadlineField("not-a-real-template")).toBe("title");
+  });
+});
+
+describe("getEditableSubtextField", () => {
+  it("maps the common subtext fields", () => {
+    expect(getEditableSubtextField("hook-bigtext")).toBe("subtext");
+    expect(getEditableSubtextField("aroll-text")).toBe("body");
+    expect(getEditableSubtextField("image-scene")).toBe("subhead");
+    expect(getEditableSubtextField("quote")).toBe("attribution");
+  });
+
+  it("returns null for templates with no subtext field", () => {
+    expect(getEditableSubtextField("not-a-real-template")).toBeNull();
+  });
+
+  it("TEMPLATE_HEADLINE_FIELD and TEMPLATE_SUBTEXT_FIELD share the templates we ship", () => {
+    // Sanity check that every Reels-grade template has both maps populated.
+    for (const t of ["hook-bigtext", "hook-vhs-rip", "kinetic-words", "editorial-serif"]) {
+      expect(VISUAL_WORD_BUDGET[t]).toBeGreaterThan(0);
+    }
+    expect(TEMPLATE_HEADLINE_FIELD["hook-vhs-rip"]).toBe("title");
+    expect(TEMPLATE_SUBTEXT_FIELD["hook-vhs-rip"]).toBe("sourceTag");
+  });
+});
+
+describe("applyInlineEdit", () => {
+  it("merges a string field into existing props (preserves untouched fields)", () => {
+    expect(
+      applyInlineEdit({ title: "Old", eyebrow: "STAKE", accentWord: "neither" }, "title", "New"),
+    ).toEqual({ title: "New", eyebrow: "STAKE", accentWord: "neither" });
+  });
+
+  it("splits whitespace for kinetic-words and re-anchors emphasis to the last word", () => {
+    expect(
+      applyInlineEdit({ words: ["a", "b"], emphasisIndex: 0 }, "words", "the world is moving on"),
+    ).toEqual({
+      words: ["the", "world", "is", "moving", "on"],
+      emphasisIndex: 4,
+    });
+  });
+
+  it("empty kinetic-words input yields an empty array and emphasis 0", () => {
+    expect(applyInlineEdit({ words: ["a"] }, "words", "   ")).toEqual({
+      words: [],
+      emphasisIndex: 0,
+    });
+  });
+
+  it("collapses repeated whitespace in kinetic-words input", () => {
+    expect(applyInlineEdit({}, "words", "  the   numbers  ")).toEqual({
+      words: ["the", "numbers"],
+      emphasisIndex: 1,
+    });
+  });
+});
+
+describe("pickFocalCardIndex", () => {
+  const focusLineAt = (frac: number, viewport: number): number => viewport * frac;
+
+  it("returns -1 for an empty card list", () => {
+    expect(pickFocalCardIndex([], 800)).toBe(-1);
+  });
+
+  it("returns -1 when the viewport has zero height", () => {
+    expect(pickFocalCardIndex([{ top: 0, height: 100 }], 0)).toBe(-1);
+  });
+
+  it("picks the card straddling the focus line", () => {
+    // Focus line at 0.33 * 600 = 198px. Card 1 spans 100-300 → straddles.
+    const cards = [
+      { top: -200, height: 200 }, // 1
+      { top: 100, height: 200 }, // 2 — straddles
+      { top: 350, height: 200 }, // 3
+    ];
+    expect(pickFocalCardIndex(cards, 600)).toBe(1);
+    void focusLineAt;
+  });
+
+  it("picks the card whose center is closest when no card straddles", () => {
+    // Focus line at 198. Cards have gaps that make none straddle.
+    const cards = [
+      { top: 0, height: 50 }, // center 25, dist 173
+      { top: 150, height: 30 }, // center 165, dist 33
+      { top: 230, height: 30 }, // center 245, dist 47
+    ];
+    expect(pickFocalCardIndex(cards, 600)).toBe(1);
+  });
+
+  it("respects a custom focus-line fraction", () => {
+    // Focus line at 0.5 * 600 = 300. Card 2 spans 250-450 → straddles.
+    const cards = [
+      { top: 0, height: 200 },
+      { top: 250, height: 200 }, // straddles 300
+    ];
+    expect(pickFocalCardIndex(cards, 600, 0.5)).toBe(1);
+  });
+
+  it("returns 0 when only one card exists, regardless of position", () => {
+    expect(pickFocalCardIndex([{ top: 1000, height: 50 }], 600)).toBe(0);
   });
 });

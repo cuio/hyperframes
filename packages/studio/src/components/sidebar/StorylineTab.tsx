@@ -1,6 +1,11 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SceneCard, type AIActionId, type SceneSuggestion } from "../storyline/SceneCard";
-import type { StorylineSceneInput } from "../storyline/sceneHelpers";
+import {
+  applyInlineEdit,
+  pickFocalCardIndex,
+  type CardRect,
+  type StorylineSceneInput,
+} from "../storyline/sceneHelpers";
 
 /**
  * Storyline tab — the creative cockpit.
@@ -54,7 +59,25 @@ interface IntentPatch {
   patch: { template?: string; props?: Record<string, unknown>; reasoning?: string };
 }
 
+interface ProjectIntentResponse {
+  overallNote: string;
+  themeSuggestion: {
+    currentThemeId: string;
+    suggestedThemeId: string | null;
+    rationale: string;
+  } | null;
+  designBriefAddendum: { text: string; rationale: string } | null;
+  patches: IntentPatch[];
+}
+
+type DirectorScope = "storyline" | "project";
+
 const SCRIPT_GENERATED = "script.generated.json";
+
+/** Custom DOM event dispatched when the focal scene card changes during
+ * scroll. The Player listens for this and seeks the timeline so the right
+ * panel preview tracks what the user's reading on the left. */
+const FOCAL_EVENT = "hf:storyline-focal";
 
 const ACTION_PATH: Record<AIActionId, string> = {
   compress: "compress",
@@ -63,12 +86,20 @@ const ACTION_PATH: Record<AIActionId, string> = {
   rePickTemplate: "re-pick-template",
 };
 
-const SUGGESTION_PROMPTS = [
-  "punch up retention in the first 10 seconds",
-  "tighten every hook to ≤6 words",
-  "make the data scenes feel more urgent",
-  "add an editorial breath scene before the climax",
-];
+const SUGGESTION_PROMPTS_BY_SCOPE: Record<DirectorScope, string[]> = {
+  storyline: [
+    "punch up retention in the first 10 seconds",
+    "tighten every hook to ≤6 words",
+    "make the data scenes feel more urgent",
+    "add an editorial breath scene before the climax",
+  ],
+  project: [
+    "make the whole video feel investigative",
+    "shift the brand toward cinematic / documentary",
+    "tighten the brand voice — more confident, less academic",
+    "swap to a darker theme so the data lands harder",
+  ],
+};
 
 export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineTabProps) {
   const [script, setScript] = useState<PlannedScriptApiShape | null>(null);
@@ -82,17 +113,27 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
     {},
   );
 
-  // Storyline-level intent state.
+  // Director state — single textarea, two scopes (storyline vs project).
+  const [directorScope, setDirectorScope] = useState<DirectorScope>("storyline");
   const [intent, setIntent] = useState("");
   const [intentRunning, setIntentRunning] = useState(false);
   const [intentResult, setIntentResult] = useState<{
     overallNote: string;
     patches: IntentPatch[];
   } | null>(null);
+  const [projectIntentResult, setProjectIntentResult] = useState<ProjectIntentResponse | null>(
+    null,
+  );
   const [intentError, setIntentError] = useState<string | null>(null);
 
   // Counter to force a fresh GET after a write — avoids cached responses.
   const [reloadKey, setReloadKey] = useState(0);
+
+  // Refs from each scene-card root → used by the IntersectionObserver-driven
+  // focal-scene picker that auto-seeks the right-panel preview.
+  const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
+  const scrollRootRef = useRef<HTMLDivElement | null>(null);
+  const lastFocalIndexRef = useRef<number>(-1);
 
   // Load the planned script + the image manifest on mount, project change, and
   // after every successful write.
@@ -294,8 +335,10 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
     setIntentRunning(true);
     setIntentError(null);
     setIntentResult(null);
+    setProjectIntentResult(null);
     try {
-      const res = await fetch(`/api/projects/${projectId}/storyline/intent`, {
+      const endpoint = directorScope === "project" ? "project-intent" : "intent";
+      const res = await fetch(`/api/projects/${projectId}/storyline/${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ intent: trimmed }),
@@ -304,26 +347,30 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `HTTP ${res.status}`);
       }
-      const json = (await res.json()) as {
-        overallNote?: string;
-        patches?: IntentPatch[];
-      };
-      setIntentResult({
-        overallNote: json.overallNote ?? "",
-        patches: json.patches ?? [],
-      });
+      const json = await res.json();
+      if (directorScope === "project") {
+        setProjectIntentResult(json as ProjectIntentResponse);
+      } else {
+        const r = json as { overallNote?: string; patches?: IntentPatch[] };
+        setIntentResult({ overallNote: r.overallNote ?? "", patches: r.patches ?? [] });
+      }
     } catch (err) {
       setIntentError(err instanceof Error ? err.message : String(err));
     } finally {
       setIntentRunning(false);
     }
-  }, [intent, projectId]);
+  }, [intent, projectId, directorScope]);
 
   const applyIntentPatch = useCallback(
     async (patch: IntentPatch): Promise<void> => {
       try {
         await applyPatch(patch.sceneId, patch.patch);
         setIntentResult((prev) =>
+          prev
+            ? { ...prev, patches: prev.patches.filter((p) => p.sceneId !== patch.sceneId) }
+            : prev,
+        );
+        setProjectIntentResult((prev) =>
           prev
             ? { ...prev, patches: prev.patches.filter((p) => p.sceneId !== patch.sceneId) }
             : prev,
@@ -337,10 +384,11 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
   );
 
   const applyAllIntentPatches = useCallback(async (): Promise<void> => {
-    if (!intentResult || intentResult.patches.length === 0) return;
-    if (!window.confirm(`Apply ${intentResult.patches.length} scene patches?`)) return;
+    const source = projectIntentResult ?? intentResult;
+    if (!source || source.patches.length === 0) return;
+    if (!window.confirm(`Apply ${source.patches.length} scene patches?`)) return;
     let failed = 0;
-    for (const p of intentResult.patches) {
+    for (const p of source.patches) {
       try {
         await applyPatch(p.sceneId, p.patch);
       } catch {
@@ -348,9 +396,30 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
       }
     }
     setIntentResult(null);
+    setProjectIntentResult(null);
     setReloadKey((k) => k + 1);
     if (failed > 0) window.alert(`${failed} patches failed — see console.`);
-  }, [intentResult, applyPatch]);
+  }, [intentResult, projectIntentResult, applyPatch]);
+
+  // ── Inline edit (Phase 3 feature 3) ────────────────────────────────────────
+  // Save a single field edit (headline / subtext / accent) by computing the
+  // updated props blob and PUTing the merged scene. Same write-back path as
+  // every other apply — no parallel data flow.
+
+  const handleInlineEdit = useCallback(
+    async (sceneId: string, field: string, value: string): Promise<void> => {
+      const current = script?.scenes.find((s) => s.id === sceneId);
+      if (!current) return;
+      const newProps = applyInlineEdit(current.props ?? {}, field, value);
+      try {
+        await applyPatch(sceneId, { props: newProps });
+        setReloadKey((k) => k + 1);
+      } catch (err) {
+        window.alert(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [script, applyPatch],
+  );
 
   // ── Bulk ops: reorder / delete / insert ────────────────────────────────────
 
@@ -445,7 +514,34 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
   ).padStart(2, "0")}`;
 
   return (
-    <div className="flex-1 overflow-auto px-3 py-3">
+    <div
+      ref={scrollRootRef}
+      className="flex-1 overflow-auto px-3 py-3"
+      onScroll={() => {
+        // Recompute focal scene whenever the user scrolls. Cheap — bounded by
+        // scene count, no LLM calls. Dispatches a custom event the player
+        // hook listens to.
+        const root = scrollRootRef.current;
+        if (!root) return;
+        const rootRect = root.getBoundingClientRect();
+        const cards: CardRect[] = scenesWithStart.map(({ scene }) => {
+          const el = cardRefs.current.get(scene.id);
+          if (!el) return { top: 0, height: 0 };
+          const rect = el.getBoundingClientRect();
+          return { top: rect.top - rootRect.top, height: rect.height };
+        });
+        const idx = pickFocalCardIndex(cards, rootRect.height);
+        if (idx === lastFocalIndexRef.current || idx === -1) return;
+        lastFocalIndexRef.current = idx;
+        const focal = scenesWithStart[idx];
+        if (!focal) return;
+        window.dispatchEvent(
+          new CustomEvent(FOCAL_EVENT, {
+            detail: { time: focal.startSeconds, sceneId: focal.scene.id },
+          }),
+        );
+      }}
+    >
       <header className="mb-3">
         <div className="flex items-center justify-between">
           <h2 className="text-[12px] font-semibold text-neutral-200 uppercase tracking-[0.16em]">
@@ -461,18 +557,27 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
         <p className="text-[10px] text-neutral-600 mt-2 leading-relaxed">
           Audio is the source of truth. Each card shows the narration the audience hears, plus the
           on-screen visual decisions made around it. Use the AI buttons or the Director below to
-          refine.
+          refine. Click any headline / subtext to edit it inline.
         </p>
       </header>
 
-      {/* Storyline-level intent — Haiku reads the whole script + your prompt
-          and proposes per-scene patches you accept à la carte. */}
+      {/* Director — single textarea, two scopes. Storyline scope returns
+          per-scene patches; Project scope additionally proposes theme + brief
+          changes that move the whole video. */}
       <DirectorBar
         intent={intent}
         onIntentChange={setIntent}
         running={intentRunning}
         onSubmit={runIntent}
-        prompts={SUGGESTION_PROMPTS}
+        scope={directorScope}
+        onScopeChange={(s) => {
+          setDirectorScope(s);
+          setIntent("");
+          setIntentResult(null);
+          setProjectIntentResult(null);
+          setIntentError(null);
+        }}
+        prompts={SUGGESTION_PROMPTS_BY_SCOPE[directorScope]}
       />
 
       {intentError && (
@@ -490,28 +595,45 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
         />
       )}
 
+      {projectIntentResult && (
+        <ProjectIntentPanel
+          result={projectIntentResult}
+          onApplyOne={applyIntentPatch}
+          onApplyAll={applyAllIntentPatches}
+          onDismissAll={() => setProjectIntentResult(null)}
+        />
+      )}
+
       <div className="flex flex-col gap-3">
         {scenesWithStart.map(({ scene, startSeconds }, i) => {
           const imageId = typeof scene.props.imageId === "string" ? scene.props.imageId : null;
           const dominantColor = imageId ? imageMap.get(imageId)?.dominantColor : undefined;
           return (
-            <SceneCard
+            <div
               key={scene.id}
-              scene={scene}
-              projectId={projectId}
-              index={i}
-              totalScenes={scenesWithStart.length}
-              startSeconds={startSeconds}
-              {...(dominantColor ? { imageDominantColor: dominantColor } : {})}
-              onAIAction={handleAIAction}
-              aiActionStatus={aiStatus[scene.id]}
-              suggestions={suggestionsByScene[scene.id]}
-              onApplySuggestion={handleApplySuggestion}
-              onDismissSuggestion={handleDismissSuggestion}
-              onMove={handleMove}
-              onDelete={handleDelete}
-              onInsertAfter={handleInsertAfter}
-            />
+              ref={(el) => {
+                if (el) cardRefs.current.set(scene.id, el);
+                else cardRefs.current.delete(scene.id);
+              }}
+            >
+              <SceneCard
+                scene={scene}
+                projectId={projectId}
+                index={i}
+                totalScenes={scenesWithStart.length}
+                startSeconds={startSeconds}
+                {...(dominantColor ? { imageDominantColor: dominantColor } : {})}
+                onAIAction={handleAIAction}
+                aiActionStatus={aiStatus[scene.id]}
+                suggestions={suggestionsByScene[scene.id]}
+                onApplySuggestion={handleApplySuggestion}
+                onInlineEdit={handleInlineEdit}
+                onDismissSuggestion={handleDismissSuggestion}
+                onMove={handleMove}
+                onDelete={handleDelete}
+                onInsertAfter={handleInsertAfter}
+              />
+            </div>
           );
         })}
       </div>
@@ -541,23 +663,54 @@ function DirectorBar({
   onIntentChange,
   running,
   onSubmit,
+  scope,
+  onScopeChange,
   prompts,
 }: {
   intent: string;
   onIntentChange: (v: string) => void;
   running: boolean;
   onSubmit: () => void;
+  scope: DirectorScope;
+  onScopeChange: (s: DirectorScope) => void;
   prompts: string[];
 }) {
+  const subtitle =
+    scope === "project"
+      ? "ask Haiku to consider the theme, brief + image library when revising"
+      : "ask Haiku to revise the whole storyline (template / props / accents)";
   return (
     <section className="mb-3 rounded-lg border border-studio-accent/25 bg-studio-accent/[0.03] p-3">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-studio-accent">
-          Director
-        </span>
-        <span className="text-[10px] text-neutral-500">
-          ask Haiku to revise the whole storyline
-        </span>
+      <div className="flex items-center justify-between mb-2 gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-studio-accent">
+            Director
+          </span>
+          <span className="text-[10px] text-neutral-500">{subtitle}</span>
+        </div>
+        <div
+          className="flex items-center rounded-md border border-neutral-800 bg-neutral-900 p-0.5"
+          role="tablist"
+          aria-label="Director scope"
+        >
+          {(["storyline", "project"] as DirectorScope[]).map((s) => (
+            <button
+              key={s}
+              type="button"
+              role="tab"
+              aria-selected={scope === s}
+              disabled={running}
+              onClick={() => onScopeChange(s)}
+              className={`h-5 px-2 rounded text-[9px] font-medium uppercase tracking-wide transition-colors ${
+                scope === s
+                  ? "bg-studio-accent/15 text-studio-accent"
+                  : "text-neutral-500 hover:text-neutral-300"
+              } disabled:opacity-40`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
       </div>
       <textarea
         value={intent}
@@ -680,6 +833,158 @@ function IntentPlanPanel({
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+function ProjectIntentPanel({
+  result,
+  onApplyOne,
+  onApplyAll,
+  onDismissAll,
+}: {
+  result: ProjectIntentResponse;
+  onApplyOne: (p: IntentPatch) => void;
+  onApplyAll: () => void;
+  onDismissAll: () => void;
+}) {
+  const hasAnything =
+    result.patches.length > 0 ||
+    result.themeSuggestion !== null ||
+    result.designBriefAddendum !== null;
+  if (!hasAnything) {
+    return (
+      <section className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3">
+        <div className="text-[11px] text-neutral-400">
+          {result.overallNote || "Haiku didn't propose any project-level changes for that intent."}
+        </div>
+        <button
+          type="button"
+          onClick={onDismissAll}
+          className="mt-2 h-6 px-2 rounded text-[10px] text-neutral-500 hover:text-neutral-300"
+        >
+          Dismiss
+        </button>
+      </section>
+    );
+  }
+  return (
+    <section className="mb-3 rounded-lg border border-studio-accent/30 bg-studio-accent/[0.04] overflow-hidden">
+      <header className="px-3 py-2 border-b border-studio-accent/20 flex items-center justify-between">
+        <div className="flex-1 min-w-0">
+          <div className="text-[9px] uppercase tracking-[0.22em] font-semibold text-studio-accent">
+            Project plan · {result.patches.length} scene patch
+            {result.patches.length === 1 ? "" : "es"}
+          </div>
+          {result.overallNote && (
+            <p className="text-[11px] text-neutral-300 mt-1 leading-snug">{result.overallNote}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {result.patches.length > 0 && (
+            <button
+              type="button"
+              onClick={onApplyAll}
+              className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-studio-accent/50 bg-studio-accent/15 text-studio-accent hover:bg-studio-accent/25 transition-colors"
+            >
+              Apply scene patches
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onDismissAll}
+            className="h-6 px-2 rounded-md text-[10px] text-neutral-500 hover:text-neutral-300 transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      </header>
+
+      {/* Theme suggestion — non-binding, surfaced for the user to act on
+          via the existing Theme picker in the Script tab. */}
+      {result.themeSuggestion && (
+        <div className="px-3 py-2 border-b border-studio-accent/15 bg-studio-accent/[0.02]">
+          <div className="text-[9px] uppercase tracking-[0.18em] text-neutral-500 mb-1">
+            Theme suggestion
+          </div>
+          <div className="text-[12px] text-neutral-100">
+            <span className="font-mono text-neutral-400">
+              {result.themeSuggestion.currentThemeId}
+            </span>
+            <span className="mx-1 text-neutral-600">→</span>
+            <span className="font-mono text-studio-accent">
+              {result.themeSuggestion.suggestedThemeId}
+            </span>
+          </div>
+          {result.themeSuggestion.rationale && (
+            <p className="text-[10px] text-neutral-500 italic leading-relaxed mt-0.5">
+              {result.themeSuggestion.rationale}
+            </p>
+          )}
+          <p className="text-[10px] text-neutral-600 mt-1">
+            Apply via the Theme picker in the Script tab.
+          </p>
+        </div>
+      )}
+
+      {/* Design brief addendum — markdown snippet to append to DESIGN.md.
+          User copies + pastes; we don't auto-write. */}
+      {result.designBriefAddendum && (
+        <div className="px-3 py-2 border-b border-studio-accent/15 bg-studio-accent/[0.02]">
+          <div className="flex items-center justify-between mb-1">
+            <div className="text-[9px] uppercase tracking-[0.18em] text-neutral-500">
+              Design brief addendum
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (result.designBriefAddendum) {
+                  void navigator.clipboard.writeText(result.designBriefAddendum.text);
+                }
+              }}
+              className="h-5 px-2 rounded text-[9px] text-neutral-400 hover:text-neutral-100 hover:bg-neutral-800 transition-colors"
+            >
+              Copy
+            </button>
+          </div>
+          <pre className="text-[10px] text-neutral-200 leading-relaxed whitespace-pre-wrap font-mono bg-neutral-950/50 border border-neutral-800 rounded p-2">
+            {result.designBriefAddendum.text}
+          </pre>
+          {result.designBriefAddendum.rationale && (
+            <p className="text-[10px] text-neutral-500 italic leading-relaxed mt-1">
+              {result.designBriefAddendum.rationale}
+            </p>
+          )}
+        </div>
+      )}
+
+      {result.patches.length > 0 && (
+        <div>
+          {result.patches.map((p) => (
+            <div
+              key={p.sceneId}
+              className="px-3 py-2 border-b border-studio-accent/15 last:border-b-0 flex items-start gap-3"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-[10px] font-mono text-neutral-300">{p.sceneId}</span>
+                  <span className="text-[10px] text-neutral-500">{p.preview}</span>
+                </div>
+                {p.note && (
+                  <p className="text-[10px] text-neutral-500 italic leading-relaxed">{p.note}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => onApplyOne(p)}
+                className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-studio-accent/50 bg-studio-accent/15 text-studio-accent hover:bg-studio-accent/25 transition-colors flex-shrink-0"
+              >
+                Apply
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
