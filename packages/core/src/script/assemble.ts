@@ -8,6 +8,7 @@ import { getLoadedThemeByName } from "./themes/index.js";
 import type { PlannedScene, PlannedScript, SceneTransition } from "./types.js";
 import type { ImageEntry, ImageManifest } from "../images/index.js";
 import type { VisualDirectionPlan } from "./visualDirector.js";
+import { readSfxManifest, resolveSfxStartForScene, type SfxEntry } from "./sfx/manifest.js";
 
 export interface AssembleOptions {
   projectDir: string;
@@ -75,6 +76,17 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
   let cursor = 0;
   const sceneFragments: string[] = [];
   const audioTags: string[] = [];
+
+  // SFX manifest: read once, group entries by sceneId so each scene's loop
+  // iteration can emit them at the right cursor position. The manifest is
+  // optional — projects without it just skip the SFX lane.
+  const sfxManifest = readSfxManifest(opts.projectDir);
+  const sfxBySceneId = new Map<string, SfxEntry[]>();
+  for (const entry of sfxManifest.entries) {
+    const list = sfxBySceneId.get(entry.sceneId) ?? [];
+    list.push(entry);
+    sfxBySceneId.set(entry.sceneId, list);
+  }
   const sceneVisibility: Array<{
     id: string;
     start: number;
@@ -180,6 +192,22 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
       const audioStart = cursor + audioStartOffset;
       audioTags.push(
         `  <audio id="hf-vo-${scene.id}" src="${escapeAttr(scene.audio.path)}" data-start="${audioStart.toFixed(2)}" data-duration="${audioDur.toFixed(2)}" data-track-index="1" data-timeline-group="voiceover" data-timeline-label="Voiceover" preload="auto"></audio>`,
+      );
+    }
+
+    // SFX entries land on track 3 with the same audio timing rules as the
+    // voiceover. Each entry's start time is computed from its anchor (scene-
+    // start / accent-word / scene-end) — see resolveSfxStartForScene for
+    // the math. Volume scales the runtime mixer when supplied; the producer
+    // package consumes data-volume-db at render time.
+    const sceneSfx = sfxBySceneId.get(scene.id) ?? [];
+    for (const entry of sceneSfx) {
+      const start = resolveSfxStartForScene(entry, scene, cursor, sceneTotal);
+      const volumeAttr =
+        typeof entry.volumeDb === "number" ? ` data-volume-db="${entry.volumeDb.toFixed(1)}"` : "";
+      const labelAttr = entry.label ? ` data-timeline-label="${escapeAttr(entry.label)}"` : "";
+      audioTags.push(
+        `  <audio id="hf-sfx-${scene.id}-${entry.id}" src="${escapeAttr(entry.path)}" data-start="${start.toFixed(2)}" data-duration="${entry.durationSeconds.toFixed(2)}" data-track-index="3" data-timeline-group="sfx"${labelAttr}${volumeAttr} preload="auto"></audio>`,
       );
     }
     const transitionIn: SceneTransition =

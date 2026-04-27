@@ -15,3 +15,5 @@ export {
   ElevenLabsError,
 } from "./client.js";
 export type { ElevenLabsVoice, SynthesizeOptions } from "./client.js";
+export { generateSoundEffect, clampSfxDuration, SFX_BOUNDS } from "./sfx.js";
+export type { GenerateSfxOptions, GenerateSfxResult } from "./sfx.js";
