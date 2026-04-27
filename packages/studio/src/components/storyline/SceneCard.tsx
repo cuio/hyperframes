@@ -35,7 +35,43 @@ import {
  * the editing pipeline lands.
  */
 
-export type AIActionId = "compress" | "suggestEmphasis" | "refineReasoning" | "rePickTemplate";
+export type AIActionId =
+  | "compress"
+  | "suggestEmphasis"
+  | "refineReasoning"
+  | "rePickTemplate"
+  | "addSfx";
+
+/**
+ * One SFX suggestion produced by the per-scene `/sfx-suggest` Haiku action.
+ * Stack of these is rendered below the regular suggestion stack so the user
+ * can scan multiple ideas before paying ElevenLabs credits to generate one.
+ */
+export interface SfxSuggestion {
+  id: string;
+  prompt: string;
+  durationSeconds: number;
+  anchor: "scene-start" | "accent-word" | "scene-end";
+  accentWordIndex?: number;
+  label: string;
+  rationale: string;
+}
+
+/**
+ * One already-generated SFX entry attached to this scene. Surfaced beneath
+ * the suggestion stack so the user can audition it (HTML5 audio) and remove
+ * it (DELETE /storyline/sfx/:entryId). The shape mirrors `SfxEntry` from
+ * core's manifest module — kept duplicated here so the studio doesn't import
+ * core types directly.
+ */
+export interface AppliedSfxEntry {
+  id: string;
+  prompt: string;
+  path: string;
+  durationSeconds: number;
+  anchor: "scene-start" | "accent-word" | "scene-end";
+  label?: string;
+}
 
 /**
  * One pending suggestion produced by a Haiku action. Rendered inline beneath
@@ -93,6 +129,20 @@ interface SceneCardProps {
    *  calls back to clear it. */
   forceEditHeadline?: boolean;
   onConsumeEditHeadlineFlag?: () => void;
+  /** Pending SFX suggestions for this scene (one Haiku call returns 1-3). */
+  sfxSuggestions?: SfxSuggestion[];
+  /** Already-generated SFX entries currently in the manifest, scoped to this scene. */
+  appliedSfx?: AppliedSfxEntry[];
+  /** Generate one SFX suggestion via ElevenLabs. Resolves once the file is on disk. */
+  onGenerateSfx?: (sceneId: string, suggestion: SfxSuggestion) => Promise<void> | void;
+  /** Dismiss a pending SFX suggestion without generating. */
+  onDismissSfxSuggestion?: (suggestionId: string) => void;
+  /** Remove an already-generated SFX entry from the manifest. */
+  onDeleteAppliedSfx?: (entryId: string) => Promise<void> | void;
+  /** Per-suggestion generation status, surfaced as a spinner / disabled state. */
+  sfxGenerationStatus?: Record<string, "idle" | "running" | "error">;
+  /** Project root URL prefix for serving SFX assets in audition playback. */
+  sfxAuditionUrlPrefix?: string;
 }
 
 const AI_ACTIONS: Array<{ id: AIActionId; label: string; tooltip: string }> = [
@@ -115,6 +165,11 @@ const AI_ACTIONS: Array<{ id: AIActionId; label: string; tooltip: string }> = [
     id: "rePickTemplate",
     label: "Re-pick template",
     tooltip: "Generate 3 alternative template+props treatments and pick one",
+  },
+  {
+    id: "addSfx",
+    label: "🔊 Add SFX",
+    tooltip: "Propose 1-3 sound effects via Haiku; generate them via ElevenLabs",
   },
 ];
 
@@ -144,6 +199,13 @@ export const SceneCard = memo(function SceneCard({
   onSceneIntent,
   forceEditHeadline,
   onConsumeEditHeadlineFlag,
+  sfxSuggestions,
+  appliedSfx,
+  onGenerateSfx,
+  onDismissSfxSuggestion,
+  onDeleteAppliedSfx,
+  sfxGenerationStatus,
+  sfxAuditionUrlPrefix,
 }: SceneCardProps) {
   const [expandedReason, setExpandedReason] = useState(false);
   const [sceneIntentOpen, setSceneIntentOpen] = useState(false);
@@ -495,6 +557,59 @@ export const SceneCard = memo(function SceneCard({
           ))}
         </div>
       )}
+
+      {/* SFX suggestion stack — Haiku proposals that need to be GENERATED via
+          ElevenLabs to become real audio. Different shape than the regular
+          suggestion stack (no `Apply patch` — instead `🔊 Generate`). */}
+      {sfxSuggestions && sfxSuggestions.length > 0 && (
+        <div className="border-t border-amber-400/30 bg-amber-400/[0.03]">
+          <div className="px-3 py-1.5 border-b border-amber-400/15 flex items-center gap-2">
+            <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-amber-300">
+              SFX proposals
+            </span>
+            <span className="text-[10px] text-neutral-500">
+              click 🔊 to spend ~1 ElevenLabs credit
+            </span>
+          </div>
+          {sfxSuggestions.map((s) => {
+            const status = sfxGenerationStatus?.[s.id] ?? "idle";
+            return (
+              <SfxSuggestionRow
+                key={s.id}
+                suggestion={s}
+                status={status}
+                {...(onGenerateSfx ? { onGenerate: () => onGenerateSfx(scene.id, s) } : {})}
+                {...(onDismissSfxSuggestion
+                  ? { onDismiss: () => onDismissSfxSuggestion(s.id) }
+                  : {})}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* Applied SFX — already on disk, in the manifest, audible on the SFX
+          lane. Audition + delete affordances per entry. */}
+      {appliedSfx && appliedSfx.length > 0 && (
+        <div className="border-t border-emerald-400/20 bg-emerald-400/[0.02]">
+          <div className="px-3 py-1.5 border-b border-emerald-400/10 flex items-center gap-2">
+            <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-emerald-300">
+              SFX on lane
+            </span>
+            <span className="text-[10px] text-neutral-500">
+              {appliedSfx.length} clip{appliedSfx.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          {appliedSfx.map((entry) => (
+            <AppliedSfxRow
+              key={entry.id}
+              entry={entry}
+              urlPrefix={sfxAuditionUrlPrefix ?? ""}
+              {...(onDeleteAppliedSfx ? { onDelete: () => onDeleteAppliedSfx(entry.id) } : {})}
+            />
+          ))}
+        </div>
+      )}
     </article>
   );
 });
@@ -629,6 +744,9 @@ function SuggestionRow({
     suggestEmphasis: "Emphasis",
     refineReasoning: "Reasoning",
     rePickTemplate: "Alt template",
+    // SFX uses its own SfxSuggestionRow renderer; this label is a defensive
+    // fallback only — never actually rendered.
+    addSfx: "SFX",
   };
   return (
     <div className="px-3 py-2 border-b border-studio-accent/20 last:border-b-0 flex items-start gap-3">
@@ -889,5 +1007,110 @@ function EditableText({
       className={sharedClass}
       placeholder={placeholder}
     />
+  );
+}
+
+function SfxSuggestionRow({
+  suggestion,
+  status,
+  onGenerate,
+  onDismiss,
+}: {
+  suggestion: SfxSuggestion;
+  status: "idle" | "running" | "error";
+  onGenerate?: () => void;
+  onDismiss?: () => void;
+}): ReactNode {
+  const running = status === "running";
+  return (
+    <div className="px-3 py-2 border-b border-amber-400/15 last:border-b-0 flex items-start gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[12px] text-neutral-100 font-medium">{suggestion.label}</span>
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-neutral-700 text-neutral-400">
+            {suggestion.anchor}
+          </span>
+          <span className="text-[9px] text-neutral-500 tabular-nums">
+            {suggestion.durationSeconds.toFixed(1)}s
+          </span>
+        </div>
+        <div className="text-[11px] text-neutral-300 leading-snug font-mono italic">
+          “{suggestion.prompt}”
+        </div>
+        {suggestion.rationale && (
+          <div className="text-[10px] text-neutral-500 leading-relaxed mt-1 italic">
+            {suggestion.rationale}
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        {onGenerate && (
+          <button
+            type="button"
+            onClick={onGenerate}
+            disabled={running}
+            className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-amber-400/50 bg-amber-400/15 text-amber-200 hover:bg-amber-400/25 disabled:opacity-40 transition-colors"
+          >
+            {running ? "Generating…" : "🔊 Generate"}
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            disabled={running}
+            className="h-5 px-2 rounded text-[9px] text-neutral-500 hover:text-neutral-300 transition-colors"
+          >
+            Dismiss
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AppliedSfxRow({
+  entry,
+  urlPrefix,
+  onDelete,
+}: {
+  entry: AppliedSfxEntry;
+  urlPrefix: string;
+  onDelete?: () => void;
+}): ReactNode {
+  const audioUrl = urlPrefix ? `${urlPrefix}${entry.path}` : entry.path;
+  return (
+    <div className="px-3 py-2 border-b border-emerald-400/10 last:border-b-0 flex items-center gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 mb-0.5">
+          <span className="text-[11px] text-neutral-100 font-medium">
+            {entry.label || entry.prompt.slice(0, 40)}
+          </span>
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono border border-neutral-700 text-neutral-400">
+            {entry.anchor}
+          </span>
+          <span className="text-[9px] text-neutral-500 tabular-nums">
+            {entry.durationSeconds.toFixed(1)}s
+          </span>
+        </div>
+        <audio
+          src={audioUrl}
+          controls
+          preload="none"
+          className="h-7 w-full"
+          aria-label={`Audition SFX ${entry.label ?? entry.id}`}
+        />
+      </div>
+      {onDelete && (
+        <button
+          type="button"
+          onClick={onDelete}
+          className="h-6 px-2 rounded text-[10px] text-neutral-500 hover:text-rose-400 transition-colors"
+          title="Remove this SFX from the manifest"
+        >
+          Remove
+        </button>
+      )}
+    </div>
   );
 }

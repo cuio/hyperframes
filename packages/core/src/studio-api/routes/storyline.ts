@@ -1,5 +1,5 @@
 import type { Hono } from "hono";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
 import { AnthropicError, callStructuredTool, loadAnthropicKey } from "../../anthropic/index.js";
@@ -7,6 +7,21 @@ import type { ToolDefinition } from "../../anthropic/index.js";
 import { CostLogger, loggerSink } from "../../telemetry/cost.js";
 import type { Script, SceneRef } from "../../script/types.js";
 import { listAvailableThemes, loadDesignBrief, resolveActiveTheme } from "../../script/index.js";
+import {
+  ElevenLabsError,
+  generateSoundEffect,
+  loadElevenLabsKey,
+  SFX_BOUNDS,
+  clampSfxDuration,
+} from "../../elevenlabs/index.js";
+import {
+  appendSfxEntry,
+  readSfxManifest,
+  removeSfxEntry,
+  SFX_DIR,
+  type SfxAnchor,
+  type SfxEntry,
+} from "../../script/sfx/manifest.js";
 
 type Scene = SceneRef;
 
@@ -393,9 +408,317 @@ export function registerStorylineRoutes(api: Hono, adapter: StudioApiAdapter): v
       return c.json({ error: msg }, 500);
     }
   });
+
+  // POST /api/projects/:id/storyline/sfx-suggest
+  // Per-scene SFX prompt suggestions. Haiku reads one scene + a small window
+  // of neighbours (focal ±2 by default) and returns 1-3 sound-effect ideas
+  // with text prompts, durations, and anchors. Generation happens in a
+  // separate call (`/sfx-generate`) so the user can scan multiple ideas
+  // before paying ElevenLabs credits.
+  api.post("/projects/:id/storyline/sfx-suggest", async (c) => {
+    const ctx = await loadActionContext(c.req.param("id"), c, adapter);
+    if ("errorRes" in ctx) return ctx.errorRes;
+    const { project, scene } = ctx;
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) return c.json({ error: "ANTHROPIC_API_KEY not set" }, 401);
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+    const focalIdx = script.scenes.findIndex((s) => s.id === scene.id);
+    const window = pickSceneWindow(script, focalIdx, 2);
+
+    return callHaikuAction(c, project.dir, apiKey, "sfxSuggest", {
+      tool: SFX_SUGGEST_TOOL,
+      system: buildSfxSuggestSystem(),
+      user: buildSfxSuggestUser(window, scene),
+      buildResponse: (raw: SfxSuggestToolInput): SfxSuggestionResponse =>
+        buildSfxSuggestResponse(raw, scene),
+      meta: { sceneId: scene.id, template: scene.template, windowSize: window.length },
+    });
+  });
+
+  // POST /api/projects/:id/storyline/sfx-generate
+  // Take one suggestion (prompt + durationSeconds + anchor) and turn it
+  // into an actual mp3 on disk. Appends to the SFX manifest. The studio
+  // re-assembles after this returns so the new clip lands on the SFX lane.
+  api.post("/projects/:id/storyline/sfx-generate", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: SfxGenerateBody;
+    try {
+      body = (await c.req.json()) as SfxGenerateBody;
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body.sceneId) return c.json({ error: "sceneId is required" }, 400);
+    if (!body.prompt || typeof body.prompt !== "string" || body.prompt.trim().length === 0) {
+      return c.json({ error: "prompt is required" }, 400);
+    }
+    if (body.prompt.length > SFX_BOUNDS.promptMaxChars) {
+      return c.json({ error: `prompt too long (max ${SFX_BOUNDS.promptMaxChars} chars)` }, 400);
+    }
+    const anchor: SfxAnchor =
+      body.anchor === "scene-end" || body.anchor === "accent-word" ? body.anchor : "scene-start";
+
+    const apiKey = loadElevenLabsKey(project.dir);
+    if (!apiKey) {
+      return c.json({ error: "ELEVENLABS_API_KEY not set. Add it to <project>/.env." }, 401);
+    }
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+    const scene = script.scenes.find((s) => s.id === body.sceneId);
+    if (!scene) return c.json({ error: `scene ${body.sceneId} not in script` }, 404);
+
+    const durationSeconds = clampSfxDuration(body.durationSeconds ?? 2);
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+
+    try {
+      const { bytes } = await generateSoundEffect(apiKey, body.prompt.trim(), {
+        durationSeconds,
+        ...(typeof body.promptInfluence === "number"
+          ? { promptInfluence: body.promptInfluence }
+          : {}),
+      });
+      // Mint a stable id and write the mp3 next to the manifest.
+      const entryId = mintSfxId();
+      const relativePath = `${SFX_DIR}/${scene.id}-${entryId}.mp3`;
+      const absPath = join(project.dir, relativePath);
+      mkdirSync(join(project.dir, SFX_DIR), { recursive: true });
+      writeFileSync(absPath, bytes);
+      const entry: SfxEntry = {
+        id: entryId,
+        sceneId: scene.id,
+        prompt: body.prompt.trim(),
+        path: relativePath,
+        durationSeconds,
+        anchor,
+        ...(typeof body.accentWordIndex === "number"
+          ? { accentWordIndex: body.accentWordIndex }
+          : {}),
+        ...(typeof body.label === "string" && body.label.trim().length > 0
+          ? { label: body.label.trim() }
+          : {}),
+        ...(typeof body.volumeDb === "number" ? { volumeDb: body.volumeDb } : {}),
+        createdAt: new Date().toISOString(),
+      };
+      appendSfxEntry(project.dir, entry);
+
+      // Cost telemetry: ElevenLabs SFX is billed per generation, not per
+      // character. Use a synthetic 1-character entry so the existing
+      // `kind: "elevenlabs"` shape applies; the meta carries the actual
+      // op label for filtering.
+      onCostEvent(
+        "script.storyline.sfx.generate",
+        { kind: "elevenlabs", voiceId: "sfx", characters: 1 },
+        Date.now() - start,
+        {
+          sceneId: scene.id,
+          entryId,
+          durationSeconds,
+          anchor,
+          promptLen: body.prompt.length,
+        },
+      );
+
+      return c.json({ ok: true, entry });
+    } catch (err) {
+      if (err instanceof ElevenLabsError) {
+        return c.json({ error: `ElevenLabs SFX failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // GET /api/projects/:id/storyline/sfx
+  // Returns the current SFX manifest. Used by the studio to render the SFX
+  // lane and the per-card audition affordances.
+  api.get("/projects/:id/storyline/sfx", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    return c.json({ manifest: readSfxManifest(project.dir) });
+  });
+
+  // DELETE /api/projects/:id/storyline/sfx/:entryId
+  // Remove a single SFX entry from the manifest. Does NOT delete the audio
+  // file on disk — leaves the user free to recover by manually editing the
+  // manifest. Aligns with the principle "manifests are append-only from the
+  // studio; deletes are soft."
+  api.delete("/projects/:id/storyline/sfx/:entryId", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const entryId = c.req.param("entryId");
+    if (!entryId) return c.json({ error: "entryId required" }, 400);
+    const manifest = removeSfxEntry(project.dir, entryId);
+    return c.json({ ok: true, manifest });
+  });
 }
 
-// ── Action context loader ────────────────────────────────────────────────────
+// ── SFX action types & helpers ───────────────────────────────────────────────
+
+interface SfxGenerateBody {
+  sceneId?: string;
+  prompt?: string;
+  durationSeconds?: number;
+  promptInfluence?: number;
+  anchor?: SfxAnchor;
+  accentWordIndex?: number;
+  label?: string;
+  volumeDb?: number;
+}
+
+interface SfxSuggestToolInput {
+  suggestions?: Array<{
+    prompt?: string;
+    durationSeconds?: number;
+    anchor?: string;
+    accentWordIndex?: number;
+    label?: string;
+    rationale?: string;
+  }>;
+}
+
+interface SfxSuggestionResponse {
+  sceneId: string;
+  suggestions: Array<{
+    id: string;
+    prompt: string;
+    durationSeconds: number;
+    anchor: SfxAnchor;
+    accentWordIndex?: number;
+    label: string;
+    rationale: string;
+  }>;
+}
+
+const SFX_SUGGEST_TOOL: ToolDefinition = {
+  name: "propose_sfx",
+  description:
+    "Propose 1-3 sound-effect ideas for a scene. Each idea is a short text prompt (the model that will generate the SFX), a target duration, an anchor describing when in the scene to play it, and a one-sentence rationale.",
+  input_schema: {
+    type: "object",
+    properties: {
+      suggestions: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            prompt: {
+              type: "string",
+              description:
+                "Text prompt for ElevenLabs Sound Generation. Be specific and visual — 'low rumble with metallic clang' beats 'big sound'. Avoid musical descriptions; this is SFX, not music.",
+            },
+            durationSeconds: {
+              type: "number",
+              minimum: 0.5,
+              maximum: 22,
+              description:
+                "Target duration in seconds. Most cinematic SFX are 0.5-3s. Use longer (5-8s) only for atmospheric pads.",
+            },
+            anchor: {
+              type: "string",
+              enum: ["scene-start", "accent-word", "scene-end"],
+              description:
+                "When in the scene window the SFX plays. scene-start: cold open / pattern-interrupt. accent-word: punctuates a specific word in the narration. scene-end: outro stinger.",
+            },
+            accentWordIndex: {
+              type: "integer",
+              minimum: 0,
+              description:
+                "Required only when anchor is accent-word. 0-based index into the narration's word list. The studio uses this to interpolate a timing — Phase A is heuristic-only.",
+            },
+            label: {
+              type: "string",
+              description: "Short human label for the SFX (e.g. 'broadcast static'). Optional.",
+            },
+            rationale: {
+              type: "string",
+              description:
+                "One sentence on what this SFX does for the scene's retention. Specific to the scene's content.",
+            },
+          },
+          required: ["prompt", "durationSeconds", "anchor", "rationale"],
+        },
+      },
+    },
+    required: ["suggestions"],
+  },
+};
+
+function buildSfxSuggestSystem(): string {
+  return [
+    "# Sound-effect direction",
+    "",
+    "You're a sound designer proposing SFX for ONE scene in a Reels-style explainer video.",
+    "Read the focal scene + the small neighbour window for context. Propose 1-3 SFX that:",
+    "",
+    "1. Punch the scene's pattern interrupt (scene-start) OR underline a specific word (accent-word) OR seal the close (scene-end).",
+    "2. Are SHORT — 0.5-3s for most cinematic uses. Reserve 5-8s for atmospheric pads.",
+    "3. Are SPECIFIC — 'low rumble with metallic clang' beats 'big sound'.",
+    "4. Avoid musical content (that's the music lane). Pure SFX only: whooshes, impacts, ambient layers.",
+    "5. Don't overcrowd — if the scene's narration is dense, ONE well-placed SFX > three competing ones.",
+    "",
+    "When you pick `accent-word`, also emit `accentWordIndex` — the 0-based word index in the focal scene's narration the SFX should align to.",
+    "",
+    "Each suggestion needs a one-sentence rationale that ties back to the scene's content. Vague rationales get rejected.",
+  ].join("\n");
+}
+
+function buildSfxSuggestUser(window: SceneRef[], focal: SceneRef): string {
+  const lines = window.map((s) => {
+    const isFocal = s.id === focal.id;
+    return [
+      `${isFocal ? "→ FOCAL · " : "   "}${s.id} · ${s.template}${s.hook ? " · HOOK" : ""}`,
+      `   narration: ${s.text}`,
+    ].join("\n");
+  });
+  return [
+    "## Window",
+    lines.join("\n\n"),
+    "",
+    "Now call propose_sfx with 1-3 ideas for the FOCAL scene.",
+  ].join("\n");
+}
+
+function buildSfxSuggestResponse(raw: SfxSuggestToolInput, scene: SceneRef): SfxSuggestionResponse {
+  const suggestions: SfxSuggestionResponse["suggestions"] = [];
+  for (const s of raw.suggestions ?? []) {
+    if (!s || typeof s.prompt !== "string" || s.prompt.trim().length === 0) continue;
+    const anchor: SfxAnchor =
+      s.anchor === "scene-end" || s.anchor === "accent-word" ? s.anchor : "scene-start";
+    const durationSeconds = clampSfxDuration(
+      typeof s.durationSeconds === "number" ? s.durationSeconds : 2,
+    );
+    const label =
+      typeof s.label === "string" && s.label.trim().length > 0
+        ? s.label.trim()
+        : s.prompt.trim().slice(0, 40);
+    suggestions.push({
+      id: mintSfxId(),
+      prompt: s.prompt.trim(),
+      durationSeconds,
+      anchor,
+      ...(anchor === "accent-word" && typeof s.accentWordIndex === "number"
+        ? { accentWordIndex: s.accentWordIndex }
+        : {}),
+      label,
+      rationale: typeof s.rationale === "string" ? s.rationale : "",
+    });
+    if (suggestions.length >= 3) break;
+  }
+  return { sceneId: scene.id, suggestions };
+}
+
+let sfxIdCounter = 0;
+function mintSfxId(): string {
+  // Stable, sortable, no collisions across a session. Format: <ms36>-<counter36>.
+  const ms = Date.now().toString(36);
+  const ctr = (sfxIdCounter++).toString(36).padStart(2, "0");
+  return `sfx-${ms}-${ctr}`;
+}
 
 interface ActionContext {
   project: { dir: string };
@@ -428,21 +751,21 @@ async function loadActionContext(
 
 // ── Generic Haiku-action runner ──────────────────────────────────────────────
 
-interface HaikuActionConfig<T> {
+interface HaikuActionConfig<T, R = SuggestionResponse> {
   tool: ToolDefinition;
   system: string;
   user: string;
-  buildResponse: (raw: T) => SuggestionResponse;
+  buildResponse: (raw: T) => R;
   meta: Record<string, unknown>;
 }
 
-async function callHaikuAction<T>(
+async function callHaikuAction<T, R = SuggestionResponse>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   c: any,
   projectDir: string,
   apiKey: string,
   opLabel: string,
-  cfg: HaikuActionConfig<T>,
+  cfg: HaikuActionConfig<T, R>,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const onCostEvent = loggerSink(new CostLogger(projectDir));

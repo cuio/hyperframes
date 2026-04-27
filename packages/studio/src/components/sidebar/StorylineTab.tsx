@@ -1,5 +1,11 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneCard, type AIActionId, type SceneSuggestion } from "../storyline/SceneCard";
+import {
+  SceneCard,
+  type AIActionId,
+  type AppliedSfxEntry,
+  type SceneSuggestion,
+  type SfxSuggestion,
+} from "../storyline/SceneCard";
 import {
   applyInlineEdit,
   pickFocalCardIndex,
@@ -84,6 +90,10 @@ const ACTION_PATH: Record<AIActionId, string> = {
   suggestEmphasis: "suggest-emphasis",
   refineReasoning: "refine-reasoning",
   rePickTemplate: "re-pick-template",
+  // addSfx returns multi-suggestion shape, not a single patch — handled in a
+  // dedicated branch in handleAIAction. The path is the same prefix so it
+  // shares the route table.
+  addSfx: "sfx-suggest",
 };
 
 const SUGGESTION_PROMPTS_BY_SCOPE: Record<DirectorScope, string[]> = {
@@ -112,6 +122,18 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
   const [suggestionsByScene, setSuggestionsByScene] = useState<Record<string, SceneSuggestion[]>>(
     {},
   );
+
+  // SFX state. Three independent maps — proposed (Haiku output, not yet
+  // generated), applied (in the manifest, audible on the SFX lane), and
+  // per-suggestion generation status (so the Generate button can show a
+  // spinner without freezing the rest of the card).
+  const [sfxSuggestionsByScene, setSfxSuggestionsByScene] = useState<
+    Record<string, SfxSuggestion[]>
+  >({});
+  const [sfxByScene, setSfxByScene] = useState<Record<string, AppliedSfxEntry[]>>({});
+  const [sfxGenerationStatus, setSfxGenerationStatus] = useState<
+    Record<string, "idle" | "running" | "error">
+  >({});
 
   // Director state — single textarea, two scopes (storyline vs project).
   const [directorScope, setDirectorScope] = useState<DirectorScope>("storyline");
@@ -179,9 +201,10 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
       setLoading(true);
       setError(null);
       try {
-        const [planned, imagesRes] = await Promise.all([
+        const [planned, imagesRes, sfxRes] = await Promise.all([
           loadGeneratedOrPlanned(),
           fetch(`/api/projects/${projectId}/images`).catch(() => null),
+          fetch(`/api/projects/${projectId}/storyline/sfx`).catch(() => null),
         ]);
         if (cancelled) return;
         setScript(planned);
@@ -192,6 +215,18 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
             map.set(img.id, img);
           }
           if (!cancelled) setImageMap(map);
+        }
+        if (sfxRes && sfxRes.ok) {
+          const sfxJson = (await sfxRes.json()) as {
+            manifest?: { entries?: AppliedSfxEntry[] };
+          };
+          const grouped: Record<string, AppliedSfxEntry[]> = {};
+          for (const entry of sfxJson.manifest?.entries ?? []) {
+            const list = grouped[(entry as AppliedSfxEntry & { sceneId: string }).sceneId] ?? [];
+            list.push(entry);
+            grouped[(entry as AppliedSfxEntry & { sceneId: string }).sceneId] = list;
+          }
+          if (!cancelled) setSfxByScene(grouped);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -255,22 +290,34 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
           const errBody = (await res.json().catch(() => ({}))) as { error?: string };
           throw new Error(errBody.error ?? `HTTP ${res.status}`);
         }
-        const json = (await res.json()) as {
-          preview?: string;
-          rationale?: string;
-          patch?: { template?: string; props?: Record<string, unknown>; reasoning?: string };
-        };
-        const suggestion: SceneSuggestion = {
-          id: `${scene.id}-${action}-${Date.now()}`,
-          action,
-          preview: json.preview ?? "",
-          rationale: json.rationale ?? "",
-          patch: json.patch ?? {},
-        };
-        setSuggestionsByScene((prev) => ({
-          ...prev,
-          [scene.id]: [...(prev[scene.id] ?? []), suggestion],
-        }));
+        if (action === "addSfx") {
+          // Different shape: list of suggestions instead of a single patch.
+          const json = (await res.json()) as {
+            sceneId?: string;
+            suggestions?: SfxSuggestion[];
+          };
+          setSfxSuggestionsByScene((prev) => ({
+            ...prev,
+            [scene.id]: [...(prev[scene.id] ?? []), ...(json.suggestions ?? [])],
+          }));
+        } else {
+          const json = (await res.json()) as {
+            preview?: string;
+            rationale?: string;
+            patch?: { template?: string; props?: Record<string, unknown>; reasoning?: string };
+          };
+          const suggestion: SceneSuggestion = {
+            id: `${scene.id}-${action}-${Date.now()}`,
+            action,
+            preview: json.preview ?? "",
+            rationale: json.rationale ?? "",
+            patch: json.patch ?? {},
+          };
+          setSuggestionsByScene((prev) => ({
+            ...prev,
+            [scene.id]: [...(prev[scene.id] ?? []), suggestion],
+          }));
+        }
         setAiStatus((prev) => ({
           ...prev,
           [scene.id]: { ...(prev[scene.id] ?? {}), [action]: "idle" },
@@ -342,6 +389,94 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
       return next;
     });
   }, []);
+
+  // ── SFX handlers ───────────────────────────────────────────────────────────
+
+  const handleGenerateSfx = useCallback(
+    async (sceneId: string, suggestion: SfxSuggestion): Promise<void> => {
+      setSfxGenerationStatus((prev) => ({ ...prev, [suggestion.id]: "running" }));
+      try {
+        const res = await fetch(`/api/projects/${projectId}/storyline/sfx-generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sceneId,
+            prompt: suggestion.prompt,
+            durationSeconds: suggestion.durationSeconds,
+            anchor: suggestion.anchor,
+            ...(typeof suggestion.accentWordIndex === "number"
+              ? { accentWordIndex: suggestion.accentWordIndex }
+              : {}),
+            ...(suggestion.label ? { label: suggestion.label } : {}),
+          }),
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+        const json = (await res.json()) as { ok?: boolean; entry?: AppliedSfxEntry };
+        if (json.entry) {
+          setSfxByScene((prev) => ({
+            ...prev,
+            [sceneId]: [...(prev[sceneId] ?? []), json.entry!],
+          }));
+        }
+        // Drop the matching suggestion from the pending stack — no point
+        // generating it twice.
+        setSfxSuggestionsByScene((prev) => ({
+          ...prev,
+          [sceneId]: (prev[sceneId] ?? []).filter((s) => s.id !== suggestion.id),
+        }));
+        setSfxGenerationStatus((prev) => {
+          const { [suggestion.id]: _, ...rest } = prev;
+          return rest;
+        });
+        // Re-assemble so the new SFX lands on the SFX lane in the timeline.
+        setReloadKey((k) => k + 1);
+      } catch (err) {
+        setSfxGenerationStatus((prev) => ({ ...prev, [suggestion.id]: "error" }));
+        window.alert(`Couldn't generate SFX: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [projectId],
+  );
+
+  const handleDismissSfxSuggestion = useCallback((suggestionId: string) => {
+    setSfxSuggestionsByScene((prev) => {
+      const next: typeof prev = {};
+      for (const [sceneId, list] of Object.entries(prev)) {
+        const filtered = list.filter((s) => s.id !== suggestionId);
+        if (filtered.length > 0) next[sceneId] = filtered;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleDeleteAppliedSfx = useCallback(
+    async (entryId: string): Promise<void> => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/storyline/sfx/${entryId}`, {
+          method: "DELETE",
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+        setSfxByScene((prev) => {
+          const next: typeof prev = {};
+          for (const [sceneId, list] of Object.entries(prev)) {
+            const filtered = list.filter((e) => e.id !== entryId);
+            if (filtered.length > 0) next[sceneId] = filtered;
+          }
+          return next;
+        });
+        setReloadKey((k) => k + 1);
+      } catch (err) {
+        window.alert(`Couldn't remove SFX: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [projectId],
+  );
 
   // ── Storyline intent ───────────────────────────────────────────────────────
 
@@ -855,6 +990,13 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
                     return next;
                   })
                 }
+                sfxSuggestions={sfxSuggestionsByScene[scene.id]}
+                appliedSfx={sfxByScene[scene.id]}
+                onGenerateSfx={handleGenerateSfx}
+                onDismissSfxSuggestion={handleDismissSfxSuggestion}
+                onDeleteAppliedSfx={handleDeleteAppliedSfx}
+                sfxGenerationStatus={sfxGenerationStatus}
+                sfxAuditionUrlPrefix={`/api/projects/${projectId}/preview/`}
               />
             </div>
           );
