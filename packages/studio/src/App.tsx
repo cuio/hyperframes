@@ -281,6 +281,25 @@ export function StudioApp() {
     }
   });
   const [timelineVisible, setTimelineVisible] = useState(true);
+  // Sidebar-tab expanded mode: the active tab takes over the whole main area
+  // (preview + timeline are hidden) so dense tabs like Storyline have room
+  // to breathe. Persisted across reloads — most users who go full-page once
+  // want it again on the next session.
+  const [sidebarExpanded, setSidebarExpanded] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("hf-studio-sidebar-expanded") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setSidebarExpandedPersisted = useCallback((value: boolean) => {
+    setSidebarExpanded(value);
+    try {
+      localStorage.setItem("hf-studio-sidebar-expanded", value ? "1" : "0");
+    } catch {
+      /* private mode */
+    }
+  }, []);
   const [timelineEditorHintDismissed, setTimelineEditorHintState] = useState(
     getTimelineEditorHintDismissed,
   );
@@ -340,6 +359,27 @@ export function StudioApp() {
       window.removeEventListener("keydown", handleTimelineToggleHotkey);
     };
   });
+
+  // Esc collapses an expanded sidebar tab. Skipped when the user is mid-edit
+  // in an input/textarea so it doesn't fight inline editors. Targets the
+  // top-level capture so any open card-level editor (which itself swallows
+  // Escape to cancel an edit) wins first.
+  useMountEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (!sidebarExpandedRef.current) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      const editable = (e.target as HTMLElement | null)?.isContentEditable;
+      if (editable) return;
+      e.preventDefault();
+      setSidebarExpandedPersisted(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  const sidebarExpandedRef = useRef(sidebarExpanded);
+  sidebarExpandedRef.current = sidebarExpanded;
 
   const syncPreviewTimelineHotkey = useCallback(
     (iframe: HTMLIFrameElement | null) => {
@@ -1479,12 +1519,17 @@ export function StudioApp() {
         </div>
       </div>
 
-      {/* Main content: sidebar + preview + right panel */}
+      {/* Main content: sidebar + preview + right panel.
+          When `sidebarExpanded` is on, the sidebar takes the full main width
+          and the preview + timeline are hidden. Useful for dense tabs like
+          Storyline / Compositions / Script that need horizontal room. */}
       <div className="flex flex-1 min-h-0">
         {/* Left sidebar: Compositions + Assets (resizable, collapsible) */}
         {!leftCollapsed && (
           <LeftSidebar
-            width={leftWidth}
+            width={sidebarExpanded ? undefined : leftWidth}
+            expanded={sidebarExpanded}
+            onToggleExpand={() => setSidebarExpandedPersisted(!sidebarExpanded)}
             projectId={projectId}
             compositions={compositions}
             assets={assets}
@@ -1533,8 +1578,8 @@ export function StudioApp() {
           />
         )}
 
-        {/* Left resize handle */}
-        {!leftCollapsed && (
+        {/* Left resize handle (hidden when sidebar is expanded — no preview to make room for). */}
+        {!leftCollapsed && !sidebarExpanded && (
           <div
             className="group w-2 flex-shrink-0 cursor-col-resize flex items-center justify-center"
             style={{ touchAction: "none" }}
@@ -1546,99 +1591,103 @@ export function StudioApp() {
           </div>
         )}
 
-        {/* Center: Preview */}
-        <div className="flex-1 relative min-w-0">
-          <NLELayout
-            projectId={projectId}
-            refreshKey={refreshKey}
-            activeCompositionPath={activeCompPath}
-            timelineToolbar={timelineToolbar}
-            renderClipContent={renderClipContent}
-            onDeleteElement={handleTimelineElementDelete}
-            onAssetDrop={handleTimelineAssetDrop}
-            onFileDrop={handleTimelineFileDrop}
-            onMoveElement={handleTimelineElementMove}
-            onResizeElement={handleTimelineElementResize}
-            onBlockedEditAttempt={handleBlockedTimelineEdit}
-            onCompIdToSrcChange={setCompIdToSrc}
-            onCompositionChange={(compPath) => {
-              // Sync activeCompPath when user drills down via timeline double-click
-              // or navigates back via breadcrumb — keeps sidebar + thumbnails in sync.
-              setActiveCompPath(compPath);
-            }}
-            onIframeRef={(iframe) => {
-              previewIframeRef.current = iframe;
-              syncPreviewTimelineHotkey(iframe);
-              consoleErrorsRef.current = [];
-              setConsoleErrors(null);
-              if (!iframe) return;
-
-              // Attach error capture after each iframe load (content resets on navigation)
-              const attachErrorCapture = () => {
-                try {
-                  const win = iframe.contentWindow as (Window & typeof globalThis) | null;
-                  if (!win) return;
-                  // Guard against double-patching
-                  if ((win as unknown as Record<string, unknown>).__hfErrorCapture) return;
-                  (win as unknown as Record<string, unknown>).__hfErrorCapture = true;
-                  const origError = win.console.error.bind(win.console);
-                  win.console.error = function (...args: unknown[]) {
-                    origError(...args);
-                    const text = args
-                      .map((a) => (a instanceof Error ? a.message : String(a)))
-                      .join(" ");
-                    if (text.includes("favicon")) return;
-                    consoleErrorsRef.current = [
-                      ...consoleErrorsRef.current,
-                      { severity: "error", message: text },
-                    ];
-                    setConsoleErrors([...consoleErrorsRef.current]);
-                  };
-                  win.addEventListener("error", (e: ErrorEvent) => {
-                    const text = e.message || String(e);
-                    consoleErrorsRef.current = [
-                      ...consoleErrorsRef.current,
-                      { severity: "error", message: text },
-                    ];
-                    setConsoleErrors([...consoleErrorsRef.current]);
-                  });
-                } catch {
-                  // cross-origin — can't attach
-                }
-              };
-              // Attach now (iframe may already be loaded) and on future loads
-              attachErrorCapture();
-              iframe.addEventListener("load", () => {
+        {/* Center: Preview. Hidden when the sidebar is expanded — the
+            sidebar's tab content takes the full main area instead. */}
+        {!sidebarExpanded && (
+          <div className="flex-1 relative min-w-0">
+            <NLELayout
+              projectId={projectId}
+              refreshKey={refreshKey}
+              activeCompositionPath={activeCompPath}
+              timelineToolbar={timelineToolbar}
+              renderClipContent={renderClipContent}
+              onDeleteElement={handleTimelineElementDelete}
+              onAssetDrop={handleTimelineAssetDrop}
+              onFileDrop={handleTimelineFileDrop}
+              onMoveElement={handleTimelineElementMove}
+              onResizeElement={handleTimelineElementResize}
+              onBlockedEditAttempt={handleBlockedTimelineEdit}
+              onCompIdToSrcChange={setCompIdToSrc}
+              onCompositionChange={(compPath) => {
+                // Sync activeCompPath when user drills down via timeline double-click
+                // or navigates back via breadcrumb — keeps sidebar + thumbnails in sync.
+                setActiveCompPath(compPath);
+              }}
+              onIframeRef={(iframe) => {
+                previewIframeRef.current = iframe;
+                syncPreviewTimelineHotkey(iframe);
                 consoleErrorsRef.current = [];
                 setConsoleErrors(null);
-                attachErrorCapture();
-              });
-            }}
-            previewOverlay={
-              captionEditMode ? <CaptionOverlay iframeRef={previewIframeRef} /> : undefined
-            }
-            timelineFooter={
-              captionEditMode ? (
-                <div
-                  className="border-t border-neutral-800/30 flex-shrink-0"
-                  style={{ height: 60 }}
-                >
-                  <div className="flex items-center gap-1.5 px-2 py-0.5">
-                    <span className="text-[9px] font-medium text-neutral-500 uppercase tracking-wider">
-                      Captions
-                    </span>
-                  </div>
-                  <CaptionTimeline pixelsPerSecond={100} />
-                </div>
-              ) : undefined
-            }
-            timelineVisible={studioMode === "direct" ? false : timelineVisible}
-            onToggleTimeline={toggleTimelineVisibility}
-          />
-        </div>
+                if (!iframe) return;
 
-        {/* Right panel: Renders-only (resizable, collapsible via header Renders button) */}
-        {!rightCollapsed && (
+                // Attach error capture after each iframe load (content resets on navigation)
+                const attachErrorCapture = () => {
+                  try {
+                    const win = iframe.contentWindow as (Window & typeof globalThis) | null;
+                    if (!win) return;
+                    // Guard against double-patching
+                    if ((win as unknown as Record<string, unknown>).__hfErrorCapture) return;
+                    (win as unknown as Record<string, unknown>).__hfErrorCapture = true;
+                    const origError = win.console.error.bind(win.console);
+                    win.console.error = function (...args: unknown[]) {
+                      origError(...args);
+                      const text = args
+                        .map((a) => (a instanceof Error ? a.message : String(a)))
+                        .join(" ");
+                      if (text.includes("favicon")) return;
+                      consoleErrorsRef.current = [
+                        ...consoleErrorsRef.current,
+                        { severity: "error", message: text },
+                      ];
+                      setConsoleErrors([...consoleErrorsRef.current]);
+                    };
+                    win.addEventListener("error", (e: ErrorEvent) => {
+                      const text = e.message || String(e);
+                      consoleErrorsRef.current = [
+                        ...consoleErrorsRef.current,
+                        { severity: "error", message: text },
+                      ];
+                      setConsoleErrors([...consoleErrorsRef.current]);
+                    });
+                  } catch {
+                    // cross-origin — can't attach
+                  }
+                };
+                // Attach now (iframe may already be loaded) and on future loads
+                attachErrorCapture();
+                iframe.addEventListener("load", () => {
+                  consoleErrorsRef.current = [];
+                  setConsoleErrors(null);
+                  attachErrorCapture();
+                });
+              }}
+              previewOverlay={
+                captionEditMode ? <CaptionOverlay iframeRef={previewIframeRef} /> : undefined
+              }
+              timelineFooter={
+                captionEditMode ? (
+                  <div
+                    className="border-t border-neutral-800/30 flex-shrink-0"
+                    style={{ height: 60 }}
+                  >
+                    <div className="flex items-center gap-1.5 px-2 py-0.5">
+                      <span className="text-[9px] font-medium text-neutral-500 uppercase tracking-wider">
+                        Captions
+                      </span>
+                    </div>
+                    <CaptionTimeline pixelsPerSecond={100} />
+                  </div>
+                ) : undefined
+              }
+              timelineVisible={studioMode === "direct" ? false : timelineVisible}
+              onToggleTimeline={toggleTimelineVisibility}
+            />
+          </div>
+        )}
+
+        {/* Right panel: Renders-only (resizable, collapsible via header Renders button).
+            Also hidden when the sidebar is expanded so it doesn't steal space. */}
+        {!rightCollapsed && !sidebarExpanded && (
           <>
             <div
               className="group w-2 flex-shrink-0 cursor-col-resize flex items-center justify-center"

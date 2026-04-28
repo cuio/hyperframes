@@ -264,7 +264,15 @@ export const SceneCard = memo(function SceneCard({
           wrapper MUST be `relative` with an explicit height — otherwise the
           waveform escapes to the nearest positioned ancestor and bleeds across
           the whole sidebar. */}
-      <Section label="Audio" tone="primary">
+      <Section
+        label="Audio"
+        tone="primary"
+        rightSlot={
+          audioUrl ? (
+            <VoiceAuditionButton audioUrl={audioUrl} audioId={`hf-vo-audition-${scene.id}`} />
+          ) : undefined
+        }
+      >
         {audioUrl ? (
           <div className="relative h-12 mb-2 rounded-md overflow-hidden border border-neutral-800/70 bg-neutral-950/40">
             <AudioWaveform audioUrl={audioUrl} label="" labelColor="#3CE6AC" />
@@ -1066,6 +1074,72 @@ function SfxSuggestionRow({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Tiny in-card play / pause button for the scene's voiceover. Loads the mp3
+ * lazily — the AudioWaveform alongside it has already paid the decode cost
+ * for the visualisation, but the actual `<audio>` element here drives the
+ * playback. Auto-pauses any other audition button via a shared module-level
+ * registry, so opening one card's voice doesn't dogpile across cards.
+ */
+const auditionRegistry = new Set<HTMLAudioElement>();
+
+function VoiceAuditionButton({
+  audioUrl,
+  audioId,
+}: {
+  audioUrl: string;
+  audioId: string;
+}): ReactNode {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      const el = audioRef.current;
+      if (el) {
+        el.pause();
+        auditionRegistry.delete(el);
+      }
+    };
+  }, []);
+
+  const toggle = useCallback(() => {
+    let el = audioRef.current;
+    if (!el) {
+      el = new Audio(audioUrl);
+      el.preload = "none";
+      el.id = audioId;
+      el.addEventListener("ended", () => setPlaying(false));
+      el.addEventListener("pause", () => setPlaying(false));
+      el.addEventListener("play", () => setPlaying(true));
+      audioRef.current = el;
+    }
+    if (el.paused) {
+      // Pause any other audition currently playing — shared media model so
+      // multiple cards don't fight for the user's ears.
+      for (const other of auditionRegistry) {
+        if (other !== el) other.pause();
+      }
+      auditionRegistry.add(el);
+      void el.play();
+    } else {
+      el.pause();
+    }
+  }, [audioUrl, audioId]);
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      className="h-6 w-6 flex items-center justify-center rounded-md border border-neutral-700 text-neutral-400 hover:text-studio-accent hover:border-studio-accent/50 hover:bg-studio-accent/10 transition-colors"
+      title={playing ? "Pause voiceover" : "Audition voiceover"}
+      aria-label={playing ? "Pause voiceover" : "Audition voiceover"}
+    >
+      {playing ? "⏸" : "▶"}
+    </button>
   );
 }
 

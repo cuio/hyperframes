@@ -9,7 +9,14 @@ import { StorylineTab } from "./StorylineTab";
 import { FileTree } from "../editor/FileTree";
 
 export type StudioMode = "direct" | "edit";
-type SidebarTab = "storyline" | "compositions" | "assets" | "code" | "voices" | "script" | "images";
+export type SidebarTab =
+  | "storyline"
+  | "compositions"
+  | "assets"
+  | "code"
+  | "voices"
+  | "script"
+  | "images";
 
 const STORAGE_KEY = "hf-studio-sidebar-tab";
 
@@ -53,6 +60,18 @@ interface LeftSidebarProps {
   linting?: boolean;
   /** Direct (creative) hides the technical tabs; Edit shows everything. */
   mode?: StudioMode;
+  /**
+   * When true, render the sidebar in a fullscreen-content layout: the tab
+   * strip is sticky on top, content fills the rest, the ⤢ button becomes a
+   * "↙ Restore" button. The sidebar at this point should also be wider —
+   * App.tsx is responsible for stretching the parent container.
+   */
+  expanded?: boolean;
+  /** Toggle between sidebar and expanded mode for the active tab. */
+  onToggleExpand?: () => void;
+  /** External tab forcing — App.tsx uses this to keep the sidebar's tab
+   *  in sync with App-level state when the user expands/restores. */
+  forceTab?: SidebarTab;
 }
 
 const TAB_LABELS: Record<SidebarTab, string> = {
@@ -86,9 +105,18 @@ export const LeftSidebar = memo(function LeftSidebar({
   onLint,
   linting,
   mode = "edit",
+  expanded = false,
+  onToggleExpand,
+  forceTab,
 }: LeftSidebarProps) {
   const visibleTabs = TABS_BY_MODE[mode];
   const [tab, setTab] = useState<SidebarTab>(() => getPersistedTab(mode));
+
+  // When App.tsx expands a tab and then collapses, it may want to bring the
+  // sidebar's active tab in sync. We honour `forceTab` once per change.
+  if (forceTab && forceTab !== tab && (visibleTabs as readonly string[]).includes(forceTab)) {
+    Promise.resolve().then(() => setTab(forceTab));
+  }
 
   // If the active tab isn't visible in the current mode, snap to the first
   // visible tab. Lets the user toggle modes without landing on a hidden view.
@@ -136,10 +164,11 @@ export const LeftSidebar = memo(function LeftSidebar({
 
   return (
     <div
-      className="flex flex-col h-full bg-neutral-950 border-r border-neutral-800/50"
-      style={{ width }}
+      className={`flex flex-col h-full bg-neutral-950 ${expanded ? "flex-1 border-r-0" : "border-r border-neutral-800/50"}`}
+      style={expanded ? undefined : { width }}
     >
-      {/* Tabs — visible set depends on the studio mode (Direct vs Edit). */}
+      {/* Tabs — visible set depends on the studio mode (Direct vs Edit).
+          Right-most slot is the expand-to-fullscreen toggle. */}
       <div className="flex border-b border-neutral-800/50 flex-shrink-0">
         {visibleTabs.map((t) => (
           <button
@@ -155,6 +184,17 @@ export const LeftSidebar = memo(function LeftSidebar({
             {TAB_LABELS[t]}
           </button>
         ))}
+        {onToggleExpand && (
+          <button
+            type="button"
+            onClick={onToggleExpand}
+            title={expanded ? "Restore sidebar (Esc)" : `Expand ${TAB_LABELS[tab]} to full page`}
+            aria-label={expanded ? "Restore sidebar" : "Expand tab to full page"}
+            className="px-2 py-2 text-[12px] text-neutral-500 hover:text-studio-accent hover:bg-studio-accent/10 transition-colors border-l border-neutral-800/50"
+          >
+            {expanded ? "↙" : "⤢"}
+          </button>
+        )}
       </div>
 
       {/* Tab content */}
