@@ -9,6 +9,7 @@ import type { PlannedScene, PlannedScript, SceneTransition } from "./types.js";
 import type { ImageEntry, ImageManifest } from "../images/index.js";
 import type { VisualDirectionPlan } from "./visualDirector.js";
 import { readSfxManifest, resolveSfxStartForScene, type SfxEntry } from "./sfx/manifest.js";
+import { readMusicManifest, resolveMusicSpan, type SceneSpan } from "./music/manifest.js";
 
 export interface AssembleOptions {
   projectDir: string;
@@ -87,6 +88,12 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     list.push(entry);
     sfxBySceneId.set(entry.sceneId, list);
   }
+
+  // Music manifest: read here, emit AFTER the scene loop so we know each
+  // scene's absolute cursor position. Music tracks span multiple scenes so
+  // they need the full scene-span table to compute start + declared duration.
+  const musicManifest = readMusicManifest(opts.projectDir);
+  const sceneSpansForMusic: SceneSpan[] = [];
   const sceneVisibility: Array<{
     id: string;
     start: number;
@@ -223,10 +230,28 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
       transitionIn,
       transitionInMs,
     });
+    sceneSpansForMusic.push({ id: scene.id, start: cursor, duration: sceneTotal });
     cursor += sceneTotal;
   }
 
   const total = cursor;
+
+  // Music tracks land on track 2. Each track's window comes from
+  // resolveMusicSpan (start = first covered scene, duration = audio length
+  // capped to covered span). Volume + duck attributes go to the producer's
+  // audio mixer at render time.
+  for (const entry of musicManifest.entries) {
+    const span = resolveMusicSpan(entry, sceneSpansForMusic, total);
+    if (span.declaredDuration <= 0) continue;
+    const labelAttr = entry.label ? ` data-timeline-label="${escapeAttr(entry.label)}"` : "";
+    const volumeAttr =
+      typeof entry.volumeDb === "number" ? ` data-volume-db="${entry.volumeDb.toFixed(1)}"` : "";
+    const duckAttr =
+      typeof entry.duckDb === "number" ? ` data-music-duck-db="${entry.duckDb.toFixed(1)}"` : "";
+    audioTags.push(
+      `  <audio id="hf-music-${entry.id}" src="${escapeAttr(entry.path)}" data-start="${span.start.toFixed(2)}" data-duration="${span.declaredDuration.toFixed(2)}" data-track-index="2" data-timeline-group="music"${labelAttr}${volumeAttr}${duckAttr} preload="auto"></audio>`,
+    );
+  }
   const title = planned.meta.title ? escapeText(planned.meta.title) : "HyperFrames Video";
 
   // The hyperframes runtime composes its own master from elements with

@@ -22,6 +22,12 @@ export type CostOp =
     } & AnthropicTokenUsage)
   | { kind: "elevenlabs"; voiceId: string; characters: number }
   | {
+      kind: "gemini";
+      model: string;
+      promptTokens: number;
+      outputTokens: number;
+    }
+  | {
       kind: "render";
       durationSeconds: number;
       framesCaptured: number;
@@ -69,6 +75,13 @@ export function computeCost(rates: CostRates, op: CostOp): number {
   }
   if (op.kind === "elevenlabs") {
     return (op.characters / 1_000_000) * rates.elevenlabs.perMChar;
+  }
+  if (op.kind === "gemini") {
+    const rate = rates.gemini[op.model] ?? rates.gemini.default;
+    return (
+      (op.promptTokens / 1_000_000) * rate.inputPerMTok +
+      (op.outputTokens / 1_000_000) * rate.outputPerMTok
+    );
   }
   if (op.kind === "render") {
     return (op.durationSeconds / 60) * rates.render.perMinute;

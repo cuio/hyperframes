@@ -40,7 +40,8 @@ export type AIActionId =
   | "suggestEmphasis"
   | "refineReasoning"
   | "rePickTemplate"
-  | "addSfx";
+  | "addSfx"
+  | "scrollTest";
 
 /**
  * One SFX suggestion produced by the per-scene `/sfx-suggest` Haiku action.
@@ -170,6 +171,12 @@ const AI_ACTIONS: Array<{ id: AIActionId; label: string; tooltip: string }> = [
     id: "addSfx",
     label: "🔊 Add SFX",
     tooltip: "Propose 1-3 sound effects via Haiku; generate them via ElevenLabs",
+  },
+  {
+    id: "scrollTest",
+    label: "📉 Scroll test",
+    tooltip:
+      "Sample frames from this scene, ask Gemini if a feed viewer would scroll past, and propose a one-change fix",
   },
 ];
 
@@ -755,6 +762,9 @@ function SuggestionRow({
     // SFX uses its own SfxSuggestionRow renderer; this label is a defensive
     // fallback only — never actually rendered.
     addSfx: "SFX",
+    // Scroll test: Gemini proposes a fix and we render it in this same row
+    // when the model emits a concrete `patch`.
+    scrollTest: "Scroll-test fix",
   };
   return (
     <div className="px-3 py-2 border-b border-studio-accent/20 last:border-b-0 flex items-start gap-3">

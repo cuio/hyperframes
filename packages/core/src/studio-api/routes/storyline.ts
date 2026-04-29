@@ -22,6 +22,28 @@ import {
   type SfxAnchor,
   type SfxEntry,
 } from "../../script/sfx/manifest.js";
+import {
+  generateMusicAndWait,
+  downloadMusic,
+  clampMusicDuration,
+  MUSIC_BOUNDS,
+} from "../../elevenlabs/music.js";
+import {
+  appendMusicEntry,
+  readMusicManifest,
+  removeMusicEntry,
+  MUSIC_DIR,
+  type MusicEntry,
+  type MusicRole,
+} from "../../script/music/manifest.js";
+import {
+  GeminiError,
+  generateStructured as generateGeminiStructured,
+  loadGeminiKey,
+  uploadAndWait as uploadGeminiFile,
+  DEFAULT_GEMINI_MODEL,
+  type GeminiPart,
+} from "../../gemini/index.js";
 
 type Scene = SceneRef;
 
@@ -552,6 +574,352 @@ export function registerStorylineRoutes(api: Hono, adapter: StudioApiAdapter): v
     if (!entryId) return c.json({ error: "entryId required" }, 400);
     const manifest = removeSfxEntry(project.dir, entryId);
     return c.json({ ok: true, manifest });
+  });
+
+  // ── Milestone B: ElevenLabs Music ────────────────────────────────────────
+
+  // POST /api/projects/:id/storyline/music-suggest
+  // Haiku reads the whole storyline + active theme + a free-form vibe prompt
+  // and returns 1-3 track plans (prompt, scenesCovered, durationS, role).
+  // Synchronous Haiku call — fast, cheap, sub-second.
+  api.post("/projects/:id/storyline/music-suggest", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: { vibe?: string };
+    try {
+      body = (await c.req.json()) as { vibe?: string };
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    const vibe = (body.vibe ?? "").trim();
+    if (!vibe) return c.json({ error: "vibe is required" }, 400);
+    if (vibe.length > 500) return c.json({ error: "vibe too long (max 500 chars)" }, 400);
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+    const apiKey = loadAnthropicKey(project.dir);
+    if (!apiKey) return c.json({ error: "ANTHROPIC_API_KEY not set" }, 401);
+
+    const activeTheme = resolveActiveTheme(project.dir);
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+    try {
+      const { result, usage } = await callStructuredTool<MusicSuggestToolInput>(apiKey, {
+        model: HAIKU_MODEL,
+        system: buildMusicSuggestSystem(activeTheme.name, activeTheme.description),
+        user: buildMusicSuggestUser(script, vibe),
+        tool: MUSIC_SUGGEST_TOOL,
+        maxTokens: 1500,
+        temperature: 0.4,
+      });
+      onCostEvent(
+        "script.storyline.music.suggest",
+        {
+          kind: "anthropic",
+          model: HAIKU_MODEL,
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+        },
+        Date.now() - start,
+        { sceneCount: script.scenes.length, vibeLen: vibe.length },
+      );
+      return c.json(buildMusicSuggestResponse(result, script));
+    } catch (err) {
+      if (err instanceof AnthropicError) {
+        return c.json({ error: `Haiku call failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // POST /api/projects/:id/storyline/music-generate
+  // Take one suggestion (prompt + durationSeconds + scenesCovered) and turn
+  // it into an mp3 on disk. Polled job — can take 30-60s. Server holds the
+  // request open; the studio shows a "generating…" spinner.
+  api.post("/projects/:id/storyline/music-generate", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: MusicGenerateBody;
+    try {
+      body = (await c.req.json()) as MusicGenerateBody;
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
+    }
+    if (!body.prompt || body.prompt.trim().length === 0) {
+      return c.json({ error: "prompt is required" }, 400);
+    }
+    if (body.prompt.length > MUSIC_BOUNDS.promptMaxChars) {
+      return c.json({ error: `prompt too long (max ${MUSIC_BOUNDS.promptMaxChars} chars)` }, 400);
+    }
+    const apiKey = loadElevenLabsKey(project.dir);
+    if (!apiKey) {
+      return c.json({ error: "ELEVENLABS_API_KEY not set. Add it to <project>/.env." }, 401);
+    }
+    const role: MusicRole =
+      body.role === "stinger" || body.role === "intro" || body.role === "outro"
+        ? body.role
+        : "underscore";
+    const durationSeconds = clampMusicDuration(body.durationSeconds ?? 60);
+    const scenesCovered = Array.isArray(body.scenesCovered)
+      ? body.scenesCovered.filter((s): s is string => typeof s === "string")
+      : [];
+
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+    try {
+      const { audioUrl } = await generateMusicAndWait(apiKey, body.prompt.trim(), {
+        durationMs: Math.round(durationSeconds * 1000),
+      });
+      const bytes = await downloadMusic(audioUrl);
+      const entryId = mintMusicId();
+      const relativePath = `${MUSIC_DIR}/${entryId}.mp3`;
+      const absPath = join(project.dir, relativePath);
+      mkdirSync(join(project.dir, MUSIC_DIR), { recursive: true });
+      writeFileSync(absPath, bytes);
+      const entry: MusicEntry = {
+        id: entryId,
+        prompt: body.prompt.trim(),
+        path: relativePath,
+        durationSeconds,
+        scenesCovered,
+        role,
+        ...(typeof body.label === "string" && body.label.trim().length > 0
+          ? { label: body.label.trim() }
+          : {}),
+        ...(typeof body.volumeDb === "number" ? { volumeDb: body.volumeDb } : {}),
+        // Default duck of -12dB during voiceover windows. The producer's
+        // mixer applies a sidechain duck at render time.
+        duckDb: typeof body.duckDb === "number" ? body.duckDb : -12,
+        createdAt: new Date().toISOString(),
+      };
+      appendMusicEntry(project.dir, entry);
+      onCostEvent(
+        "script.storyline.music.generate",
+        // ElevenLabs Music is billed per generation (not per character) — we
+        // synthesise a 1-character entry so the existing cost shape applies.
+        { kind: "elevenlabs", voiceId: "music", characters: 1 },
+        Date.now() - start,
+        { entryId, durationSeconds, scenesCovered: scenesCovered.length, role },
+      );
+      return c.json({ ok: true, entry });
+    } catch (err) {
+      if (err instanceof ElevenLabsError) {
+        return c.json({ error: `ElevenLabs Music failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // GET /api/projects/:id/storyline/music
+  api.get("/projects/:id/storyline/music", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    return c.json({ manifest: readMusicManifest(project.dir) });
+  });
+
+  // DELETE /api/projects/:id/storyline/music/:entryId
+  api.delete("/projects/:id/storyline/music/:entryId", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const entryId = c.req.param("entryId");
+    if (!entryId) return c.json({ error: "entryId required" }, 400);
+    const manifest = removeMusicEntry(project.dir, entryId);
+    return c.json({ ok: true, manifest });
+  });
+
+  // ── Milestone C: Gemini render review ────────────────────────────────────
+
+  // POST /api/projects/:id/storyline/render-review
+  // Body: { renderPath?: string }   — defaults to the most recent render in
+  //                                   <project>/renders/
+  // Uploads the MP4 to Gemini Files API, prompts with the script meta, and
+  // returns structured retention feedback. Persists the result to
+  // `<project>/.hyperframes/render-reviews/<timestamp>.json` so the studio
+  // can show historical reviews without re-running.
+  api.post("/projects/:id/storyline/render-review", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    let body: { renderPath?: string };
+    try {
+      body = (await c.req.json().catch(() => ({}))) as { renderPath?: string };
+    } catch {
+      body = {};
+    }
+    const apiKey = loadGeminiKey(project.dir);
+    if (!apiKey) {
+      return c.json({ error: "GEMINI_API_KEY not set. Add it to <project>/.env." }, 401);
+    }
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+
+    // Resolve the render path. Caller can specify; otherwise we pick the
+    // most recent .mp4 under <project>/renders/.
+    let renderRel = body.renderPath ?? findMostRecentRender(project.dir);
+    if (!renderRel) {
+      return c.json(
+        {
+          error: "no rendered MP4 found. Run a render first (or pass renderPath in the body).",
+        },
+        404,
+      );
+    }
+    if (renderRel.startsWith("/")) renderRel = renderRel.slice(1);
+    const absRenderPath = join(project.dir, renderRel);
+    if (!existsSync(absRenderPath)) {
+      return c.json({ error: `render not found at ${renderRel}` }, 404);
+    }
+
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+    try {
+      const uploaded = await uploadGeminiFile(apiKey, absRenderPath, "video/mp4");
+      const sceneTimings = computeSceneTimings(script);
+      const { result, usage } = await generateGeminiStructured<RenderReviewToolInput>(apiKey, {
+        model: DEFAULT_GEMINI_MODEL,
+        parts: [
+          { fileData: { fileUri: uploaded.uri, mimeType: uploaded.mimeType } },
+          { text: buildRenderReviewUser(script, sceneTimings) },
+        ],
+        systemInstruction: buildRenderReviewSystem(),
+        tool: anthropicToGeminiTool(RENDER_REVIEW_TOOL),
+        temperature: 0.3,
+        maxOutputTokens: 4096,
+      });
+      onCostEvent(
+        "script.storyline.render.review",
+        {
+          kind: "gemini",
+          model: DEFAULT_GEMINI_MODEL,
+          promptTokens: usage.promptTokenCount ?? 0,
+          outputTokens: usage.candidatesTokenCount ?? 0,
+        },
+        Date.now() - start,
+        { renderPath: renderRel, sceneCount: script.scenes.length },
+      );
+      const review = buildRenderReviewResponse(result, script);
+      // Persist for historical retrieval. Soft fail — review still goes back
+      // to the caller even if the disk write fails.
+      try {
+        const reviewsDir = join(project.dir, ".hyperframes", "render-reviews");
+        mkdirSync(reviewsDir, { recursive: true });
+        const reviewPath = join(reviewsDir, `${Date.now()}.json`);
+        writeFileSync(
+          reviewPath,
+          JSON.stringify({ ...review, renderPath: renderRel }, null, 2) + "\n",
+        );
+      } catch {
+        /* ignore */
+      }
+      return c.json({ ...review, renderPath: renderRel });
+    } catch (err) {
+      if (err instanceof GeminiError) {
+        return c.json({ error: `Gemini call failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // GET /api/projects/:id/storyline/render-review
+  // Returns the most recent persisted review (if any), so reloading the
+  // Storyline tab shows the last review without re-running Gemini.
+  api.get("/projects/:id/storyline/render-review", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const review = loadMostRecentRenderReview(project.dir);
+    return c.json({ review });
+  });
+
+  // ── Milestone E: Per-scene scroll test ───────────────────────────────────
+
+  // POST /api/projects/:id/storyline/scroll-test
+  // Body: { sceneId }
+  // Picks 3 frames from the scene (start / mid / end) by sampling the
+  // rendered MP4, sends them + the narration to Gemini, asks "would they
+  // scroll?". Drops a SceneSuggestion patch for the proposed fix.
+  api.post("/projects/:id/storyline/scroll-test", async (c) => {
+    const ctx = await loadActionContext(c.req.param("id"), c, adapter);
+    if ("errorRes" in ctx) return ctx.errorRes;
+    const { project, scene } = ctx;
+    const apiKey = loadGeminiKey(project.dir);
+    if (!apiKey) return c.json({ error: "GEMINI_API_KEY not set" }, 401);
+
+    const script = loadScript(project.dir);
+    if (!script) return c.json({ error: "no planned script found" }, 404);
+    const renderRel = findMostRecentRender(project.dir);
+    if (!renderRel) {
+      return c.json({ error: "no rendered MP4 found — render first to enable scroll tests." }, 404);
+    }
+    const absRenderPath = join(project.dir, renderRel);
+    if (!existsSync(absRenderPath)) {
+      return c.json({ error: `render not found at ${renderRel}` }, 404);
+    }
+
+    const sceneTimings = computeSceneTimings(script);
+    const sceneTime = sceneTimings.find((t) => t.sceneId === scene.id);
+    if (!sceneTime) {
+      return c.json({ error: `couldn't compute timing for ${scene.id}` }, 500);
+    }
+
+    // Frame extraction needs ffmpeg — leverage the same probe adapter the
+    // studio already wires up for audio duration. If absent we degrade to
+    // sending only the narration text, no frames; Gemini will still produce
+    // a reasonable "would they scroll?" verdict from the text alone.
+    let frameParts: GeminiPart[] = [];
+    if (adapter.extractVideoFrameToBytes) {
+      const sampleAt = [
+        sceneTime.start + Math.min(0.5, sceneTime.duration / 6),
+        sceneTime.start + sceneTime.duration / 2,
+        sceneTime.start + Math.max(0, sceneTime.duration - 0.5),
+      ];
+      try {
+        for (const t of sampleAt) {
+          const bytes = await adapter.extractVideoFrameToBytes(absRenderPath, t);
+          if (bytes) {
+            frameParts.push({
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: Buffer.from(bytes).toString("base64"),
+              },
+            });
+          }
+        }
+      } catch {
+        // Frame sampling is best-effort — if ffmpeg fails on one frame the
+        // scroll test still runs with what we got.
+        frameParts = [];
+      }
+    }
+
+    const onCostEvent = loggerSink(new CostLogger(project.dir));
+    const start = Date.now();
+    try {
+      const { result, usage } = await generateGeminiStructured<ScrollTestToolInput>(apiKey, {
+        model: DEFAULT_GEMINI_MODEL,
+        parts: [...frameParts, { text: buildScrollTestUser(scene) }],
+        systemInstruction: buildScrollTestSystem(),
+        tool: anthropicToGeminiTool(SCROLL_TEST_TOOL),
+        temperature: 0.3,
+        maxOutputTokens: 768,
+      });
+      onCostEvent(
+        "script.storyline.scrollTest",
+        {
+          kind: "gemini",
+          model: DEFAULT_GEMINI_MODEL,
+          promptTokens: usage.promptTokenCount ?? 0,
+          outputTokens: usage.candidatesTokenCount ?? 0,
+        },
+        Date.now() - start,
+        { sceneId: scene.id, frameCount: frameParts.length },
+      );
+      return c.json(buildScrollTestResponse(result, scene));
+    } catch (err) {
+      if (err instanceof GeminiError) {
+        return c.json({ error: `Gemini call failed: ${err.message}` }, 502);
+      }
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
   });
 }
 
@@ -1711,4 +2079,599 @@ export const __testing = {
   buildProjectIntentResponse,
   loadImageManifestSummary,
   pickSceneWindow,
+  buildRenderReviewResponse,
+  buildScrollTestResponse,
+  buildMusicSuggestResponse,
+  computeSceneTimings,
+  findMostRecentRender,
 };
+
+// ── Music helpers ────────────────────────────────────────────────────────────
+
+interface MusicSuggestToolInput {
+  tracks?: Array<{
+    prompt?: string;
+    durationSeconds?: number;
+    role?: string;
+    scenesCovered?: string[];
+    label?: string;
+    rationale?: string;
+  }>;
+  overallNote?: string;
+}
+
+interface MusicGenerateBody {
+  prompt?: string;
+  durationSeconds?: number;
+  role?: MusicRole;
+  scenesCovered?: string[];
+  label?: string;
+  volumeDb?: number;
+  duckDb?: number;
+}
+
+const MUSIC_SUGGEST_TOOL: ToolDefinition = {
+  name: "propose_music_tracks",
+  description:
+    "Propose 1-3 background music tracks for a planned video. Each track has a generation prompt, the scenes it underscores, a target duration, and a one-sentence rationale.",
+  input_schema: {
+    type: "object",
+    properties: {
+      overallNote: {
+        type: "string",
+        description: "1-2 sentences on the overall musical strategy across the video.",
+      },
+      tracks: {
+        type: "array",
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: "object",
+          properties: {
+            prompt: {
+              type: "string",
+              description:
+                "ElevenLabs Music prompt — be visceral and specific. 'investigative documentary, tense pulse, low strings' beats 'sad music'.",
+            },
+            durationSeconds: {
+              type: "number",
+              minimum: 10,
+              maximum: 300,
+              description:
+                "Target duration in seconds. Underscore tracks usually run 30-90s; stingers 5-15s.",
+            },
+            role: {
+              type: "string",
+              enum: ["underscore", "stinger", "intro", "outro"],
+              description:
+                "underscore = continuous bed under multiple scenes. stinger = punctuates a transition. intro/outro = scene 1 / final scene only.",
+            },
+            scenesCovered: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Ordered scene ids the track plays under. Empty = whole video. Underscore tracks should cover 2-6 scenes (a coherent act); stingers cover 1.",
+            },
+            label: {
+              type: "string",
+              description: "Short human label (e.g. 'investigative bed').",
+            },
+            rationale: {
+              type: "string",
+              description: "One sentence on what this track does for the video's emotional arc.",
+            },
+          },
+          required: ["prompt", "durationSeconds", "role", "scenesCovered", "rationale"],
+        },
+      },
+    },
+    required: ["tracks", "overallNote"],
+  },
+};
+
+function buildMusicSuggestSystem(themeName: string, themeDescription: string): string {
+  return [
+    "# Music director",
+    "",
+    "You're scoring a Reels-style explainer video. Read the script + active theme + the user's vibe prompt and propose 1-3 background music tracks.",
+    "",
+    "Rules:",
+    "1. NARRATION IS PRIMARY. Music supports voiceover; never competes with it.",
+    "2. Underscore tracks should cover 2-6 contiguous scenes (an act). Stingers punctuate transitions.",
+    "3. Be specific in prompts: instruments, tempo, mood, era. ElevenLabs Music respects detail.",
+    "4. Match the theme's energy — match if you can name what feels off otherwise.",
+    "5. Default duck during voiceover is -12dB. Don't propose anything that needs less ducking unless silence is rare.",
+    "",
+    `## Active theme: ${themeName}`,
+    themeDescription ? `Description: ${themeDescription}` : "",
+  ]
+    .filter((s) => s.length > 0)
+    .join("\n");
+}
+
+function buildMusicSuggestUser(script: Script, vibe: string): string {
+  const lines = script.scenes
+    .map((s, i) => `${i + 1}. ${s.id} · ${s.template}${s.hook ? " · HOOK" : ""}\n   ${s.text}`)
+    .join("\n");
+  return [
+    "## User's vibe",
+    vibe,
+    "",
+    `## Script (${script.scenes.length} scenes)`,
+    lines,
+    "",
+    "Now call propose_music_tracks with 1-3 tracks that score the video.",
+  ].join("\n");
+}
+
+interface MusicSuggestionResponse {
+  overallNote: string;
+  tracks: Array<{
+    id: string;
+    prompt: string;
+    durationSeconds: number;
+    role: MusicRole;
+    scenesCovered: string[];
+    label: string;
+    rationale: string;
+  }>;
+}
+
+function buildMusicSuggestResponse(
+  raw: MusicSuggestToolInput,
+  script: Script,
+): MusicSuggestionResponse {
+  const knownSceneIds = new Set(script.scenes.map((s) => s.id));
+  const tracks: MusicSuggestionResponse["tracks"] = [];
+  for (const t of raw.tracks ?? []) {
+    if (!t || typeof t.prompt !== "string" || t.prompt.trim().length === 0) continue;
+    const role: MusicRole =
+      t.role === "stinger" || t.role === "intro" || t.role === "outro" ? t.role : "underscore";
+    const scenesCovered = Array.isArray(t.scenesCovered)
+      ? t.scenesCovered
+          .filter((s): s is string => typeof s === "string")
+          .filter((s) => knownSceneIds.has(s))
+      : [];
+    const durationSeconds = clampMusicDuration(
+      typeof t.durationSeconds === "number" ? t.durationSeconds : 60,
+    );
+    const label =
+      typeof t.label === "string" && t.label.trim().length > 0
+        ? t.label.trim()
+        : t.prompt.trim().slice(0, 40);
+    tracks.push({
+      id: mintMusicId(),
+      prompt: t.prompt.trim(),
+      durationSeconds,
+      role,
+      scenesCovered,
+      label,
+      rationale: typeof t.rationale === "string" ? t.rationale : "",
+    });
+    if (tracks.length >= 3) break;
+  }
+  return { overallNote: raw.overallNote ?? "", tracks };
+}
+
+let musicIdCounter = 0;
+function mintMusicId(): string {
+  const ms = Date.now().toString(36);
+  const ctr = (musicIdCounter++).toString(36).padStart(2, "0");
+  return `music-${ms}-${ctr}`;
+}
+
+// ── Render-review (Gemini) ───────────────────────────────────────────────────
+
+interface RenderReviewToolInput {
+  overallRetentionScore?: number;
+  scrollRiskWindows?: Array<{
+    startS?: number;
+    endS?: number;
+    severity?: string;
+    why?: string;
+    fix?: string;
+  }>;
+  brandConsistency?: {
+    score?: number;
+    drift?: string[];
+  };
+  audioMix?: {
+    voiceClarity?: string;
+    musicLevels?: string;
+    sfxBalance?: string;
+  };
+  perScene?: Array<{
+    sceneId?: string;
+    visualHook?: number;
+    paceMatch?: number;
+    onBrand?: number;
+    note?: string;
+  }>;
+}
+
+interface RenderReviewResponse {
+  overallRetentionScore: number;
+  scrollRiskWindows: Array<{
+    startS: number;
+    endS: number;
+    severity: "low" | "med" | "high";
+    why: string;
+    fix: string;
+  }>;
+  brandConsistency: { score: number; drift: string[] };
+  audioMix: {
+    voiceClarity: "good" | "muddy" | "clipped";
+    musicLevels: "ducked" | "flat" | "fighting";
+    sfxBalance: "well-placed" | "missing" | "overused";
+  };
+  perScene: Array<{
+    sceneId: string;
+    visualHook: number;
+    paceMatch: number;
+    onBrand: number;
+    note: string;
+  }>;
+}
+
+const RENDER_REVIEW_TOOL: ToolDefinition = {
+  name: "report_render_review",
+  description:
+    "Report a structured retention review of a rendered video. Score retention, identify scroll-risk windows, audit brand consistency, and grade each scene.",
+  input_schema: {
+    type: "object",
+    properties: {
+      overallRetentionScore: {
+        type: "number",
+        description: "0-100. Single rough estimate of how likely a feed viewer watches to the end.",
+      },
+      scrollRiskWindows: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            startS: { type: "number" },
+            endS: { type: "number" },
+            severity: { type: "string", enum: ["low", "med", "high"] },
+            why: { type: "string" },
+            fix: { type: "string" },
+          },
+          required: ["startS", "endS", "severity", "why", "fix"],
+        },
+        description:
+          "Time windows where retention is at risk. Each carries a one-sentence why and a one-sentence concrete fix.",
+      },
+      brandConsistency: {
+        type: "object",
+        properties: {
+          score: { type: "number" },
+          drift: { type: "array", items: { type: "string" } },
+        },
+      },
+      audioMix: {
+        type: "object",
+        properties: {
+          voiceClarity: { type: "string", enum: ["good", "muddy", "clipped"] },
+          musicLevels: { type: "string", enum: ["ducked", "flat", "fighting"] },
+          sfxBalance: { type: "string", enum: ["well-placed", "missing", "overused"] },
+        },
+      },
+      perScene: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            sceneId: { type: "string" },
+            visualHook: { type: "number" },
+            paceMatch: { type: "number" },
+            onBrand: { type: "number" },
+            note: { type: "string" },
+          },
+          required: ["sceneId", "visualHook", "paceMatch", "onBrand", "note"],
+        },
+      },
+    },
+    required: ["overallRetentionScore", "scrollRiskWindows", "perScene"],
+  },
+};
+
+function buildRenderReviewSystem(): string {
+  return [
+    "# Retention review",
+    "",
+    "You're a retention engineer reviewing a Reels-style explainer video. Watch the whole video, then report:",
+    "",
+    "  - overallRetentionScore (0-100): how likely is a feed viewer to watch to the end?",
+    "  - scrollRiskWindows: time spans where viewers will drop off. ALWAYS include why + a concrete one-sentence fix referencing the existing scenes/templates.",
+    "  - brandConsistency: 0-100 score + per-scene drift notes (which scenes break the look).",
+    "  - audioMix: voice clarity, music levels relative to voice, sfx balance.",
+    "  - perScene: visualHook (0-10), paceMatch (0-10 — does pacing match narration density?), onBrand (0-10), one-sentence note.",
+    "",
+    "Rules:",
+    "1. Be specific. 'Scene 4 visual is generic' is unhelpful. 'Scene 4 has 15 words on screen with no movement for 3.5s' is.",
+    "2. Reference per-scene fixes by template id where relevant ('swap to kinetic-words', 'use editorial-serif for breath').",
+    "3. The whole point is RETENTION. A safe score is useless. Tell the user where they're losing viewers.",
+  ].join("\n");
+}
+
+function buildRenderReviewUser(
+  script: Script,
+  timings: Array<{ sceneId: string; start: number; duration: number }>,
+): string {
+  const lines = script.scenes.map((s) => {
+    const t = timings.find((tt) => tt.sceneId === s.id);
+    return `${s.id} (${t ? `${t.start.toFixed(1)}-${(t.start + t.duration).toFixed(1)}s` : "?"}) · ${s.template}${s.hook ? " · HOOK" : ""} · ${s.text}`;
+  });
+  return [
+    "## Script + scene timings (use these to anchor timestamps in your review)",
+    lines.join("\n"),
+    "",
+    "Now watch the attached video and call report_render_review.",
+  ].join("\n");
+}
+
+function buildRenderReviewResponse(
+  raw: RenderReviewToolInput,
+  script: Script,
+): RenderReviewResponse {
+  const knownSceneIds = new Set(script.scenes.map((s) => s.id));
+  return {
+    overallRetentionScore: clampScore(raw.overallRetentionScore, 0, 100, 50),
+    scrollRiskWindows: (raw.scrollRiskWindows ?? [])
+      .filter((w) => w && typeof w.startS === "number" && typeof w.endS === "number")
+      .map((w) => ({
+        startS: w.startS!,
+        endS: w.endS!,
+        severity: w.severity === "high" || w.severity === "med" ? w.severity : "low",
+        why: typeof w.why === "string" ? w.why : "",
+        fix: typeof w.fix === "string" ? w.fix : "",
+      })),
+    brandConsistency: {
+      score: clampScore(raw.brandConsistency?.score, 0, 100, 70),
+      drift: Array.isArray(raw.brandConsistency?.drift)
+        ? raw.brandConsistency.drift.filter((s): s is string => typeof s === "string")
+        : [],
+    },
+    audioMix: {
+      voiceClarity:
+        raw.audioMix?.voiceClarity === "muddy" || raw.audioMix?.voiceClarity === "clipped"
+          ? raw.audioMix.voiceClarity
+          : "good",
+      musicLevels:
+        raw.audioMix?.musicLevels === "flat" || raw.audioMix?.musicLevels === "fighting"
+          ? raw.audioMix.musicLevels
+          : "ducked",
+      sfxBalance:
+        raw.audioMix?.sfxBalance === "missing" || raw.audioMix?.sfxBalance === "overused"
+          ? raw.audioMix.sfxBalance
+          : "well-placed",
+    },
+    perScene: (raw.perScene ?? [])
+      .filter((p) => p && typeof p.sceneId === "string" && knownSceneIds.has(p.sceneId))
+      .map((p) => ({
+        sceneId: p.sceneId!,
+        visualHook: clampScore(p.visualHook, 0, 10, 5),
+        paceMatch: clampScore(p.paceMatch, 0, 10, 5),
+        onBrand: clampScore(p.onBrand, 0, 10, 5),
+        note: typeof p.note === "string" ? p.note : "",
+      })),
+  };
+}
+
+function clampScore(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, value));
+}
+
+// ── Scroll-test (Gemini, per scene) ──────────────────────────────────────────
+
+interface ScrollTestToolInput {
+  wouldScroll?: boolean;
+  whyOrWhyNot?: string;
+  oneChangeFix?: string;
+  sceneStrengthScore?: number;
+  patch?: {
+    template?: string;
+    props?: Record<string, unknown>;
+    reasoning?: string;
+  };
+}
+
+interface ScrollTestResponse {
+  sceneId: string;
+  wouldScroll: boolean;
+  whyOrWhyNot: string;
+  oneChangeFix: string;
+  sceneStrengthScore: number;
+  /** Optional patch that the studio surfaces as a SceneSuggestion in the
+   *  scene's amber stack — applies to script.json on Apply. */
+  suggestion: {
+    preview: string;
+    rationale: string;
+    patch: { template?: string; props?: Record<string, unknown>; reasoning?: string };
+  } | null;
+}
+
+const SCROLL_TEST_TOOL: ToolDefinition = {
+  name: "report_scroll_test",
+  description:
+    "Predict whether a feed viewer would scroll past this scene. Score it, give a one-sentence why, propose a one-change fix, and optionally a concrete scene patch the studio can apply.",
+  input_schema: {
+    type: "object",
+    properties: {
+      wouldScroll: {
+        type: "boolean",
+        description: "Best estimate: would a viewer in a feed scroll past this scene?",
+      },
+      whyOrWhyNot: {
+        type: "string",
+        description: "One specific sentence. Reference the visual, audio, or pacing.",
+      },
+      oneChangeFix: {
+        type: "string",
+        description:
+          "One sentence: the single change that would most improve retention. Be concrete — reference a template, an accent word, a duration cut.",
+      },
+      sceneStrengthScore: {
+        type: "number",
+        minimum: 0,
+        maximum: 100,
+        description: "Hold-power score 0-100. <30 = strong scroll signal. >70 = strong hold.",
+      },
+      patch: {
+        type: "object",
+        description:
+          "Optional concrete scene patch — same shape as the storyline-level intent patches. Set ONLY when the fix maps cleanly to a template/props change. Skip when it's narrative-level (re-record narration).",
+        properties: {
+          template: { type: "string" },
+          props: { type: "object" },
+          reasoning: { type: "string" },
+        },
+      },
+    },
+    required: ["wouldScroll", "whyOrWhyNot", "oneChangeFix", "sceneStrengthScore"],
+  },
+};
+
+function buildScrollTestSystem(): string {
+  return [
+    "# Scroll test",
+    "",
+    "You're a retention scientist watching ONE scene from a feed perspective. Three frames + the narration give you the full picture for this scene.",
+    "",
+    "Predict: would a feed viewer scroll past?",
+    "",
+    "Heuristics that predict scroll-through:",
+    "  - Static visual for >2s with monotone audio → scroll",
+    "  - Long on-screen text with no motion → scroll",
+    "  - Audio-visual mismatch (boring visual + urgent VO) → scroll",
+    "  - No clear payoff in the scene → scroll",
+    "",
+    "Heuristics that predict hold:",
+    "  - Pattern interrupt (cut, motion shift, accent word lands)",
+    "  - One concrete number / claim landing on screen",
+    "  - Tight pacing matching narration density",
+    "",
+    "Be specific. Reference the visual you actually see in the frames. If you can map the fix to a template or props change, ALSO emit a `patch` so the studio can apply it with one click.",
+  ].join("\n");
+}
+
+function buildScrollTestUser(scene: SceneRef): string {
+  const headline =
+    typeof scene.props.title === "string"
+      ? scene.props.title
+      : Array.isArray(scene.props.words)
+        ? (scene.props.words as unknown[]).join(" ")
+        : "";
+  return [
+    `## Scene ${scene.id} · ${scene.template}${scene.hook ? " · HOOK" : ""}`,
+    `Narration: ${scene.text}`,
+    `On-screen: ${headline.slice(0, 200)}`,
+    "",
+    "The frames attached are sampled from start / mid / end of this scene's window. Now call report_scroll_test.",
+  ].join("\n");
+}
+
+function buildScrollTestResponse(raw: ScrollTestToolInput, scene: SceneRef): ScrollTestResponse {
+  const score = clampScore(raw.sceneStrengthScore, 0, 100, 50);
+  const wouldScroll = typeof raw.wouldScroll === "boolean" ? raw.wouldScroll : score < 50;
+  const fix = typeof raw.oneChangeFix === "string" ? raw.oneChangeFix : "";
+  // Promote the model's optional patch into the SceneSuggestion shape if it
+  // emitted one. The studio can apply via the existing applyPatch pipeline.
+  let suggestion: ScrollTestResponse["suggestion"] = null;
+  if (raw.patch && (raw.patch.template || raw.patch.props || raw.patch.reasoning)) {
+    suggestion = {
+      preview: fix || "Scroll-test fix",
+      rationale: typeof raw.whyOrWhyNot === "string" ? raw.whyOrWhyNot : "",
+      patch: {
+        ...(typeof raw.patch.template === "string" ? { template: raw.patch.template } : {}),
+        ...(raw.patch.props && typeof raw.patch.props === "object"
+          ? { props: { ...scene.props, ...raw.patch.props } }
+          : {}),
+        ...(typeof raw.patch.reasoning === "string" ? { reasoning: raw.patch.reasoning } : {}),
+      },
+    };
+  }
+  return {
+    sceneId: scene.id,
+    wouldScroll,
+    whyOrWhyNot: typeof raw.whyOrWhyNot === "string" ? raw.whyOrWhyNot : "",
+    oneChangeFix: fix,
+    sceneStrengthScore: score,
+    suggestion,
+  };
+}
+
+// ── Helpers shared across the three new milestones ───────────────────────────
+
+/**
+ * Convert an Anthropic-shaped tool definition (`input_schema`) to Gemini's
+ * function-declaration shape (`parameters`). Both providers accept JSON Schema
+ * for the body; only the wrapper key differs. This keeps the tool definitions
+ * readable as one shape and lets us reuse them across providers.
+ */
+function anthropicToGeminiTool(tool: ToolDefinition): {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+} {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.input_schema as Record<string, unknown>,
+  };
+}
+
+function computeSceneTimings(
+  script: Script,
+): Array<{ sceneId: string; start: number; duration: number }> {
+  const out: Array<{ sceneId: string; start: number; duration: number }> = [];
+  let cursor = 0;
+  for (const scene of script.scenes) {
+    const audioDur = (scene as { audio?: { durationSeconds?: number } }).audio?.durationSeconds;
+    const lead = (scene as { audio?: { leadInSeconds?: number } }).audio?.leadInSeconds ?? 0;
+    const tail = (scene as { audio?: { tailPadSeconds?: number } }).audio?.tailPadSeconds ?? 0;
+    const total =
+      typeof audioDur === "number" && audioDur > 0
+        ? audioDur + lead + tail
+        : (scene.durationHint ?? 4);
+    out.push({ sceneId: scene.id, start: cursor, duration: total });
+    cursor += total;
+  }
+  return out;
+}
+
+function findMostRecentRender(projectDir: string): string | null {
+  const rendersDir = join(projectDir, "renders");
+  if (!existsSync(rendersDir)) return null;
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const entries = fs.readdirSync(rendersDir);
+    const mp4s = entries.filter((f: string) => f.toLowerCase().endsWith(".mp4"));
+    if (mp4s.length === 0) return null;
+    const withMtime = mp4s.map((f: string) => {
+      const stat = fs.statSync(join(rendersDir, f));
+      return { f, mtime: stat.mtimeMs };
+    });
+    withMtime.sort((a, b) => b.mtime - a.mtime);
+    const first = withMtime[0];
+    return first ? `renders/${first.f}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadMostRecentRenderReview(projectDir: string): unknown | null {
+  const dir = join(projectDir, ".hyperframes", "render-reviews");
+  if (!existsSync(dir)) return null;
+  try {
+    const fs = require("node:fs") as typeof import("node:fs");
+    const entries = fs.readdirSync(dir).filter((f: string) => f.endsWith(".json"));
+    if (entries.length === 0) return null;
+    entries.sort();
+    const latest = entries[entries.length - 1];
+    if (!latest) return null;
+    return JSON.parse(readFileSync(join(dir, latest), "utf-8"));
+  } catch {
+    return null;
+  }
+}
