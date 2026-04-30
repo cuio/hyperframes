@@ -4,6 +4,7 @@ import { join, basename, extname } from "node:path";
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import {
+  analyzeImage,
   findById,
   ingestImage,
   readManifest,
@@ -13,6 +14,8 @@ import {
   type ImageEntry,
   type ImageRole,
 } from "../../images/index.js";
+import { GeminiError, loadGeminiKey, DEFAULT_GEMINI_MODEL } from "../../gemini/index.js";
+import { CostLogger, loggerSink } from "../../telemetry/cost.js";
 import { OpsLogger, opsFireAndForget } from "../../telemetry/ops.js";
 import type { StudioApiAdapter } from "../types.js";
 
@@ -116,7 +119,17 @@ export function registerImagesRoutes(api: Hono, adapter: StudioApiAdapter): void
         wallMs: Date.now() - start,
         meta: { id: entry.id, replaced, originalName: file.name, originalBytes: file.size },
       });
-      return c.json({ ok: true, entry, replaced });
+
+      // Kick off Gemini analysis fire-and-forget. Mark the entry pending
+      // synchronously so the studio shows a spinner from the moment the
+      // upload response lands. If GEMINI_API_KEY is missing or the call
+      // fails, the entry's analysisStatus flips to "failed" with a reason.
+      const withPending = markAnalysisPending(project.dir, entry.id);
+      void runImageAnalysis(project.dir, withPending ?? entry).catch((err) => {
+        void ops.logError("images.analyze", err, { id: entry.id });
+      });
+
+      return c.json({ ok: true, entry: withPending ?? entry, replaced });
     } catch (err) {
       void ops.logError("images.upload", err, { originalName: file.name });
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
@@ -126,6 +139,26 @@ export function registerImagesRoutes(api: Hono, adapter: StudioApiAdapter): void
       } catch {
         /* ignore */
       }
+    }
+  });
+
+  // Manually re-run Gemini analysis for an existing image. Useful if the
+  // user added GEMINI_API_KEY after the original upload, or wants to
+  // refresh stale priors after editing a description.
+  api.post("/projects/:id/images/:imageId/analyze", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const entry = findById(readManifest(project.dir), c.req.param("imageId"));
+    if (!entry) return c.json({ error: "image not found" }, 404);
+
+    const pending = markAnalysisPending(project.dir, entry.id);
+    try {
+      const updated = await runImageAnalysis(project.dir, pending ?? entry);
+      return c.json({ ok: true, entry: updated });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const failedEntry = markAnalysisFailed(project.dir, entry.id, reason);
+      return c.json({ ok: false, entry: failedEntry, error: reason }, 502);
     }
   });
 
@@ -222,4 +255,129 @@ export function registerImagesRoutes(api: Hono, adapter: StudioApiAdapter): void
     });
     return c.json({ ok: true });
   });
+}
+
+// ── Analysis helpers ───────────────────────────────────────────────────────
+//
+// These run AFTER an upload response has been sent, so failures here must
+// never throw out of an HTTP handler. The route owner already wraps the
+// fire-and-forget call in `.catch(...)` for telemetry.
+
+/**
+ * Patch a single entry's analysis status in the manifest. Read-modify-write
+ * with no merge logic — analysis fields are owned by the analyzer alone.
+ * Returns the patched entry, or null if the id has been removed in the
+ * meantime (race with DELETE).
+ */
+function patchEntryAnalysis(
+  projectDir: string,
+  imageId: string,
+  patch: Partial<ImageEntry>,
+): ImageEntry | null {
+  const manifest = readManifest(projectDir);
+  const existing = findById(manifest, imageId);
+  if (!existing) return null;
+  const next: ImageEntry = { ...existing, ...patch };
+  writeManifest(projectDir, upsertEntry(manifest, next));
+  return next;
+}
+
+function markAnalysisPending(projectDir: string, imageId: string): ImageEntry | null {
+  return patchEntryAnalysis(projectDir, imageId, {
+    analysisStatus: "pending",
+    analysisError: undefined,
+  });
+}
+
+function markAnalysisFailed(
+  projectDir: string,
+  imageId: string,
+  reason: string,
+): ImageEntry | null {
+  return patchEntryAnalysis(projectDir, imageId, {
+    analysisStatus: "failed",
+    analysisError: reason.slice(0, 240),
+  });
+}
+
+/**
+ * Read the image bytes off disk, call Gemini, write the result back to the
+ * manifest. Logs cost + ops. Throws on failure so the caller (the upload
+ * route's fire-and-forget) can record an ops error — but ALSO patches the
+ * manifest with analysisStatus: "failed" so the studio surfaces the
+ * problem to the user without an out-of-band error toast.
+ */
+async function runImageAnalysis(projectDir: string, entry: ImageEntry): Promise<ImageEntry> {
+  const apiKey = loadGeminiKey();
+  if (!apiKey) {
+    const failed = markAnalysisFailed(
+      projectDir,
+      entry.id,
+      "GEMINI_API_KEY is not set — skipping analysis. Configure it in the studio Settings tab.",
+    );
+    return failed ?? entry;
+  }
+
+  const abs = join(projectDir, entry.src);
+  if (!existsSync(abs)) {
+    const failed = markAnalysisFailed(
+      projectDir,
+      entry.id,
+      `Image file missing on disk at ${entry.src}`,
+    );
+    return failed ?? entry;
+  }
+  const bytes = readFileSync(abs);
+
+  const ops = new OpsLogger(projectDir);
+  const onCostEvent = loggerSink(new CostLogger(projectDir));
+  const start = Date.now();
+  try {
+    const { analyzed, usage } = await analyzeImage(apiKey, bytes, "image/webp");
+    onCostEvent(
+      "images.analyze",
+      {
+        kind: "gemini",
+        model: DEFAULT_GEMINI_MODEL,
+        promptTokens: usage.promptTokens,
+        outputTokens: usage.outputTokens,
+      },
+      Date.now() - start,
+      { id: entry.id, role: analyzed.role, treatment: analyzed.suggestedTreatment },
+    );
+    const updated = patchEntryAnalysis(projectDir, entry.id, {
+      // Don't overwrite a user-typed role — analyzer is a soft prior, not
+      // a source of truth. Same for description / tags.
+      role: entry.role ?? analyzed.role,
+      vibe: analyzed.vibe,
+      suggestedTreatment: analyzed.suggestedTreatment,
+      retentionStrengthAtAttachment: analyzed.retentionStrengthAtAttachment,
+      analysisRationale: analyzed.rationale,
+      analysisStatus: "complete",
+      analysisError: undefined,
+      analyzedAt: new Date().toISOString(),
+    });
+    opsFireAndForget(ops, {
+      op: "images.analyze",
+      message: `${entry.id} → ${analyzed.role} · ${analyzed.suggestedTreatment ?? "(no treatment)"} · retention ${analyzed.retentionStrengthAtAttachment}/10`,
+      wallMs: Date.now() - start,
+      meta: {
+        id: entry.id,
+        role: analyzed.role,
+        treatment: analyzed.suggestedTreatment,
+        retention: analyzed.retentionStrengthAtAttachment,
+      },
+    });
+    return updated ?? entry;
+  } catch (err) {
+    const reason =
+      err instanceof GeminiError
+        ? `Gemini error: ${err.message}`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    const failed = markAnalysisFailed(projectDir, entry.id, reason);
+    void ops.logError("images.analyze", err, { id: entry.id });
+    return failed ?? entry;
+  }
 }
