@@ -6,6 +6,7 @@ import { SourceEditor } from "./components/editor/SourceEditor";
 import { LeftSidebar } from "./components/sidebar/LeftSidebar";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
 import { CostBadge } from "./components/CostBadge";
+import { StaleAssemblyBanner } from "./components/StaleAssemblyBanner";
 import { RenderQueue } from "./components/renders/RenderQueue";
 import { useRenderQueue } from "./components/renders/useRenderQueue";
 import { CompositionThumbnail, VideoThumbnail, usePlayerStore } from "./player";
@@ -574,6 +575,16 @@ export function StudioApp() {
     const es = new EventSource("/api/events");
     es.addEventListener("file-change", handler);
     return () => es.close();
+  });
+
+  // Listen for "user clicked Regenerate in the staleness banner" events.
+  // Bumping refreshKey forces the preview iframe to remount with the
+  // freshly assembled HTML — keeps the user's mental model "click → see
+  // updated preview" intact.
+  useMountEffect(() => {
+    const handler = () => setRefreshKey((k) => k + 1);
+    window.addEventListener("hf:assembly-regenerated", handler as EventListener);
+    return () => window.removeEventListener("hf:assembly-regenerated", handler as EventListener);
   });
   projectIdRef.current = projectId;
 
@@ -1388,10 +1399,11 @@ export function StudioApp() {
     >
       {/* Header bar */}
       <div className="flex items-center justify-between h-10 px-3 bg-neutral-900 border-b border-neutral-800 flex-shrink-0">
-        {/* Left: project switcher + cost badge */}
+        {/* Left: project switcher + cost badge + staleness chip */}
         <div className="flex items-center gap-2">
           <ProjectSwitcher currentId={projectId} />
           <CostBadge projectId={projectId} />
+          <StaleAssemblyBanner projectId={projectId} />
         </div>
         {/* Right: toolbar buttons */}
         <div className="flex items-center gap-1.5">
