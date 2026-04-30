@@ -17,9 +17,18 @@ export interface AnthropicRate {
   cacheReadPerMTok?: number;
 }
 
+export interface GeminiRate {
+  inputPerMTok: number;
+  outputPerMTok: number;
+}
+
 export interface CostRates {
   anthropic: Record<string, AnthropicRate>;
   elevenlabs: { perMChar: number };
+  /** Gemini per-model rates. `default` is the fallback when a model id isn't
+   *  in the table — keeps cost reporting sensible even when the model lineup
+   *  changes upstream. */
+  gemini: Record<string, GeminiRate> & { default: GeminiRate };
   render: { perMinute: number };
 }
 
@@ -62,6 +71,14 @@ export const DEFAULT_RATES: CostRates = {
     },
   },
   elevenlabs: { perMChar: 30 },
+  gemini: {
+    // Google's published pricing as of 2026-04. Flash is the workhorse for
+    // every storyline action (render review, scroll-test, image analysis);
+    // Pro is reserved for multi-video comparison work that isn't in scope yet.
+    "gemini-2.5-flash": { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+    "gemini-2.5-pro": { inputPerMTok: 1.25, outputPerMTok: 10 },
+    default: { inputPerMTok: 0.3, outputPerMTok: 2.5 },
+  },
   render: { perMinute: 0.1 },
 };
 
@@ -86,6 +103,9 @@ function mergeRates(base: CostRates, override: Partial<CostRates> | null): CostR
     elevenlabs: override.elevenlabs
       ? { ...base.elevenlabs, ...override.elevenlabs }
       : base.elevenlabs,
+    gemini: override.gemini
+      ? ({ ...base.gemini, ...override.gemini } as CostRates["gemini"])
+      : base.gemini,
     render: override.render ? { ...base.render, ...override.render } : base.render,
   };
 }

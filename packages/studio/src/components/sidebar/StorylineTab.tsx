@@ -78,6 +78,54 @@ interface ProjectIntentResponse {
 
 type DirectorScope = "storyline" | "project";
 
+interface MusicSuggestion {
+  id: string;
+  prompt: string;
+  durationSeconds: number;
+  role: "underscore" | "stinger" | "intro" | "outro";
+  scenesCovered: string[];
+  label: string;
+  rationale: string;
+}
+interface MusicSuggestionList {
+  overallNote: string;
+  tracks: MusicSuggestion[];
+}
+interface MusicEntry {
+  id: string;
+  prompt: string;
+  path: string;
+  durationSeconds: number;
+  scenesCovered: string[];
+  role: "underscore" | "stinger" | "intro" | "outro";
+  label?: string;
+}
+
+interface RenderReviewSummary {
+  overallRetentionScore: number;
+  scrollRiskWindows: Array<{
+    startS: number;
+    endS: number;
+    severity: "low" | "med" | "high";
+    why: string;
+    fix: string;
+  }>;
+  brandConsistency: { score: number; drift: string[] };
+  audioMix: {
+    voiceClarity: "good" | "muddy" | "clipped";
+    musicLevels: "ducked" | "flat" | "fighting";
+    sfxBalance: "well-placed" | "missing" | "overused";
+  };
+  perScene: Array<{
+    sceneId: string;
+    visualHook: number;
+    paceMatch: number;
+    onBrand: number;
+    note: string;
+  }>;
+  renderPath?: string;
+}
+
 const SCRIPT_GENERATED = "script.generated.json";
 
 /** Custom DOM event dispatched when the focal scene card changes during
@@ -94,6 +142,9 @@ const ACTION_PATH: Record<AIActionId, string> = {
   // dedicated branch in handleAIAction. The path is the same prefix so it
   // shares the route table.
   addSfx: "sfx-suggest",
+  // scrollTest returns a Gemini verdict + optional patch — handled in a
+  // dedicated branch.
+  scrollTest: "scroll-test",
 };
 
 const SUGGESTION_PROMPTS_BY_SCOPE: Record<DirectorScope, string[]> = {
@@ -134,6 +185,38 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
   const [sfxGenerationStatus, setSfxGenerationStatus] = useState<
     Record<string, "idle" | "running" | "error">
   >({});
+
+  // Per-scene Gemini scroll-test verdicts. Composed with renderReview's
+  // perScene scores into the retention-map strip at the top of the tab.
+  const [scrollTestByScene, setScrollTestByScene] = useState<
+    Record<
+      string,
+      {
+        wouldScroll: boolean;
+        whyOrWhyNot: string;
+        oneChangeFix: string;
+        sceneStrengthScore: number;
+      }
+    >
+  >({});
+
+  // Music wizard state — separate from the scene-level Director because it
+  // runs against ElevenLabs (slow, polled-job) instead of Haiku (sub-second).
+  const [musicVibe, setMusicVibe] = useState("");
+  const [musicWizardRunning, setMusicWizardRunning] = useState(false);
+  const [musicWizardError, setMusicWizardError] = useState<string | null>(null);
+  const [musicSuggestions, setMusicSuggestions] = useState<MusicSuggestionList | null>(null);
+  const [musicTracks, setMusicTracks] = useState<MusicEntry[]>([]);
+  const [musicGenerationStatus, setMusicGenerationStatus] = useState<
+    Record<string, "idle" | "running" | "error">
+  >({});
+
+  // Render-review (Gemini) state. The result persists to disk under
+  // .hyperframes/render-reviews/<ts>.json so the studio can show the last
+  // review on reload without re-running.
+  const [renderReview, setRenderReview] = useState<RenderReviewSummary | null>(null);
+  const [renderReviewRunning, setRenderReviewRunning] = useState(false);
+  const [renderReviewError, setRenderReviewError] = useState<string | null>(null);
 
   // Director state — single textarea, two scopes (storyline vs project).
   const [directorScope, setDirectorScope] = useState<DirectorScope>("storyline");
@@ -201,10 +284,12 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
       setLoading(true);
       setError(null);
       try {
-        const [planned, imagesRes, sfxRes] = await Promise.all([
+        const [planned, imagesRes, sfxRes, musicRes, reviewRes] = await Promise.all([
           loadGeneratedOrPlanned(),
           fetch(`/api/projects/${projectId}/images`).catch(() => null),
           fetch(`/api/projects/${projectId}/storyline/sfx`).catch(() => null),
+          fetch(`/api/projects/${projectId}/storyline/music`).catch(() => null),
+          fetch(`/api/projects/${projectId}/storyline/render-review`).catch(() => null),
         ]);
         if (cancelled) return;
         setScript(planned);
@@ -227,6 +312,16 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
             grouped[(entry as AppliedSfxEntry & { sceneId: string }).sceneId] = list;
           }
           if (!cancelled) setSfxByScene(grouped);
+        }
+        if (musicRes && musicRes.ok) {
+          const musicJson = (await musicRes.json()) as {
+            manifest?: { entries?: MusicEntry[] };
+          };
+          if (!cancelled) setMusicTracks(musicJson.manifest?.entries ?? []);
+        }
+        if (reviewRes && reviewRes.ok) {
+          const reviewJson = (await reviewRes.json()) as { review?: RenderReviewSummary };
+          if (!cancelled && reviewJson.review) setRenderReview(reviewJson.review);
         }
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -300,6 +395,48 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
             ...prev,
             [scene.id]: [...(prev[scene.id] ?? []), ...(json.suggestions ?? [])],
           }));
+        } else if (action === "scrollTest") {
+          // Gemini scroll-test response: store the verdict in the retention
+          // map's per-scene state, and surface the optional patch as a
+          // SceneSuggestion in the regular stack so Apply works for free.
+          const json = (await res.json()) as {
+            sceneId?: string;
+            wouldScroll?: boolean;
+            whyOrWhyNot?: string;
+            oneChangeFix?: string;
+            sceneStrengthScore?: number;
+            suggestion?: {
+              preview?: string;
+              rationale?: string;
+              patch?: {
+                template?: string;
+                props?: Record<string, unknown>;
+                reasoning?: string;
+              };
+            } | null;
+          };
+          setScrollTestByScene((prev) => ({
+            ...prev,
+            [scene.id]: {
+              wouldScroll: json.wouldScroll ?? false,
+              whyOrWhyNot: json.whyOrWhyNot ?? "",
+              oneChangeFix: json.oneChangeFix ?? "",
+              sceneStrengthScore: json.sceneStrengthScore ?? 50,
+            },
+          }));
+          if (json.suggestion?.patch) {
+            const suggestion: SceneSuggestion = {
+              id: `${scene.id}-scrollTest-${Date.now()}`,
+              action: "scrollTest",
+              preview: json.suggestion.preview ?? "",
+              rationale: json.suggestion.rationale ?? "",
+              patch: json.suggestion.patch,
+            };
+            setSuggestionsByScene((prev) => ({
+              ...prev,
+              [scene.id]: [...(prev[scene.id] ?? []), suggestion],
+            }));
+          }
         } else {
           const json = (await res.json()) as {
             preview?: string;
@@ -477,6 +614,118 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
     },
     [projectId],
   );
+
+  // ── Music handlers ─────────────────────────────────────────────────────────
+
+  const runMusicSuggest = useCallback(async (): Promise<void> => {
+    const trimmed = musicVibe.trim();
+    if (!trimmed) return;
+    setMusicWizardRunning(true);
+    setMusicWizardError(null);
+    setMusicSuggestions(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/storyline/music-suggest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ vibe: trimmed }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const json = (await res.json()) as MusicSuggestionList;
+      setMusicSuggestions(json);
+    } catch (err) {
+      setMusicWizardError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setMusicWizardRunning(false);
+    }
+  }, [musicVibe, projectId]);
+
+  const runMusicGenerate = useCallback(
+    async (track: MusicSuggestion): Promise<void> => {
+      setMusicGenerationStatus((prev) => ({ ...prev, [track.id]: "running" }));
+      try {
+        const res = await fetch(`/api/projects/${projectId}/storyline/music-generate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: track.prompt,
+            durationSeconds: track.durationSeconds,
+            role: track.role,
+            scenesCovered: track.scenesCovered,
+            label: track.label,
+          }),
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+        const json = (await res.json()) as { ok?: boolean; entry?: MusicEntry };
+        if (json.entry) {
+          setMusicTracks((prev) => [...prev, json.entry!]);
+        }
+        // Drop the matching suggestion from the wizard once generated.
+        setMusicSuggestions((prev) =>
+          prev ? { ...prev, tracks: prev.tracks.filter((t) => t.id !== track.id) } : prev,
+        );
+        setMusicGenerationStatus((prev) => {
+          const { [track.id]: _, ...rest } = prev;
+          return rest;
+        });
+        setReloadKey((k) => k + 1);
+      } catch (err) {
+        setMusicGenerationStatus((prev) => ({ ...prev, [track.id]: "error" }));
+        window.alert(
+          `Couldn't generate music: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    },
+    [projectId],
+  );
+
+  const runMusicDelete = useCallback(
+    async (entryId: string): Promise<void> => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/storyline/music/${entryId}`, {
+          method: "DELETE",
+        });
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(err.error ?? `HTTP ${res.status}`);
+        }
+        setMusicTracks((prev) => prev.filter((t) => t.id !== entryId));
+        setReloadKey((k) => k + 1);
+      } catch (err) {
+        window.alert(`Couldn't remove music: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [projectId],
+  );
+
+  // ── Render-review handler (Gemini) ─────────────────────────────────────────
+
+  const runRenderReview = useCallback(async (): Promise<void> => {
+    setRenderReviewRunning(true);
+    setRenderReviewError(null);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/storyline/render-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(err.error ?? `HTTP ${res.status}`);
+      }
+      const json = (await res.json()) as RenderReviewSummary;
+      setRenderReview(json);
+    } catch (err) {
+      setRenderReviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRenderReviewRunning(false);
+    }
+  }, [projectId]);
 
   // ── Storyline intent ───────────────────────────────────────────────────────
 
@@ -873,6 +1122,46 @@ export const StorylineTab = memo(function StorylineTab({ projectId }: StorylineT
           <KbdHint keys={["c"]} label="compress" />
         </div>
       </header>
+
+      {/* Retention map — composes Gemini's render-review per-scene scores
+          with per-card scroll-test results into a single horizontal strip.
+          Click any cell to scroll the storyline to that scene. */}
+      <RetentionMap
+        scenes={scenesWithStart.map(({ scene }) => scene.id)}
+        renderReviewPerScene={renderReview?.perScene}
+        scrollTestByScene={scrollTestByScene}
+        onSceneClick={(sceneId) => {
+          const el = cardRefs.current.get(sceneId);
+          if (!el) return;
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }}
+      />
+
+      {/* Render-review panel — Gemini reviews the most recent render. The
+          result persists to disk so reload shows the last review. */}
+      <RenderReviewPanel
+        review={renderReview}
+        running={renderReviewRunning}
+        error={renderReviewError}
+        onRun={runRenderReview}
+        onDismiss={() => setRenderReview(null)}
+      />
+
+      {/* Music wizard — separate from the Director because it runs against
+          ElevenLabs (slow, polled-job) instead of Haiku (sub-second). */}
+      <MusicWizardPanel
+        vibe={musicVibe}
+        onVibeChange={setMusicVibe}
+        running={musicWizardRunning}
+        error={musicWizardError}
+        onSubmit={runMusicSuggest}
+        suggestions={musicSuggestions}
+        onGenerate={runMusicGenerate}
+        onDismiss={() => setMusicSuggestions(null)}
+        generationStatus={musicGenerationStatus}
+        appliedTracks={musicTracks}
+        onDelete={runMusicDelete}
+      />
 
       {/* Director — single textarea, two scopes. Storyline scope returns
           per-scene patches; Project scope additionally proposes theme + brief
@@ -1387,5 +1676,415 @@ function KbdHint({ keys, label }: { keys: string[]; label: string }) {
       ))}
       <span className="text-neutral-600">{label}</span>
     </span>
+  );
+}
+
+// ── Retention map (Milestone F) ──────────────────────────────────────────────
+
+/**
+ * Horizontal strip at the top of Storyline showing one cell per scene.
+ * Color-coded by retention strength:
+ *   - render-review's perScene scores (visualHook + paceMatch + onBrand averaged)
+ *   - falling back to scrollTest's sceneStrengthScore when render-review is absent
+ *   - showing a neutral cell when neither has run for that scene
+ *
+ * Click a cell → scroll the storyline to that scene's card. Pure presentation;
+ * no fetch happens here.
+ */
+function RetentionMap({
+  scenes,
+  renderReviewPerScene,
+  scrollTestByScene,
+  onSceneClick,
+}: {
+  scenes: string[];
+  renderReviewPerScene?: RenderReviewSummary["perScene"];
+  scrollTestByScene: Record<string, { sceneStrengthScore: number }>;
+  onSceneClick: (sceneId: string) => void;
+}) {
+  if (scenes.length === 0) return null;
+  const reviewById = new Map((renderReviewPerScene ?? []).map((s) => [s.sceneId, s] as const));
+  const cells = scenes.map((sceneId) => {
+    const review = reviewById.get(sceneId);
+    if (review) {
+      // Average of three 0-10 scores → 0-100.
+      const avg = (review.visualHook + review.paceMatch + review.onBrand) / 3;
+      return { sceneId, score: Math.round(avg * 10), source: "review" as const };
+    }
+    const test = scrollTestByScene[sceneId];
+    if (test) return { sceneId, score: test.sceneStrengthScore, source: "test" as const };
+    return { sceneId, score: -1, source: "none" as const };
+  });
+
+  const allUnscored = cells.every((c) => c.score < 0);
+  if (allUnscored) {
+    // Don't take vertical space until we have at least one signal.
+    return null;
+  }
+
+  return (
+    <section className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-2">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-neutral-500">
+          Retention map
+        </span>
+        <span className="text-[9px] text-neutral-600">
+          green = hold · amber = warn · red = scroll
+        </span>
+      </div>
+      <div className="flex items-stretch gap-0.5">
+        {cells.map((c) => {
+          const tone =
+            c.score < 0
+              ? "bg-neutral-800 border-neutral-800"
+              : c.score >= 70
+                ? "bg-emerald-500/40 border-emerald-400/60 hover:bg-emerald-500/60"
+                : c.score >= 40
+                  ? "bg-amber-500/40 border-amber-400/60 hover:bg-amber-500/60"
+                  : "bg-rose-500/40 border-rose-400/60 hover:bg-rose-500/60";
+          return (
+            <button
+              key={c.sceneId}
+              type="button"
+              onClick={() => onSceneClick(c.sceneId)}
+              className={`flex-1 h-5 rounded border ${tone} transition-colors relative group`}
+              title={
+                c.score < 0
+                  ? `${c.sceneId}: not yet scored — run a render review or scroll test`
+                  : `${c.sceneId}: ${c.score}/100 (${c.source === "review" ? "render review" : "scroll test"})`
+              }
+              aria-label={`Jump to scene ${c.sceneId}, retention score ${c.score}`}
+            >
+              <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[8px] font-mono text-neutral-100/0 group-hover:text-neutral-100/80 transition-colors pointer-events-none">
+                {c.sceneId}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+// ── Render-review panel (Milestone C) ────────────────────────────────────────
+
+function RenderReviewPanel({
+  review,
+  running,
+  error,
+  onRun,
+  onDismiss,
+}: {
+  review: RenderReviewSummary | null;
+  running: boolean;
+  error: string | null;
+  onRun: () => void;
+  onDismiss: () => void;
+}) {
+  if (!review && !running && !error) {
+    return (
+      <section className="mb-3 rounded-lg border border-neutral-800 bg-neutral-900/40 p-3 flex items-center justify-between">
+        <div>
+          <div className="text-[9px] uppercase tracking-[0.22em] font-semibold text-neutral-500">
+            Retention review
+          </div>
+          <p className="text-[11px] text-neutral-400 mt-0.5">
+            Have Gemini watch your most recent render and grade retention scene by scene.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          className="h-7 px-3 rounded-md text-[11px] font-semibold border border-studio-accent/40 bg-studio-accent/15 text-studio-accent hover:bg-studio-accent/25 transition-colors"
+        >
+          🔍 Run review
+        </button>
+      </section>
+    );
+  }
+  if (running) {
+    return (
+      <section className="mb-3 rounded-lg border border-studio-accent/30 bg-studio-accent/[0.04] p-3">
+        <div className="text-[11px] text-studio-accent">
+          Gemini is watching the render… this takes 30-60s for a typical 2-minute video.
+        </div>
+      </section>
+    );
+  }
+  if (error) {
+    return (
+      <section className="mb-3 rounded-lg border border-rose-900/40 bg-rose-950/30 p-3 flex items-start justify-between gap-2">
+        <div className="text-[11px] text-rose-300">{error}</div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="h-6 px-2 rounded text-[10px] text-neutral-500 hover:text-neutral-300"
+        >
+          Dismiss
+        </button>
+      </section>
+    );
+  }
+  if (!review) return null;
+
+  const overall = review.overallRetentionScore;
+  const tone =
+    overall >= 70
+      ? "text-emerald-300 border-emerald-400/40 bg-emerald-400/10"
+      : overall >= 40
+        ? "text-amber-300 border-amber-400/40 bg-amber-400/10"
+        : "text-rose-300 border-rose-400/40 bg-rose-400/10";
+
+  return (
+    <section className="mb-3 rounded-lg border border-studio-accent/30 bg-studio-accent/[0.03] overflow-hidden">
+      <header className="px-3 py-2 border-b border-studio-accent/20 flex items-center justify-between gap-2">
+        <div className="flex-1 min-w-0">
+          <div className="text-[9px] uppercase tracking-[0.22em] font-semibold text-studio-accent">
+            Retention review · Gemini
+          </div>
+          {review.renderPath && (
+            <p className="text-[10px] text-neutral-500 mt-0.5 font-mono truncate">
+              {review.renderPath}
+            </p>
+          )}
+        </div>
+        <div
+          className={`px-2 py-1 rounded-md border text-[14px] font-semibold tabular-nums ${tone}`}
+        >
+          {Math.round(overall)}
+        </div>
+        <div className="flex flex-col gap-1">
+          <button
+            type="button"
+            onClick={onRun}
+            className="h-6 px-2 rounded text-[10px] text-neutral-400 hover:text-studio-accent transition-colors"
+          >
+            Re-run
+          </button>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="h-5 px-2 rounded text-[10px] text-neutral-500 hover:text-neutral-300 transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      </header>
+
+      {review.scrollRiskWindows.length > 0 && (
+        <div className="px-3 py-2 border-b border-studio-accent/15">
+          <div className="text-[9px] uppercase tracking-[0.18em] text-neutral-500 mb-1">
+            Scroll-risk windows
+          </div>
+          <div className="space-y-1.5">
+            {review.scrollRiskWindows.map((w, i) => (
+              <div key={i} className="flex items-start gap-2 text-[11px] leading-snug">
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums shrink-0 ${
+                    w.severity === "high"
+                      ? "bg-rose-500/20 text-rose-300 border border-rose-400/40"
+                      : w.severity === "med"
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-400/40"
+                        : "bg-neutral-800 text-neutral-400 border border-neutral-700"
+                  }`}
+                >
+                  {w.startS.toFixed(1)}-{w.endS.toFixed(1)}s
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-neutral-200">{w.why}</div>
+                  <div className="text-neutral-400 italic mt-0.5">Fix: {w.fix}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="px-3 py-2 grid grid-cols-3 gap-2 text-[10px]">
+        <div>
+          <div className="uppercase tracking-[0.18em] text-neutral-500">Brand</div>
+          <div className="text-neutral-200 tabular-nums">
+            {Math.round(review.brandConsistency.score)}/100
+          </div>
+        </div>
+        <div>
+          <div className="uppercase tracking-[0.18em] text-neutral-500">Voice</div>
+          <div className="text-neutral-200 capitalize">{review.audioMix.voiceClarity}</div>
+        </div>
+        <div>
+          <div className="uppercase tracking-[0.18em] text-neutral-500">Music</div>
+          <div className="text-neutral-200 capitalize">{review.audioMix.musicLevels}</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ── Music wizard panel (Milestone B) ─────────────────────────────────────────
+
+function MusicWizardPanel({
+  vibe,
+  onVibeChange,
+  running,
+  error,
+  onSubmit,
+  suggestions,
+  onGenerate,
+  // onDismiss is reserved for a future "dismiss whole suggestion list" affordance.
+  // Currently the user dismisses individual tracks by generating them or by
+  // re-running the wizard with a fresh prompt.
+  generationStatus,
+  appliedTracks,
+  onDelete,
+}: {
+  vibe: string;
+  onVibeChange: (v: string) => void;
+  running: boolean;
+  error: string | null;
+  onSubmit: () => void;
+  suggestions: MusicSuggestionList | null;
+  onGenerate: (track: MusicSuggestion) => void;
+  /** Reserved — see comment on the destructured param above. */
+  onDismiss: () => void;
+  generationStatus: Record<string, "idle" | "running" | "error">;
+  appliedTracks: MusicEntry[];
+  onDelete: (entryId: string) => void;
+}) {
+  return (
+    <section className="mb-3 rounded-lg border border-amber-400/25 bg-amber-400/[0.03] p-3">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div>
+          <span className="text-[9px] uppercase tracking-[0.22em] font-semibold text-amber-300">
+            🎵 Music wizard
+          </span>
+          <p className="text-[10px] text-neutral-500 mt-0.5">
+            describe the vibe — Haiku proposes tracks, ElevenLabs Music generates them
+          </p>
+        </div>
+        {appliedTracks.length > 0 && (
+          <span className="text-[10px] text-neutral-500 font-mono shrink-0">
+            {appliedTracks.length} on lane
+          </span>
+        )}
+      </div>
+      <textarea
+        value={vibe}
+        onChange={(e) => onVibeChange(e.target.value)}
+        rows={2}
+        placeholder='e.g. "investigative documentary, tense pulse, low strings" or "uplifting cinematic strings"'
+        className="w-full bg-neutral-950/50 border border-neutral-800 rounded-md px-2 py-1.5 text-[12px] text-neutral-100 placeholder:text-neutral-600 focus:border-amber-400/50 focus:outline-none resize-none"
+        disabled={running}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+      />
+      <div className="flex items-center justify-end mt-2">
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={running || !vibe.trim()}
+          className="h-7 px-3 rounded-md text-[11px] font-semibold border border-amber-400/40 bg-amber-400/15 text-amber-200 hover:bg-amber-400/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          {running ? "Thinking…" : "Propose ↵"}
+        </button>
+      </div>
+
+      {error && (
+        <div className="mt-2 rounded-md border border-rose-900/40 bg-rose-950/30 p-2 text-[11px] text-rose-300">
+          {error}
+        </div>
+      )}
+
+      {suggestions && suggestions.tracks.length > 0 && (
+        <div className="mt-2 rounded-md border border-amber-400/25 bg-amber-400/[0.04] overflow-hidden">
+          {suggestions.overallNote && (
+            <div className="px-2 py-1.5 text-[10px] text-neutral-400 italic border-b border-amber-400/15">
+              {suggestions.overallNote}
+            </div>
+          )}
+          {suggestions.tracks.map((t) => {
+            const status = generationStatus[t.id] ?? "idle";
+            const generating = status === "running";
+            return (
+              <div
+                key={t.id}
+                className="px-2 py-2 border-b border-amber-400/15 last:border-b-0 flex items-start gap-2"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <span className="text-[11px] text-neutral-100 font-medium">{t.label}</span>
+                    <span className="px-1 py-0 rounded text-[9px] font-mono text-neutral-400 border border-neutral-700">
+                      {t.role}
+                    </span>
+                    <span className="text-[9px] text-neutral-500 tabular-nums">
+                      {t.durationSeconds.toFixed(0)}s
+                    </span>
+                    {t.scenesCovered.length > 0 && (
+                      <span className="text-[9px] text-neutral-500 font-mono">
+                        · {t.scenesCovered.join(",")}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-neutral-300 italic font-mono leading-snug">
+                    “{t.prompt}”
+                  </div>
+                  {t.rationale && (
+                    <div className="text-[10px] text-neutral-500 italic leading-relaxed mt-0.5">
+                      {t.rationale}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onGenerate(t)}
+                  disabled={generating}
+                  className="h-6 px-2.5 rounded-md text-[10px] font-semibold border border-amber-400/50 bg-amber-400/15 text-amber-200 hover:bg-amber-400/25 disabled:opacity-40 transition-colors flex-shrink-0"
+                >
+                  {generating ? "Generating…" : "🎵 Generate"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {appliedTracks.length > 0 && (
+        <div className="mt-2 rounded-md border border-emerald-400/15 bg-emerald-400/[0.02] overflow-hidden">
+          <div className="px-2 py-1.5 text-[9px] uppercase tracking-[0.22em] font-semibold text-emerald-300 border-b border-emerald-400/10">
+            Music on lane
+          </div>
+          {appliedTracks.map((t) => (
+            <div
+              key={t.id}
+              className="px-2 py-1.5 border-b border-emerald-400/10 last:border-b-0 flex items-center gap-2"
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-neutral-100 font-medium">
+                    {t.label ?? t.prompt.slice(0, 40)}
+                  </span>
+                  <span className="px-1 py-0 rounded text-[9px] font-mono text-neutral-400 border border-neutral-700">
+                    {t.role}
+                  </span>
+                  <span className="text-[9px] text-neutral-500 tabular-nums">
+                    {t.durationSeconds.toFixed(0)}s
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => onDelete(t.id)}
+                className="h-6 px-2 rounded text-[10px] text-neutral-500 hover:text-rose-400 transition-colors"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

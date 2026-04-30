@@ -85,6 +85,18 @@ export interface StudioApiAdapter {
   probeAudioDurationSeconds?: (filePath: string) => Promise<number>;
 
   /**
+   * Optional: extract a single JPEG frame from a video at the given second.
+   * Used by the storyline scroll-test route to send Gemini representative
+   * frames for retention analysis. If absent the scroll-test runs text-only —
+   * Gemini still produces a reasonable verdict from the narration alone.
+   *
+   * Implementations should return null on extraction failure (corrupt video,
+   * timestamp past end) rather than throwing — the caller treats null as
+   * "skip this frame, try the next".
+   */
+  extractVideoFrameToBytes?: (filePath: string, timeSeconds: number) => Promise<Buffer | null>;
+
+  /**
    * Optional: create a new project on disk with a unique id. Returns the
    * resolved project. If absent, POST /projects returns 501.
    */
