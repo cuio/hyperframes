@@ -16,6 +16,20 @@ import { atomicWriteFileSync } from "../internal/atomicWrite.js";
  */
 export type ImageRole = "hero" | "subject" | "atmosphere" | "graphic";
 
+/**
+ * Status of the optional Gemini-driven analysis pipeline.
+ *
+ *   pending   — Analyzer kicked off (fire-and-forget) and has not yet
+ *               written back. Studio shows a small spinner on the card.
+ *   complete  — Analyzer wrote vibe / suggestedTreatment / retentionStrength.
+ *               Visual director may consume those as soft priors.
+ *   failed    — API key missing, network error, or model declined.
+ *               `analysisError` carries the human-readable reason.
+ *   undefined — Analysis was never attempted (e.g. uploaded before the
+ *               feature shipped, or no GEMINI_API_KEY at upload time).
+ */
+export type ImageAnalysisStatus = "pending" | "complete" | "failed";
+
 export interface ImageFocal {
   /** Normalized x coordinate of the focal point, 0..1 (left to right). */
   x: number;
@@ -49,6 +63,35 @@ export interface ImageEntry {
   focalPoint: ImageFocal;
   /** ISO timestamp of import. */
   importedAt: string;
+
+  // ── Optional Gemini analyzer fields ──────────────────────────────────────
+  // Filled in by `packages/core/src/images/analyzer.ts` post-upload. Soft
+  // priors only — the user's role/description always take precedence and
+  // these are best-effort. Absent on entries created before the analyzer
+  // feature shipped.
+
+  /** Mood phrase ≤60 chars, e.g. "gritty desert noir". */
+  vibe?: string;
+  /**
+   * Treatment id from packages/core/src/script/templates/image-scene.ts
+   * the analyzer thinks this image works best with. Visual director reads
+   * this as a soft prior; user / script context can still override.
+   */
+  suggestedTreatment?: string | null;
+  /**
+   * 1-10 retention-strength estimate as a hook visual. 9-10 = striking,
+   * instantly readable subject; 5-6 = decent supporting shot; 1-3 =
+   * busy / low-contrast / weak focal point. Soft signal only.
+   */
+  retentionStrengthAtAttachment?: number;
+  /** Lifecycle of the optional Gemini analysis run. See ImageAnalysisStatus. */
+  analysisStatus?: ImageAnalysisStatus;
+  /** Human-readable failure reason when analysisStatus === "failed". */
+  analysisError?: string;
+  /** ISO timestamp of last successful analysis. */
+  analyzedAt?: string;
+  /** One-line analyst rationale shown in the studio image card on hover. */
+  analysisRationale?: string;
 }
 
 export interface ImageManifest {

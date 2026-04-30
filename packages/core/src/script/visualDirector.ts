@@ -253,7 +253,9 @@ function buildSystem(opts: VisualDirectorOptions): string {
       `5. **Intensity arc**: open soft, escalate to climax, settle for the close. type-mask-fill ` +
       `   belongs at the climax or a major act break, not scene 1 and not the outro.\n` +
       `6. **Hook scenes**: scenes flagged as hooks deserve hero/subject imagery in editorial-bleed ` +
-      `   or type-mask-fill. Atmosphere is too quiet for a hook.\n` +
+      `   or type-mask-fill. Atmosphere is too quiet for a hook. **Prefer images with retention ` +
+      `   strength ≥7** (when the analyzer prior is shown) for hook slots — the visually strongest ` +
+      `   asset earns the most-watched scene.\n` +
       `7. **Scene template hint**: scenes already using chart-scene, hook-statreveal, or quote ` +
       `   templates often work better with no image (imageId: null) so the typography sings — ` +
       `   override only when an atmosphere image makes the act cohere.\n` +
@@ -263,7 +265,11 @@ function buildSystem(opts: VisualDirectorOptions): string {
       `   so the assembler keeps the planner's chosen template instead of routing through ` +
       `   image-scene. The image will be rendered using the template's own visual language.\n` +
       `9. **editorial-serif** scenes are typography-only by design — pass imageId: null and ` +
-      `   treatment: null. Don't try to attach an image; the breath scene needs negative space.`,
+      `   treatment: null. Don't try to attach an image; the breath scene needs negative space.\n` +
+      `10. **Analyzer priors are advisory**. When a catalog entry has "(analyzer prior)" lines, ` +
+      `    treat them as a starting point but override freely when scene context demands it. The ` +
+      `    same hero image should still appear in ≥3 different treatments across the video — ` +
+      `    don't lock yourself into the analyzer's single suggestion.`,
   );
 
   if (opts.themeContext?.name) {
@@ -292,14 +298,29 @@ function buildImageCatalog(manifest: ImageManifest): string {
     .map((img) => {
       const desc =
         img.description.trim() || "(no description supplied — use the file id as the cue)";
-      return [
+      const lines = [
         `### ${img.id}`,
         `role: ${img.role ?? "(unset)"} · ${img.width}×${img.height} (${img.aspect.toFixed(2)})`,
         `focal: x=${img.focalPoint.x.toFixed(2)} y=${img.focalPoint.y.toFixed(2)}`,
         `dominant: ${img.dominantColor} · palette: ${img.palette.join(" ")}`,
         `tags: ${img.tags.length > 0 ? img.tags.join(", ") : "(none)"}`,
         `description: ${desc}`,
-      ].join("\n");
+      ];
+      // Surface analyzer priors when present. These are *soft* — the
+      // director can override based on script context (e.g. analyzer says
+      // duotone-bg but the scene wants a hook so we use editorial-bleed
+      // anyway). Mark them clearly as "(analyzer prior)" so the model
+      // knows they're advisory.
+      if (img.vibe?.trim()) {
+        lines.push(`vibe (analyzer prior): ${img.vibe.trim()}`);
+      }
+      if (img.suggestedTreatment) {
+        lines.push(`suggested treatment (analyzer prior): ${img.suggestedTreatment}`);
+      }
+      if (typeof img.retentionStrengthAtAttachment === "number") {
+        lines.push(`retention strength (analyzer prior): ${img.retentionStrengthAtAttachment}/10`);
+      }
+      return lines.join("\n");
     })
     .join("\n\n");
 }

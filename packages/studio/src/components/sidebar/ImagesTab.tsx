@@ -7,6 +7,8 @@ interface ImageFocal {
 
 type ImageRole = "hero" | "subject" | "atmosphere" | "graphic";
 
+type ImageAnalysisStatus = "pending" | "complete" | "failed";
+
 interface ImageEntry {
   id: string;
   src: string;
@@ -22,6 +24,15 @@ interface ImageEntry {
   tags: string[];
   focalPoint: ImageFocal;
   importedAt: string;
+  // Analyzer fields (Gemini Flash). Soft priors, all optional. See
+  // packages/core/src/images/manifest.ts for the source of truth.
+  vibe?: string;
+  suggestedTreatment?: string | null;
+  retentionStrengthAtAttachment?: number;
+  analysisStatus?: ImageAnalysisStatus;
+  analysisError?: string;
+  analyzedAt?: string;
+  analysisRationale?: string;
 }
 
 interface ImageManifest {
@@ -181,6 +192,49 @@ export const ImagesTab = memo(function ImagesTab({ projectId }: ImagesTabProps) 
     [projectId, refresh, selectedId],
   );
 
+  const reanalyzeEntry = useCallback(
+    async (id: string) => {
+      // Optimistically flip the entry to "pending" so the chip shows
+      // "analyzing…" the moment the user clicks. The server's response
+      // will replace it with either complete or failed.
+      setManifest((prev) =>
+        prev
+          ? {
+              ...prev,
+              images: prev.images.map((i) =>
+                i.id === id ? { ...i, analysisStatus: "pending", analysisError: undefined } : i,
+              ),
+            }
+          : prev,
+      );
+      try {
+        const res = await fetch(
+          `/api/projects/${encodeURIComponent(projectId)}/images/${encodeURIComponent(id)}/analyze`,
+          { method: "POST" },
+        );
+        const data = (await res.json().catch(() => ({}))) as { entry?: ImageEntry; error?: string };
+        if (data.entry) {
+          setManifest((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  images: prev.images.map((i) => (i.id === id ? (data.entry as ImageEntry) : i)),
+                }
+              : prev,
+          );
+        }
+        if (!res.ok && data.error) {
+          // Don't blow away the manifest with a top-level error — the
+          // entry already shows "analysis failed" with the reason.
+          console.warn(`[images] analyze failed: ${data.error}`);
+        }
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [projectId],
+  );
+
   const selected = manifest?.images.find((i) => i.id === selectedId) ?? null;
 
   return (
@@ -278,11 +332,46 @@ export const ImagesTab = memo(function ImagesTab({ projectId }: ImagesTabProps) 
                             no role
                           </span>
                         )}
+                        {img.analysisStatus === "pending" && (
+                          <span
+                            className="text-[9px] uppercase tracking-wider text-neutral-500"
+                            title="Gemini analyzing — usually 1–2s"
+                          >
+                            analyzing…
+                          </span>
+                        )}
+                        {img.analysisStatus === "complete" &&
+                          typeof img.retentionStrengthAtAttachment === "number" && (
+                            <span
+                              className={`text-[9px] uppercase tracking-wider ${
+                                img.retentionStrengthAtAttachment >= 7
+                                  ? "text-emerald-400"
+                                  : img.retentionStrengthAtAttachment >= 4
+                                    ? "text-amber-400"
+                                    : "text-rose-400"
+                              }`}
+                              title={
+                                img.analysisRationale ?? "Analyzer retention-strength estimate"
+                              }
+                            >
+                              R{img.retentionStrengthAtAttachment}
+                            </span>
+                          )}
+                        {img.analysisStatus === "failed" && (
+                          <span
+                            className="text-[9px] uppercase tracking-wider text-rose-400"
+                            title={img.analysisError ?? "Analysis failed"}
+                          >
+                            analysis failed
+                          </span>
+                        )}
                       </div>
                       <div className="text-[10px] text-neutral-500 truncate">
                         {img.width}×{img.height} · {fmtBytes(img.bytes)} ·{" "}
                         {img.description.trim().length > 0 ? (
                           img.description
+                        ) : img.vibe ? (
+                          <span className="text-neutral-400 italic">{img.vibe}</span>
                         ) : (
                           <span className="text-neutral-600">no description</span>
                         )}
@@ -296,6 +385,7 @@ export const ImagesTab = memo(function ImagesTab({ projectId }: ImagesTabProps) 
                       projectId={projectId}
                       onPatch={(patch) => patchEntry(img.id, patch)}
                       onRemove={() => removeEntry(img.id)}
+                      onReanalyze={() => reanalyzeEntry(img.id)}
                     />
                   )}
                 </div>
@@ -318,9 +408,10 @@ interface ImageEditorProps {
     patch: Partial<Pick<ImageEntry, "role" | "description" | "tags" | "focalPoint">>,
   ) => Promise<void>;
   onRemove: () => Promise<void>;
+  onReanalyze: () => Promise<void>;
 }
 
-function ImageEditor({ img, projectId, onPatch, onRemove }: ImageEditorProps) {
+function ImageEditor({ img, projectId, onPatch, onRemove, onReanalyze }: ImageEditorProps) {
   const [description, setDescription] = useState(img.description);
   const [tagsRaw, setTagsRaw] = useState(img.tags.join(", "));
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -449,6 +540,11 @@ function ImageEditor({ img, projectId, onPatch, onRemove }: ImageEditorProps) {
         />
       </div>
 
+      {/* Analyzer panel (Gemini Flash priors). Appears once any analyzer
+          field is present OR when analysis is pending/failed; the rerun
+          button lets the user refresh after editing description/role. */}
+      <AnalyzerPanel img={img} onReanalyze={onReanalyze} />
+
       {/* Palette + remove */}
       <div className="flex items-center gap-2">
         <div className="flex gap-1">
@@ -469,6 +565,89 @@ function ImageEditor({ img, projectId, onPatch, onRemove }: ImageEditorProps) {
           Remove
         </button>
       </div>
+    </div>
+  );
+}
+
+interface AnalyzerPanelProps {
+  img: ImageEntry;
+  onReanalyze: () => Promise<void>;
+}
+
+function AnalyzerPanel({ img, onReanalyze }: AnalyzerPanelProps) {
+  const status = img.analysisStatus;
+  const score = img.retentionStrengthAtAttachment;
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-neutral-800 bg-neutral-900/40 p-2">
+      <div className="flex items-center gap-1.5">
+        <span className="text-[9px] uppercase tracking-wider text-neutral-500">
+          Gemini analysis
+        </span>
+        {status === "pending" && (
+          <span className="text-[9px] uppercase tracking-wider text-neutral-400">analyzing…</span>
+        )}
+        {status === "complete" && (
+          <span className="text-[9px] uppercase tracking-wider text-emerald-500">complete</span>
+        )}
+        {status === "failed" && (
+          <span className="text-[9px] uppercase tracking-wider text-rose-400">failed</span>
+        )}
+        <button
+          type="button"
+          onClick={() => void onReanalyze()}
+          disabled={status === "pending"}
+          className="ml-auto h-5 px-1.5 rounded-md text-[10px] text-neutral-400 hover:text-neutral-100 disabled:opacity-50 disabled:cursor-not-allowed border border-transparent hover:border-neutral-700"
+          title={
+            status === "complete"
+              ? "Re-run Gemini analysis (e.g. after editing description)"
+              : status === "failed"
+                ? "Retry Gemini analysis"
+                : "Run Gemini analysis"
+          }
+        >
+          {status === "pending" ? "…" : status ? "↻" : "▷"}
+        </button>
+      </div>
+      {status === "failed" && img.analysisError && (
+        <div className="text-[10px] text-rose-300/80 leading-snug break-words">
+          {img.analysisError}
+        </div>
+      )}
+      {status === "complete" && (
+        <div className="flex flex-col gap-0.5 text-[10px] text-neutral-300">
+          {img.vibe && (
+            <div>
+              <span className="text-neutral-500">vibe:</span> {img.vibe}
+            </div>
+          )}
+          {img.suggestedTreatment && (
+            <div>
+              <span className="text-neutral-500">treatment prior:</span>{" "}
+              <code className="text-neutral-200">{img.suggestedTreatment}</code>
+            </div>
+          )}
+          {typeof score === "number" && (
+            <div>
+              <span className="text-neutral-500">retention strength:</span>{" "}
+              <span
+                className={
+                  score >= 7 ? "text-emerald-400" : score >= 4 ? "text-amber-400" : "text-rose-400"
+                }
+              >
+                {score}/10
+              </span>
+            </div>
+          )}
+          {img.analysisRationale && (
+            <div className="text-neutral-400 leading-snug">{img.analysisRationale}</div>
+          )}
+        </div>
+      )}
+      {!status && (
+        <div className="text-[10px] text-neutral-500 leading-snug">
+          No analysis yet. Click ▷ to run.
+        </div>
+      )}
     </div>
   );
 }
