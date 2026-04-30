@@ -10,6 +10,14 @@ import type { ImageEntry, ImageManifest } from "../images/index.js";
 import type { VisualDirectionPlan } from "./visualDirector.js";
 import { readSfxManifest, resolveSfxStartForScene, type SfxEntry } from "./sfx/manifest.js";
 import { readMusicManifest, resolveMusicSpan, type SceneSpan } from "./music/manifest.js";
+import { getCoreVersion } from "./coreVersion.js";
+
+/**
+ * Stamp constants. Studio-side staleness detection looks for these exact
+ * <meta> names — keep them in lockstep with `assembleStaleness.ts`.
+ */
+export const ASSEMBLED_AT_META = "hyperframes:assembled-at";
+export const CORE_VERSION_META = "hyperframes:core-version";
 
 export interface AssembleOptions {
   projectDir: string;
@@ -259,11 +267,21 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
   // We do not write our own master timeline JS — the runtime + studio player
   // drive playback, scrubbing, and audio sync. Per-scene timelines are
   // registered by each template's inline <script>.
+  // Staleness stamp: assembled-at + the @hyperframes/core version that
+  // produced the HTML. Studio reads these with a tiny meta-tag scan to
+  // know whether index.html predates a new feature/bug-fix and surfaces a
+  // "Regenerate" CTA. Strings only — never trust them on the consumer
+  // side, but they are sufficient to flag drift accurately.
+  const assembledAtIso = new Date().toISOString();
+  const coreVersion = getCoreVersion();
+
   const html = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=${width}, height=${height}" />
+    <meta name="${ASSEMBLED_AT_META}" content="${assembledAtIso}" />
+    <meta name="${CORE_VERSION_META}" content="${escapeAttr(coreVersion)}" />
     <title>${title}</title>
     <script src="${opts.gsapUrl ?? DEFAULT_GSAP}"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />

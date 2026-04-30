@@ -28,6 +28,7 @@ import {
   type ScriptFidelity,
   type VisualDirectionPlan,
 } from "../../script/index.js";
+import { computeAssemblyStatus } from "../../script/assembleStaleness.js";
 import { readManifest as readImagesManifest } from "../../images/index.js";
 import { validateAgainstSchema } from "../../script/themes/validateProps.js";
 import { CostLogger, loggerSink } from "../../telemetry/cost.js";
@@ -755,6 +756,97 @@ export function registerScriptRoutes(api: Hono, adapter: StudioApiAdapter): void
       return c.json({ ok: true, planned, result });
     } catch (err) {
       void generateOps.logError("script.generate", err);
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  });
+
+  // Staleness check: is the project's index.html out of date relative to
+  // the running @hyperframes/core or any source file? Studio polls this
+  // on Storyline tab mount and after every mutation that could affect
+  // the rendered HTML. Cheap — handful of stat() calls plus a 16KB read
+  // of the head. No LLM or write involved.
+  api.get("/projects/:id/script/assembly-status", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+    const htmlPath = c.req.query("path") ?? "index.html";
+    if (!isSafePath(project.dir, join(project.dir, htmlPath))) {
+      return c.json({ error: "forbidden html path" }, 403);
+    }
+    const status = computeAssemblyStatus({ projectDir: project.dir, htmlPath });
+    return c.json(status);
+  });
+
+  // Re-assemble index.html from the existing script.generated.json without
+  // re-synthesizing audio. Mirrors the CLI `hyperframes script assemble`
+  // verb so the studio "Regenerate" CTA can fix staleness in one click
+  // (~2s on a 25-scene project — no API calls, just templating).
+  api.post("/projects/:id/script/assemble", async (c) => {
+    const project = await adapter.resolveProject(c.req.param("id"));
+    if (!project) return c.json({ error: "not found" }, 404);
+
+    let body: { outFile?: string } = {};
+    try {
+      // Body is optional — the studio sends `{}` for the default path.
+      body = (await c.req.json().catch(() => ({}))) as { outFile?: string };
+    } catch {
+      /* ignore — empty body is fine */
+    }
+    const outFile = body.outFile ?? "index.html";
+    const absOut = join(project.dir, outFile);
+    if (!isSafePath(project.dir, absOut)) {
+      return c.json({ error: "forbidden outFile path" }, 403);
+    }
+
+    const plannedPath = join(project.dir, PLANNED_FILE);
+    if (!existsSync(plannedPath)) {
+      return c.json({ error: "no script.generated.json — run script generate first" }, 400);
+    }
+    let planned: import("../../script/types.js").PlannedScript;
+    try {
+      planned = JSON.parse(readFileSync(plannedPath, "utf-8"));
+    } catch (err) {
+      return c.json(
+        {
+          error: `script.generated.json is unreadable: ${err instanceof Error ? err.message : String(err)}`,
+        },
+        500,
+      );
+    }
+
+    const ops = new OpsLogger(project.dir);
+    const start = Date.now();
+    try {
+      const briefForAssemble = loadDesignBrief(project.dir);
+      const tokens = resolveProjectTokens(project.dir, briefForAssemble);
+      const templates = resolveTemplateRegistry(project.dir, briefForAssemble);
+      const directionPath = join(project.dir, DIRECTION_FILE);
+      let directionPlan: VisualDirectionPlan | undefined;
+      if (existsSync(directionPath)) {
+        try {
+          directionPlan = JSON.parse(readFileSync(directionPath, "utf-8")) as VisualDirectionPlan;
+        } catch (err) {
+          console.warn("[script] visual-direction.json is malformed; ignoring", err);
+        }
+      }
+      const imagesManifest = readImagesManifest(project.dir);
+      const result = assembleMaster(planned, {
+        projectDir: project.dir,
+        outFile,
+        tokens,
+        templates,
+        ...(directionPlan ? { directionPlan } : {}),
+        imagesManifest,
+      });
+      const status = computeAssemblyStatus({ projectDir: project.dir, htmlPath: outFile });
+      opsFireAndForget(ops, {
+        op: "script.assemble",
+        message: `${planned.scenes.length} scenes → ${outFile} (re-emit only)`,
+        wallMs: Date.now() - start,
+        meta: { sceneCount: planned.scenes.length, outFile },
+      });
+      return c.json({ ok: true, result, status });
+    } catch (err) {
+      void ops.logError("script.assemble", err);
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
   });

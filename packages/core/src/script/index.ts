@@ -38,8 +38,11 @@ export type {
   VisualDirectionEntry,
   VisualDirectionPlan,
 } from "./visualDirector.js";
-export { assembleMaster } from "./assemble.js";
+export { assembleMaster, ASSEMBLED_AT_META, CORE_VERSION_META } from "./assemble.js";
 export type { AssembleOptions, AssembleResult } from "./assemble.js";
+export { computeAssemblyStatus, readStamp, extractMetaContent } from "./assembleStaleness.js";
+export type { AssemblyStatus, AssemblyStatusOptions, StaleReason } from "./assembleStaleness.js";
+export { getCoreVersion } from "./coreVersion.js";
 export { BUILTIN_TEMPLATES, getTemplate, DEFAULT_TOKENS } from "./templates/index.js";
 export type { Template, TemplateRenderContext, DesignTokens } from "./templates/index.js";
 export { RETENTION_PLAYBOOK } from "./playbook.js";
