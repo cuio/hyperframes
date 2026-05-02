@@ -109,6 +109,14 @@ export {
   type ThemeManifest,
   type ThemeSearchRoots,
 } from "./themes/index.js";
-export { THEMES, DEFAULT_THEME, getThemeByName, HACKERNOON_FT, DATA_DRIFT_DARK } from "./themes.js";
+export {
+  THEMES,
+  DEFAULT_THEME,
+  getThemeByName,
+  HACKERNOON_FT,
+  DATA_DRIFT_DARK,
+  DREAMSPACE,
+  CYBERLOFI,
+} from "./themes.js";
 export { BUILTIN_CHARTS, getChart } from "./charts/index.js";
 export type { ChartDef, ChartContext } from "./charts/index.js";

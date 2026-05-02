@@ -89,10 +89,51 @@ export const DREAMSPACE: DesignTokens = {
   },
 };
 
+/**
+ * Cyberlofi — pure-black canvas, JetBrains Mono everywhere, pixel-green and
+ * glitch-pink accents on stark white. Designed to pair with the cyber-*
+ * templates (cyber-data-cluster / cyber-glitch-word / cyber-pixel-still)
+ * for the iglooghost / Pixflow data-art aesthetic. The reference profile
+ * extractor identifies this aesthetic and the planner picks it when the
+ * user's `--theme cyberlofi` flag is set OR when the reference profile's
+ * preferredTemplates surface the cyber-* family.
+ */
+export const CYBERLOFI: DesignTokens = {
+  colors: {
+    bg: "#000000",
+    fg: "#FFFFFF",
+    // Surface is a hair off-black so any tile/panel reads against the void.
+    surface: "#0a0a0a",
+    // Pixel green — the lo-fi gaming UI accent.
+    accent: "#66FF99",
+    // Glitch magenta/pink — the chromatic-shift opposite color.
+    accent2: "#FF6699",
+    // Soft amber for the rare emphasis stroke.
+    accent3: "#E8B46E",
+    muted: "#666666",
+    // Faint dividers — kept very dark so the void stays the dominant tone.
+    subtle: "#222222",
+  },
+  fonts: {
+    // JetBrains Mono carries everything. Display + body + mono all the same
+    // family with weight changes does the layout work.
+    display: "'JetBrains Mono', 'Space Mono', 'Courier New', monospace",
+    body: "'JetBrains Mono', 'Space Mono', 'Courier New', monospace",
+    mono: "'JetBrains Mono', 'Space Mono', 'Courier New', monospace",
+  },
+  motion: {
+    // Hard cuts > smooth fades for this aesthetic. power4 makes entries snap.
+    ease: "power4.out",
+    enterMs: 280,
+    staggerMs: 60,
+  },
+};
+
 export const THEMES: Record<string, DesignTokens> = {
   "hackernoon-ft": HACKERNOON_FT,
   "data-drift-dark": DATA_DRIFT_DARK,
   dreamspace: DREAMSPACE,
+  cyberlofi: CYBERLOFI,
 };
 
 export const DEFAULT_THEME = "hackernoon-ft";
