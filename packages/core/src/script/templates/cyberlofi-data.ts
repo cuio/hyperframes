@@ -632,34 +632,75 @@ function renderDataStreamReveal(
     opacity: 0;
     will-change: opacity;
   }
-  /* Stream column — pinned bottom-right, scrolls up continuously */
+  /* Stream column — pinned bottom-right, scrolls up SLOWLY so each
+     line is readable (≥1s of dwell). v1 of this template scrolled at
+     14s linear which Gemini flagged on s04 / s07 / s13 as too dense
+     to read. Doubled the period + bumped line-height + bigger font
+     so individual lines have presence. Active-line highlight pulses
+     the row currently centered in the visible band. */
   #${id} .dsr-stream {
     position: absolute;
-    right: 6%; bottom: 8%;
+    right: 6%; bottom: 10%;
     width: 42%;
-    height: 70%;
+    height: 64%;
     overflow: hidden;
     z-index: 1;
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 18%, black 82%, transparent 100%);
-            mask-image: linear-gradient(to bottom, transparent 0%, black 18%, black 82%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 22%, black 78%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0%, black 22%, black 78%, transparent 100%);
+    /* Scanline behind the data — gives the band the "live feed" texture
+       even when the user can't read every line. */
+    background-image: repeating-linear-gradient(
+      to bottom,
+      ${t.colors.fg}05 0,
+      ${t.colors.fg}05 1px,
+      transparent 1px,
+      transparent 4px
+    );
   }
   #${id} .dsr-stream-inner {
     position: absolute; bottom: -100%; left: 0; right: 0;
     will-change: transform;
-    animation: dsr-scroll-${id} 14s linear infinite;
+    /* 14s → 28s; halves the read pressure. */
+    animation: dsr-scroll-${id} 28s linear infinite;
   }
   #${id} .dsr-line {
-    font-size: 11px;
-    line-height: 1.7;
+    font-size: 14px;
+    line-height: 2.0;
     color: ${t.colors.muted};
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    letter-spacing: 0;
+    letter-spacing: 0.02em;
+    padding: 0 4px;
+  }
+  /* Center-band highlight — a small horizontal bar locked to the
+     middle of the visible window. Lines passing through it light up
+     to white (vs muted) so the eye has a clear "now reading" target.
+     Uses CSS animation alone — no GSAP — so it runs continuously. */
+  #${id} .dsr-stream::before {
+    content: ""; position: absolute;
+    left: 0; right: 0;
+    top: 50%;
+    height: 36px;
+    transform: translateY(-50%);
+    background: linear-gradient(to right, ${t.colors.fg}04 0%, ${t.colors.fg}10 50%, ${t.colors.fg}04 100%);
+    border-top: 1px solid ${t.colors.accent}40;
+    border-bottom: 1px solid ${t.colors.accent}40;
+    pointer-events: none;
+    z-index: 2;
+  }
+  /* Each line gets a brief brighten/blink as it crosses the highlight
+     band. Synced to the scroll period so a "tick" lands ~every line. */
+  #${id} .dsr-line {
+    animation: dsr-row-pulse-${id} 1.4s ease-in-out infinite;
   }
   @keyframes dsr-scroll-${id} {
     from { transform: translateY(0); }
     to   { transform: translateY(-50%); }
+  }
+  @keyframes dsr-row-pulse-${id} {
+    0%, 100% { color: ${t.colors.muted}; }
+    48%, 52% { color: ${t.colors.fg}; }
   }
   /* Accent word — three-layer chromatic stack, top-left */
   #${id} .dsr-accent-stack {

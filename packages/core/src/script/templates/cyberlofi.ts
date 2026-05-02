@@ -599,12 +599,35 @@ function renderCyberPixelStill(
     background-size: 16px 16px;
     pointer-events: none;
   }
-  /* No-image fallback: procedural dither swatch */
+  /* No-image fallback. v1 used two static radial gradients — Gemini
+     flagged this as "feels like a pause in the narrative." Replaced
+     with a moving HUD waveform: dense vertical scanlines + a slow-
+     drifting accent gradient + an animated pixel grid. Reads as
+     "live data feed" rather than "broken image". */
   #${id} .cps-tile.no-image {
     background:
-      radial-gradient(circle at 30% 30%, ${t.colors.fg}aa, transparent 50%),
-      radial-gradient(circle at 70% 70%, ${t.colors.muted}aa, transparent 60%),
+      repeating-linear-gradient(
+        to right,
+        ${t.colors.fg}26 0,
+        ${t.colors.fg}26 2px,
+        transparent 2px,
+        transparent 9px
+      ),
+      linear-gradient(135deg, ${t.colors.accent}30 0%, transparent 60%),
+      linear-gradient(to top, ${t.colors.accent2}22 0%, transparent 50%),
       ${t.colors.surface};
+    overflow: hidden;
+  }
+  #${id} .cps-tile.no-image::after {
+    content: ""; position: absolute; inset: 0;
+    background-image: linear-gradient(${t.colors.accent}66 1px, transparent 1px);
+    background-size: 100% 12px;
+    will-change: transform;
+    animation: cps-fallback-scan-${id} 3.5s linear infinite;
+  }
+  @keyframes cps-fallback-scan-${id} {
+    from { transform: translateY(0); }
+    to   { transform: translateY(12px); }
   }
   /* Caption — left side, half-width, tucked top with breathing room */
   #${id} .cps-caption {
