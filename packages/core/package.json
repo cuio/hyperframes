@@ -50,6 +50,10 @@
       "import": "./src/anthropic/index.ts",
       "types": "./src/anthropic/index.ts"
     },
+    "./gemini": {
+      "import": "./src/gemini/index.ts",
+      "types": "./src/gemini/index.ts"
+    },
     "./script": {
       "import": "./src/script/index.ts",
       "types": "./src/script/index.ts"
@@ -92,6 +96,10 @@
       "./anthropic": {
         "import": "./dist/anthropic/index.js",
         "types": "./dist/anthropic/index.d.ts"
+      },
+      "./gemini": {
+        "import": "./dist/gemini/index.js",
+        "types": "./dist/gemini/index.d.ts"
       },
       "./script": {
         "import": "./dist/script/index.js",

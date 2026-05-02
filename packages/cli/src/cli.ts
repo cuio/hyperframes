@@ -42,6 +42,7 @@ const subCommands = {
   tts: () => import("./commands/tts.js").then((m) => m.default),
   "el-tts": () => import("./commands/el-tts.js").then((m) => m.default),
   script: () => import("./commands/script.js").then((m) => m.default),
+  optimize: () => import("./commands/optimize.js").then((m) => m.default),
   docs: () => import("./commands/docs.js").then((m) => m.default),
   doctor: () => import("./commands/doctor.js").then((m) => m.default),
   upgrade: () => import("./commands/upgrade.js").then((m) => m.default),
