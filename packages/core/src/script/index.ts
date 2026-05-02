@@ -89,6 +89,20 @@ export { computeAssemblyStatus, readStamp, extractMetaContent } from "./assemble
 export type { AssemblyStatus, AssemblyStatusOptions, StaleReason } from "./assembleStaleness.js";
 export { getCoreVersion } from "./coreVersion.js";
 export { BUILTIN_TEMPLATES, getTemplate, DEFAULT_TOKENS } from "./templates/index.js";
+export {
+  FREEFORM_TEMPLATE,
+  resolveFreeformScenes,
+  validateFreeformHtml,
+  readFreeformCache,
+  writeFreeformCache,
+  hashFreeformKey,
+  FREEFORM_GENERATOR_VERSION,
+  type ResolveFreeformScenesOptions,
+  type ResolveFreeformScenesResult,
+  type FreeformCacheKey,
+  type FreeformGeneration,
+  type ValidationResult as FreeformValidationResult,
+} from "./templates/freeform/index.js";
 export type { Template, TemplateRenderContext, DesignTokens } from "./templates/index.js";
 export { RETENTION_PLAYBOOK } from "./playbook.js";
 export { loadDesignBrief } from "./designBrief.js";

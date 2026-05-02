@@ -9,6 +9,7 @@ import {
   EDITORIAL_SERIF_TEMPLATE,
 } from "./kinetic.js";
 import { CYBERLOFI_TEMPLATES } from "./cyberlofi.js";
+import { FREEFORM_TEMPLATE } from "./freeform/index.js";
 
 /**
  * Premium template set. Each renders an HTML fragment with self-contained
@@ -912,6 +913,12 @@ export const BUILTIN_TEMPLATES: readonly Template[] = [
   // Cyberlofi family — pure-black canvas, JetBrains Mono everywhere,
   // pixel-green/glitch-pink accents. Pairs with the cyberlofi theme.
   ...CYBERLOFI_TEMPLATES,
+  // Freeform — Gemini generates the scene's HTML/CSS/JS at the
+  // resolveFreeformScenes() pre-assembly step. The planner picks this
+  // when no hand-authored template fits the reference profile or when
+  // the user explicitly opts in. Validator + cache + retry logic live
+  // in templates/freeform/.
+  FREEFORM_TEMPLATE,
 ];
 
 export function getTemplate(id: string): Template | undefined {

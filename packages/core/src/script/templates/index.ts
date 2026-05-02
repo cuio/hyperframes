@@ -13,3 +13,20 @@ export {
   CYBER_PIXEL_STILL_TEMPLATE,
   CYBERLOFI_TEMPLATES,
 } from "./cyberlofi.js";
+export {
+  FREEFORM_TEMPLATE,
+  resolveFreeformScenes,
+  generateFreeformScene,
+  validateFreeformHtml,
+  readFreeformCache,
+  writeFreeformCache,
+  hashFreeformKey,
+  FREEFORM_GENERATOR_VERSION,
+  VALIDATOR_RULES,
+  type ResolveFreeformScenesOptions,
+  type ResolveFreeformScenesResult,
+  type FreeformCacheKey,
+  type FreeformGeneration,
+  type ValidationResult,
+  type GenerateFreeformSceneOptions,
+} from "./freeform/index.js";
