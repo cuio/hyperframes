@@ -39,6 +39,19 @@ export interface VisualDirectorOptions {
     designBrief?: string;
     tokens?: DesignTokens;
   };
+  /**
+   * Reference aesthetic profile (Gemini-extracted). Same shape as
+   * PlanOptions.referenceProfile in planner.ts. The director honors
+   * `treatmentBias` when picking image-scene treatments and respects
+   * `avoidAtmospheres` so the visual stack stays consistent with what
+   * the planner used.
+   */
+  referenceProfile?: {
+    vibe?: string;
+    treatmentBias?: string | null;
+    palette?: string[];
+    avoidAtmospheres?: string[];
+  };
   temperature?: number;
   /** Cost telemetry sink (see PlanOptions.onCostEvent in planner.ts). */
   onCostEvent?: CostEventSink;
@@ -280,6 +293,28 @@ function buildSystem(opts: VisualDirectorOptions): string {
       `## Design brief\n\n` +
         wrapUserContent("user_design_brief", opts.themeContext.designBrief.trim()),
     );
+  }
+
+  if (opts.referenceProfile) {
+    const ref = opts.referenceProfile;
+    const lines: string[] = ["## Reference profile (soft prior)"];
+    if (ref.vibe) lines.push(`Vibe: ${ref.vibe}`);
+    if (ref.treatmentBias) {
+      lines.push(
+        `Treatment bias: **${ref.treatmentBias}** — when uncertain between two treatments for a scene, lean toward this one.`,
+      );
+    }
+    if (ref.palette?.length) {
+      lines.push(
+        `Palette priors: ${ref.palette.join(" ")} — useful for picking treatments that work with these colors.`,
+      );
+    }
+    if (ref.avoidAtmospheres?.length) {
+      lines.push(
+        `User dislikes: ${ref.avoidAtmospheres.join(", ")}. Don't recommend treatments that would re-introduce these patterns.`,
+      );
+    }
+    parts.push(lines.join("\n"));
   }
 
   parts.push(

@@ -156,6 +156,29 @@ export interface PlanOptions {
    */
   availableTemplates?: readonly Template[];
   /**
+   * Reference aesthetic profile extracted from a user-supplied
+   * reference video / images via Gemini Flash. When present, the
+   * planner reads the profile's vibe, pacing, atmosphere preferences,
+   * and template biases as a soft prior — the user's explicit theme
+   * and design brief still win, but gaps get filled by the profile.
+   *
+   * See packages/core/src/script/referenceProfile.ts. Persisted at
+   * <projectDir>/.hyperframes/reference-profile.json so callers can
+   * load it once at project mount and pass it on every plan/regen.
+   */
+  referenceProfile?: {
+    vibe?: string;
+    typographyEnergy?: "soft" | "medium" | "loud";
+    pacingDensity?: "slow" | "medium" | "fast";
+    motionVibe?: string;
+    palette?: string[];
+    recommendedAtmospheres?: string[];
+    avoidAtmospheres?: string[];
+    preferredTemplates?: string[];
+    avoidTemplates?: string[];
+    treatmentBias?: string | null;
+  };
+  /**
    * Optional sink for cost events. Each Anthropic call inside the planner
    * (main plan call, retries, hook critic) reports its model usage and
    * wall-clock duration through this callback so the studio's cost
@@ -451,6 +474,56 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     system.push({
       type: "text",
       text: themeBlockParts.join("\n\n"),
+      cache_control: { type: "ephemeral" },
+    });
+  }
+
+  // ── Block 2.5: Reference profile (when user has run extract-reference) ──
+  // The reference profile is a soft prior — Gemini Flash extracted the
+  // user's intended aesthetic from a reference video/images. Bias toward
+  // its picks UNLESS theme/brief content directly contradicts. The
+  // user's explicit DESIGN.md always wins over a Gemini inference.
+  if (opts.referenceProfile) {
+    const ref = opts.referenceProfile;
+    const lines: string[] = [
+      "# Reference profile (user-supplied aesthetic prior)",
+      "",
+      "The user supplied a reference video and/or images that capture the look they want.",
+      "Gemini Flash extracted this aesthetic profile. Treat it as a SOFT PRIOR — bias toward",
+      "these picks but don't break the active theme or design brief to honor it.",
+      "",
+    ];
+    if (ref.vibe) lines.push(`- **Vibe**: ${ref.vibe}`);
+    if (ref.typographyEnergy) lines.push(`- **Typography energy**: ${ref.typographyEnergy}`);
+    if (ref.pacingDensity) lines.push(`- **Pacing**: ${ref.pacingDensity}`);
+    if (ref.motionVibe) lines.push(`- **Motion**: ${ref.motionVibe}`);
+    if (ref.palette?.length) lines.push(`- **Palette priors**: ${ref.palette.join(" ")}`);
+    if (ref.recommendedAtmospheres?.length) {
+      lines.push(
+        `- **Atmospheres to prefer**: ${ref.recommendedAtmospheres.join(", ")}. Use one of these unless a scene truly needs something else.`,
+      );
+    }
+    if (ref.avoidAtmospheres?.length) {
+      lines.push(
+        `- **Atmospheres to AVOID**: ${ref.avoidAtmospheres.join(", ")}. The user explicitly disliked these — never pick them.`,
+      );
+    }
+    if (ref.preferredTemplates?.length) {
+      lines.push(`- **Templates the reference favors**: ${ref.preferredTemplates.join(", ")}`);
+    }
+    if (ref.avoidTemplates?.length) {
+      lines.push(`- **Templates to AVOID**: ${ref.avoidTemplates.join(", ")}`);
+    }
+    if (ref.treatmentBias) {
+      lines.push(`- **Image treatment bias**: ${ref.treatmentBias}`);
+    }
+    lines.push("");
+    lines.push(
+      "When you reference these in `overallReasoning`, name the profile explicitly so the user can audit your application of it.",
+    );
+    system.push({
+      type: "text",
+      text: lines.join("\n"),
       cache_control: { type: "ephemeral" },
     });
   }
