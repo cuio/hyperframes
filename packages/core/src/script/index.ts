@@ -36,6 +36,31 @@ export type {
   ExtractReferenceOptions,
   ExtractReferenceResult,
 } from "./referenceProfile.js";
+export { validatePatches, applyPatches, isImprovement, nextSceneId } from "./optimizerPatches.js";
+export type {
+  EditPatch,
+  EditPatchAction,
+  EditTextPatch,
+  SwapTemplatePatch,
+  AddPropPatch,
+  SplitScenePatch,
+  FixBordersPatch,
+  ValidatePatchesOptions,
+  ValidatedPatchSet,
+  ApplyPatchesResult,
+} from "./optimizerPatches.js";
+export { proposeOptimizationPatches } from "./optimizerProposer.js";
+export type {
+  ProposeOptimizationPatchesOptions,
+  ProposedOptimizations,
+} from "./optimizerProposer.js";
+export { optimizeRetention } from "./optimizer.js";
+export type {
+  OptimizeRetentionOptions,
+  OptimizeRetentionResult,
+  IterationReport,
+  RenderReviewSummary,
+} from "./optimizer.js";
 export {
   TRANSITION_DURATIONS,
   TRANSITION_IDS,
