@@ -24,7 +24,6 @@
 import {
   generateStructured,
   GeminiError,
-  DEFAULT_GEMINI_MODEL,
   type GeminiPart,
   type ToolFunctionDeclaration,
 } from "../../../gemini/client.js";
@@ -33,8 +32,32 @@ import { validateFreeformHtml, VALIDATOR_RULES } from "./validator.js";
 
 /** Bumped when the prompt or validator rules change in a way that
  *  invalidates older cached scenes. The cache key includes this so a
- *  bump rotates every hash. */
-export const FREEFORM_GENERATOR_VERSION = 1;
+ *  bump rotates every hash.
+ *
+ *  v2 (May 2026): switched default model from gemini-2.5-flash to
+ *  gemini-2.5-pro for genuinely creative HTML/CSS, and rewrote the
+ *  system prompt to demand CSS 3D + multi-layer depth + motion
+ *  choreography across the FULL scene duration (not just an entrance).
+ *  Also bumped the per-call retry budget from 1 retry (2 attempts
+ *  total) to 2 retries (3 attempts total).
+ */
+export const FREEFORM_GENERATOR_VERSION = 2;
+
+/**
+ * Default model for freeform scene generation. Pro is ~4x the cost of
+ * Flash ($1.25/$10 vs $0.30/$2.50 per 1M tokens) but the quality gap on
+ * creative HTML/CSS+animations is large enough that the 5-7 cents per
+ * scene is justified for a render targeting >85 retention. The render
+ * review and patch proposer paths still use Flash — that's structured
+ * grading, not creative code.
+ */
+export const FREEFORM_DEFAULT_MODEL = "gemini-2.5-pro";
+
+/** Maximum number of attempts. The generator retries with violations
+ *  fed back into the prompt; each retry is one additional Gemini call.
+ *  3 attempts gives Pro enough room to recover from the occasional
+ *  unscoped-CSS slip without bloating cost on common-case clean runs. */
+const MAX_GENERATOR_ATTEMPTS = 3;
 
 const TOOL: ToolFunctionDeclaration = {
   name: "emit_freeform_scene",
@@ -67,58 +90,83 @@ interface GeneratorToolInput {
 
 function buildSystemPrompt(): string {
   return [
-    "# Freeform scene generator",
+    "# Freeform scene generator — cinematic 3D HTML",
     "",
-    "You are writing the COMPLETE HTML for a single scene of a short-form video. The user's planner has already chosen the scene's narration and pacing; your job is to produce a visualization that supports the narration in the requested aesthetic.",
+    "You are designing ONE scene of a short-form retention-optimized video. The hand-authored templates the user already has are flat 2D typography. Your job is to do something they CAN'T — a cinematic 3D scene with real depth, perspective, and motion that evolves through the entire scene duration.",
     "",
-    "## Output contract (the validator enforces ALL of these)",
+    "**The retention bar is 90+/100.** Every prior render plateaued at ~70 because the scenes go static after a 1s entrance and sit while voiceover continues for another 5-6 seconds. Your scene must NOT do that. Motion choreography across the FULL duration is the entire point of using freeform.",
     "",
-    "1. **Outer wrapper**. Exactly ONE root element:",
+    "## Output contract (validator enforces)",
+    "",
+    "1. **Outer wrapper** — exactly ONE root element:",
     "   ```html",
     '   <div id="SCENE_ID" data-composition-id="SCENE_ID" data-scene-id="SCENE_ID" data-duration="DUR">…</div>',
     "   ```",
-    "   where SCENE_ID is the literal scene id provided in the user message.",
+    "   SCENE_ID is the literal id from the user message.",
     "",
-    "2. **Style + script siblings allowed**. You may emit `<style>` and `<script>` blocks immediately before the wrapper div. The assembler hoists them.",
+    "2. **Style + script siblings allowed**. `<style>` and `<script>` can appear immediately before the wrapper div. The assembler hoists them.",
     "",
-    "3. **CSS scope-locked**. Every selector inside `<style>` MUST start with `#SCENE_ID`. The validator rejects unscoped selectors. `@keyframes`, `@media`, `@supports` are allowed; their inner selectors must still start with `#SCENE_ID`.",
+    "3. **CSS scope-locked**. EVERY selector inside `<style>` MUST start with `#SCENE_ID`. `@keyframes` / `@media` / `@supports` are allowed; their inner selectors must still start with `#SCENE_ID`. UNSCOPED RULES ARE REJECTED.",
     "",
-    "4. **No external resources**. No `<script src=…>`, no `<link rel=stylesheet>`, no `<iframe>`, no `<object>`, no `<embed>`, no `<form>`. Inline `<script>` and `<style>` are fine. CSS may use `data:` URLs for SVG patterns.",
+    "4. **No external resources** — no `<script src=…>`, no `<link>`, no `<iframe>`, no `<object>`, no `<embed>`, no `<form>`. Inline `<style>` and `<script>` only. Inline `data:` URLs for SVG patterns are fine.",
     "",
-    "5. **No event-handler attributes**. `onclick`, `onload`, `onerror`, etc. are blocked. If you need handlers, use `addEventListener` inside the inline `<script>`.",
+    "5. **No event-handler attributes** — `on*=` blocked. Use `addEventListener` if you need handlers.",
     "",
-    "6. **Inline script must register a timeline**. Exactly one `<script>` block must contain:",
+    "6. **Inline script must register a timeline**:",
     "   ```js",
     "   window.__timelines = window.__timelines || {};",
     "   window.__timelines['SCENE_ID'] = gsap.timeline({ paused: true })…;",
     "   ```",
-    "   The runtime walks `window.__timelines` to find each scene's GSAP timeline. Without it, the scene won't animate during master-timeline scrubbing.",
     "",
-    `7. **Size cap**. Total output ≤ ${VALIDATOR_RULES.MAX_HTML_BYTES} bytes. Be terse — large CSS blocks are usually a sign of unfocused design.`,
+    `7. **Size cap**: total output ≤ ${VALIDATOR_RULES.MAX_HTML_BYTES} bytes.`,
     "",
-    "## Aesthetic guidance",
+    "## Visual ambition — what 'amazing 3D' means here",
     "",
-    "Use ONLY the theme tokens provided. The bg/fg/accent/accent2 are your palette; the display/mono fonts are what you have. Don't pull arbitrary colors or fonts.",
+    "The user wants a real cinematic feel, not just typography. Use CSS 3D primitives:",
+    "",
+    "- **`perspective`** on the outer wrapper (between 800px and 1600px) so child transforms have visible depth.",
+    "- **`transform-style: preserve-3d`** on container elements so nested 3D transforms compose properly.",
+    "- **`translateZ()` + `rotateX/rotateY/rotateZ`** for real depth — push background layers BACK on the Z axis (negative Z), pull foreground layers FORWARD. The eye should feel multiple planes.",
+    "- **At least 3 distinct depth planes**: background (Z < -100px, blurred or low-contrast), midground (Z ≈ 0, the focal data), foreground (Z > 100px, accent / overlay decoration).",
+    "- **Parallax**: when the background moves slowly and the foreground moves faster, the brain reads it as depth. Use this on slow camera-style sweeps.",
+    "- **Depth-of-field**: apply `filter: blur()` to elements you want to read as 'far'. Pull focus by changing blur values across the timeline.",
+    "- **Subtle camera moves**: a gentle `rotateX(2deg) rotateY(-2deg)` on the wrapper that breathes across 6-8s gives real cinematic life without being gimmicky.",
+    "",
+    "## Motion choreography (THE 90+ RETENTION RULE)",
+    "",
+    "**Every scene with narration > 3 seconds MUST have motion that evolves continuously.** The standard pattern that beats Gemini's 'static after entrance' complaint:",
+    "",
+    "  - **0.0–0.8s**: ENTRANCE. Hero element resolves (translate + fade + chromatic split).",
+    "  - **0.8–2.0s**: SETTLE. Camera-style ease, depth blur pulls focus, secondary layer animates in.",
+    "  - **2.0–4.0s**: DEVELOPMENT. New visual beat — count-up, character ticker, layer swap, secondary callout reveal, glitch flicker, subtle parallax sweep. Whatever the data wants.",
+    "  - **4.0–end**: SUSTAIN. Continuous evolution: CSS infinite keyframes on the depth layers (slow rotate, breathing scale, scanline drift, accent pulse). NEVER let the scene sit fully static.",
+    "",
+    "Every visible element should have either a GSAP tween OR a CSS infinite animation. Static elements that sit through the scene are the #1 retention killer.",
+    "",
+    "## Aesthetic + theme",
+    "",
+    "Use ONLY the theme tokens provided. The bg/fg/accent/accent2 are your palette. Don't invent colors. Use the display + mono fonts the user gives you.",
     "",
     "Honor the reference profile when present:",
-    "- `vibe` is the one-sentence description of what the scene should feel like.",
-    "- `motionVibe` is the motion language (slow zooms vs glitch cuts vs character-by-character).",
-    "- `pacingDensity` controls how many beats fit in the scene's duration.",
-    "- `palette` priors are nice-to-haves; theme tokens win.",
-    "",
-    "Write GSAP timelines that match `pacingDensity`. `slow` → 1-2 beats over the duration. `fast` → 4-6 beats packed in.",
+    "- `vibe` is the one-sentence target feel.",
+    "- `motionVibe` is the motion language (cinematic slow zoom vs glitch hard cuts).",
+    "- `pacingDensity` controls beat density: slow = 2-3 beats over duration, medium = 4-5, fast = 6+.",
+    "- `palette` priors are advisory; theme tokens win on conflict.",
     "",
     "## Forbidden",
     "",
-    "- DO NOT write `<script src=…>` — the validator will reject the entire scene.",
-    "- DO NOT write `onclick=` or any `on*=` attribute.",
-    "- DO NOT use `position: fixed` — scenes are layered absolutely; fixed breaks the parent stage.",
-    "- DO NOT register more than one timeline for the same scene id.",
-    "- DO NOT inject `<script>` blocks that read or modify other scenes (only your own scene's DOM).",
+    "- NO `<script src=…>`. Validator rejects the entire scene.",
+    "- NO `on*=` event handler attributes.",
+    "- NO `position: fixed` — scenes are layered absolutely.",
+    "- NO multiple timelines for the same scene id.",
+    "- NO scripts that read or modify OTHER scenes' DOM. Stay in your own scene.",
+    "- NO static visuals after ~1s. The 'static after entrance' pattern caps retention at ~70.",
     "",
     "## Output",
     "",
-    "Call `emit_freeform_scene` with `html` (the full scene markup) and `designNotes` (1-2 sentences on what you tried).",
+    "Call `emit_freeform_scene` with:",
+    "  - `html`: the complete `<style>` + `<script>` + scene `<div>` markup",
+    "  - `designNotes`: 1-2 sentences on the depth structure + motion arc you chose",
   ].join("\n");
 }
 
@@ -182,9 +230,12 @@ export interface ValidationFailure {
 }
 
 /**
- * Generate a single freeform scene. Calls Gemini, validates, retries
- * once with violations in the prompt if validation fails. Returns the
- * canonicalized HTML + telemetry.
+ * Generate a single freeform scene. Calls Gemini, validates, retries up
+ * to 2 more times (3 attempts total) with violations in the prompt if
+ * validation fails. Returns the canonicalized HTML + telemetry.
+ *
+ * Default model is Pro for genuinely creative HTML/CSS; callers can
+ * override via opts.model when cost matters more than quality.
  *
  * Caller is responsible for caching — this function is a pure-ish
  * "given inputs, produce output" wrapper around the Gemini call.
@@ -192,7 +243,11 @@ export interface ValidationFailure {
 export async function generateFreeformScene(
   opts: GenerateFreeformSceneOptions,
 ): Promise<GenerateFreeformResult> {
-  const model = opts.model ?? DEFAULT_GEMINI_MODEL;
+  // Pro by default for creative HTML/CSS. Ignore the global
+  // DEFAULT_GEMINI_MODEL (which is Flash) — Flash hits MALFORMED_FUNCTION_CALL
+  // ~30% of the time on the 3D-cinematic prompt because the structured
+  // output gets long. Pro handles it cleanly.
+  const model = opts.model ?? FREEFORM_DEFAULT_MODEL;
   const system = buildSystemPrompt();
   const user = buildUserPrompt(opts);
 
@@ -200,20 +255,36 @@ export async function generateFreeformScene(
   let firstFailure: ValidationFailure | undefined;
   let lastRaw = "";
   let lastViolations: ValidationFailure["violations"] = [];
+  // Keep the prior raw output so we can show the model EXACTLY what it
+  // emitted — sometimes Pro repeats the same mistake when only told the
+  // rule was violated; quoting the actual offending CSS makes the fix
+  // deterministic.
+  let lastRawForRetry = "";
 
-  while (attempt < 2) {
+  while (attempt < MAX_GENERATOR_ATTEMPTS) {
     attempt += 1;
     const userParts: GeminiPart[] = [{ text: user }];
-    if (attempt === 2) {
-      // Second attempt: feed the violations back in so the model can fix.
+    if (attempt > 1) {
+      // Retry: feed violations + a snippet of the previous output back
+      // so the model knows exactly what to fix. Quoting the raw output
+      // turned out to be necessary on attempt-3 cases — without it, the
+      // model often repeats the same mistake on a different element.
+      const snippet = lastRawForRetry.slice(0, 1200);
       userParts.push({
         text: [
-          "## Your previous output failed validation",
+          `## Attempt ${attempt - 1} failed validation`,
           "",
-          "Here are the specific violations the validator flagged:",
+          "The validator flagged these violations:",
           ...lastViolations.map((v) => `- ${v.rule}: ${v.message}`),
           "",
-          "Emit a corrected version that fixes ALL of these.",
+          "Here is the start of your previous output for reference (first 1.2KB):",
+          "```html",
+          snippet,
+          "```",
+          "",
+          "Emit a fully corrected version that fixes ALL of these violations. Pay special attention to scoped CSS — every selector must start with `#" +
+            opts.sceneId +
+            "`.",
         ].join("\n"),
       });
     }
@@ -223,17 +294,19 @@ export async function generateFreeformScene(
       parts: userParts,
       systemInstruction: system,
       tool: TOOL,
-      temperature: 0.55,
-      // 4096 was too tight — the validator allows 16KB of HTML which is
-      // already ~4K tokens, plus the JSON wrapper + designNotes pushed
-      // Flash to MALFORMED_FUNCTION_CALL on real-world prompts. 8192 is
-      // the comfortable headroom; same number we landed on for the
-      // optimizer's render review tool.
+      // Higher temperature for the cinematic creative latitude. Pro at
+      // 0.65 stays coherent; Flash at this temp tends to hallucinate
+      // more, hence the model upgrade above.
+      temperature: 0.65,
+      // 4096 was too tight on Flash — the 16KB HTML cap already eats
+      // ~4K tokens, plus JSON wrapper + designNotes pushed Flash to
+      // MALFORMED_FUNCTION_CALL. 8192 is comfortable on Pro too.
       maxOutputTokens: 8192,
     });
 
     const html = typeof result.html === "string" ? result.html : "";
     lastRaw = html;
+    lastRawForRetry = html;
     const validation = validateFreeformHtml(html, { sceneId: opts.sceneId });
     if (validation.ok && validation.html) {
       const generation: FreeformGeneration = {
@@ -255,7 +328,7 @@ export async function generateFreeformScene(
   }
 
   throw new GeminiError(
-    `generateFreeformScene: scene ${opts.sceneId} failed validation on both attempts. ` +
+    `generateFreeformScene: scene ${opts.sceneId} failed validation on all ${MAX_GENERATOR_ATTEMPTS} attempts. ` +
       `Last violations: ${lastViolations.map((v) => v.rule).join(", ")}. ` +
       `Last raw output (first 256 chars): ${lastRaw.slice(0, 256)}`,
   );

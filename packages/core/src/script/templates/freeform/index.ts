@@ -9,6 +9,7 @@ export {
 export {
   generateFreeformScene,
   FREEFORM_GENERATOR_VERSION,
+  FREEFORM_DEFAULT_MODEL,
   type GenerateFreeformResult,
   type ValidationFailure,
 } from "./generator.js";
