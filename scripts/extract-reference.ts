@@ -20,7 +20,7 @@ import {
   type ReferenceProfile,
 } from "../packages/core/src/script/referenceProfile.js";
 import { loadGeminiKey } from "../packages/core/src/gemini/index.js";
-import { BUILTIN_ATMOSPHERES, BUILTIN_TEMPLATES } from "../packages/core/src/script/index.js";
+import { BUILTIN_TEMPLATES, listAllAtmosphereIds } from "../packages/core/src/script/index.js";
 import { TREATMENT_IDS } from "../packages/core/src/script/templates/image-scene.js";
 
 interface ParsedArgs {
@@ -88,7 +88,11 @@ async function main(): Promise<void> {
   console.log("");
 
   const start = Date.now();
-  const knownAtmospheres = BUILTIN_ATMOSPHERES.map((a) => a.id);
+  // Include both leaf atmospheres AND compositions (clean-fade, editorial-grit,
+  // cinematic-glow). The reference profile catalog has to mirror what the
+  // assembler can actually resolve, otherwise Gemini ignores the cleaner
+  // composed defaults and recommends raw patterns instead.
+  const knownAtmospheres = listAllAtmosphereIds();
   const knownTemplates = BUILTIN_TEMPLATES.map((t) => t.id);
   const knownTreatments = [...TREATMENT_IDS];
 

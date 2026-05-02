@@ -16,8 +16,10 @@ import {
   synthesizeScript,
   assembleMaster,
   loadDesignBrief,
+  readPersistedProfile,
   resolveProjectTokens,
   ScriptPlannerError,
+  type ReferenceProfile,
   type Script,
 } from "@hyperframes/core/script";
 
@@ -98,9 +100,13 @@ const planSubcommand = defineCommand({
       process.exit(1);
     }
 
+    const referenceProfile = readPersistedProfile(projectDir);
     const spin = args.json ? null : clack.spinner();
+    const profileNote = referenceProfile
+      ? ` (using reference profile: "${referenceProfile.vibe.slice(0, 50)}…")`
+      : "";
     spin?.start(
-      `Planning ${c.accent(args.input)} with ${c.accent(args.model ?? "claude-sonnet-4-6")}...`,
+      `Planning ${c.accent(args.input)} with ${c.accent(args.model ?? "claude-sonnet-4-6")}${profileNote}...`,
     );
     try {
       const script = await planScript(text, {
@@ -115,6 +121,7 @@ const planSubcommand = defineCommand({
           voiceId: args.voice,
         },
         designBrief: loadDesignBrief(projectDir) ?? undefined,
+        ...(referenceProfile ? { referenceProfile: profileForPlanner(referenceProfile) } : {}),
       });
       writeJson(resolve(projectDir, PLAN_FILE), script);
       if (args.json) {
@@ -297,7 +304,19 @@ const allSubcommand = defineCommand({
     }
 
     const spin = clack.spinner();
-    spin.start("Planning with AI...");
+    // Auto-load any persisted reference profile from
+    // <project>/.hyperframes/reference-profile.json. The profile is a
+    // soft prior (palette, vibe, atmosphere/template biases) extracted
+    // from a user-supplied reference video/images via Gemini. The
+    // planner threads it into its system prompt; absence is fine.
+    const referenceProfile = readPersistedProfile(projectDir);
+    if (referenceProfile) {
+      spin.start(
+        `Planning with AI (using reference profile: "${referenceProfile.vibe.slice(0, 60)}…")...`,
+      );
+    } else {
+      spin.start("Planning with AI...");
+    }
     try {
       const script = await planScript(text, {
         apiKey: anthropicKey,
@@ -310,6 +329,7 @@ const allSubcommand = defineCommand({
           voiceId: effectiveVoice,
         },
         designBrief: loadDesignBrief(projectDir) ?? undefined,
+        ...(referenceProfile ? { referenceProfile: profileForPlanner(referenceProfile) } : {}),
       });
       writeJson(resolve(projectDir, PLAN_FILE), script);
       spin.message(`Planned ${script.scenes.length} scenes — synthesizing audio...`);
@@ -360,4 +380,35 @@ export default defineCommand({
 function trimText(s: string, n: number): string {
   if (s.length <= n) return s;
   return s.slice(0, n - 1) + "…";
+}
+
+/**
+ * Strip the persisted reference profile down to just the fields the planner
+ * cares about. The full ReferenceProfile carries source paths + extraction
+ * timestamps that have no business in the prompt.
+ */
+function profileForPlanner(p: ReferenceProfile): {
+  vibe?: string;
+  typographyEnergy?: "soft" | "medium" | "loud";
+  pacingDensity?: "slow" | "medium" | "fast";
+  motionVibe?: string;
+  palette?: string[];
+  recommendedAtmospheres?: string[];
+  avoidAtmospheres?: string[];
+  preferredTemplates?: string[];
+  avoidTemplates?: string[];
+  treatmentBias?: string | null;
+} {
+  return {
+    vibe: p.vibe,
+    typographyEnergy: p.typographyEnergy,
+    pacingDensity: p.pacingDensity,
+    motionVibe: p.motionVibe,
+    palette: p.palette,
+    recommendedAtmospheres: p.recommendedAtmospheres,
+    avoidAtmospheres: p.avoidAtmospheres,
+    preferredTemplates: p.preferredTemplates,
+    avoidTemplates: p.avoidTemplates,
+    treatmentBias: p.treatmentBias,
+  };
 }
