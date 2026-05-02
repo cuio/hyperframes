@@ -1,5 +1,5 @@
 import type { LoadedTheme } from "./manifest.js";
-import { HACKERNOON_FT, DATA_DRIFT_DARK, DREAMSPACE, DEFAULT_THEME } from "../themes.js";
+import { HACKERNOON_FT, DATA_DRIFT_DARK, DREAMSPACE, CYBERLOFI, DEFAULT_THEME } from "../themes.js";
 import { discoverThemeRoots, loadThemesFromRoot, type ThemeSearchRoots } from "./loader.js";
 
 /**
@@ -68,6 +68,30 @@ const BUILTIN: LoadedTheme[] = [
       atmospheres: ["aurora", "gradient-mesh", "radial-pulse", "studio-flat"],
       transitions: ["fade", "zoom-in", "zoom-out"],
       icons: ["sparkle", "bolt", "network", "target"],
+    },
+    designSystemDoc: null,
+    referenceRenderPath: null,
+    templates: [],
+    source: "builtin",
+  },
+  {
+    id: "cyberlofi",
+    name: "Cyberlofi",
+    description:
+      "Pure-black canvas, JetBrains Mono everywhere, pixel-green + glitch-pink accents. " +
+      "Massive negative space, asymmetric corner-pinned content. Lo-fi cyberpunk data-art. " +
+      "Pairs with the cyber-data-cluster / cyber-glitch-word / cyber-pixel-still templates.",
+    tokens: CYBERLOFI,
+    fonts: {
+      googleFonts: ["JetBrains Mono:wght@400;500;600;700;800", "Space Mono:wght@400;700"],
+    },
+    preferences: {
+      // glitch-decay is the new layer added below; pairs cleanly with
+      // noise-grain for the scanline/dither texture. No gradients, no
+      // soft fades — they fight the hard-edge aesthetic.
+      atmospheres: ["studio-flat", "noise-grain", "glitch-decay", "editorial-grit"],
+      transitions: ["cut", "wipe-left", "fade"],
+      icons: [],
     },
     designSystemDoc: null,
     referenceRenderPath: null,

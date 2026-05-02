@@ -8,6 +8,7 @@ import {
   KINETIC_WORDS_TEMPLATE,
   EDITORIAL_SERIF_TEMPLATE,
 } from "./kinetic.js";
+import { CYBERLOFI_TEMPLATES } from "./cyberlofi.js";
 
 /**
  * Premium template set. Each renders an HTML fragment with self-contained
@@ -908,6 +909,9 @@ export const BUILTIN_TEMPLATES: readonly Template[] = [
   CHART_SCENE,
   OUTRO_CTA,
   IMAGE_SCENE_TEMPLATE,
+  // Cyberlofi family — pure-black canvas, JetBrains Mono everywhere,
+  // pixel-green/glitch-pink accents. Pairs with the cyberlofi theme.
+  ...CYBERLOFI_TEMPLATES,
 ];
 
 export function getTemplate(id: string): Template | undefined {

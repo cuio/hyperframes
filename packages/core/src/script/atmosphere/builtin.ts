@@ -443,6 +443,86 @@ const FLOW_LINES: AtmospherePreset = {
   },
 };
 
+/**
+ * Cyberlofi atmosphere — scanline overlay + intermittent RGB-shift jitter
+ * + faint pixel grid. Built specifically as the visual decay layer for
+ * the cyber-* template family. Composes cleanly with `noise-grain` for
+ * heavier texture; on its own it's clean enough to sit under
+ * `cyber-data-cluster` without fighting the data block.
+ */
+const GLITCH_DECAY: AtmospherePreset = {
+  id: "glitch-decay",
+  description:
+    "Scanline overlay + faint pixel grid + intermittent chromatic-aberration jitter. " +
+    "Cyberlofi / digital-decay aesthetic. Pairs with cyber-* templates and the " +
+    "cyberlofi theme; works as a layer in compose().",
+  render(ctx) {
+    const id = ctx.sceneId;
+    const t = ctx.tokens;
+    const isDark = isDarkColor(t.colors.bg);
+    // On a dark canvas we screen the lines (lighten); on light bg we multiply.
+    const blend = isDark ? "screen" : "multiply";
+    return `
+<style>
+  #${id} .hf-atmo-glitch {
+    position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+  }
+  /* Scanlines — tight 3px stride, very subtle. */
+  #${id} .hf-atmo-glitch::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: repeating-linear-gradient(
+      to bottom,
+      ${t.colors.fg}10 0,
+      ${t.colors.fg}10 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    mix-blend-mode: ${blend};
+    opacity: 0.6;
+    will-change: opacity, transform;
+    animation: hf-glitch-jitter-${id} 4.2s steps(7) infinite;
+  }
+  /* Faint pixel grid — the "we're inside a terminal" anchor. */
+  #${id} .hf-atmo-glitch::after {
+    content: ""; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(${t.colors.fg}07 1px, transparent 1px),
+      linear-gradient(90deg, ${t.colors.fg}07 1px, transparent 1px);
+    background-size: 64px 64px;
+    mix-blend-mode: ${blend};
+    opacity: 0.6;
+  }
+  /* RGB-shift highlight — magenta/cyan chromatic edge that pulses. */
+  #${id} .hf-atmo-glitch .hf-glitch-rgb {
+    position: absolute; inset: 0;
+    box-shadow:
+      inset 1px 0 0 ${t.colors.accent2}55,
+      inset -1px 0 0 ${t.colors.accent}55;
+    mix-blend-mode: ${blend};
+    opacity: 0;
+    will-change: opacity;
+    animation: hf-glitch-rgb-${id} 6s ease-in-out infinite;
+  }
+  @keyframes hf-glitch-jitter-${id} {
+    0%, 92% { transform: translate3d(0, 0, 0); opacity: 0.6; }
+    93%     { transform: translate3d(-2px, 0, 0); opacity: 0.4; }
+    94%     { transform: translate3d(3px, 1px, 0); opacity: 0.85; }
+    95%     { transform: translate3d(-1px, -1px, 0); opacity: 0.55; }
+    100%    { transform: translate3d(0, 0, 0); opacity: 0.6; }
+  }
+  @keyframes hf-glitch-rgb-${id} {
+    0%, 88% { opacity: 0; }
+    90%     { opacity: 0.7; }
+    95%     { opacity: 0.4; }
+    100%    { opacity: 0; }
+  }
+</style>
+<div class="hf-atmo hf-atmo-glitch">
+  <div class="hf-glitch-rgb"></div>
+</div>`.trim();
+  },
+};
+
 export const BUILTIN_ATMOSPHERES: readonly AtmospherePreset[] = [
   STUDIO_FLAT,
   AURORA,
@@ -453,6 +533,7 @@ export const BUILTIN_ATMOSPHERES: readonly AtmospherePreset[] = [
   COSMIC_DUST,
   GEOMETRIC_GRID,
   FLOW_LINES,
+  GLITCH_DECAY,
 ];
 
 export const ATMOSPHERE_IDS = BUILTIN_ATMOSPHERES.map((a) => a.id);
@@ -491,6 +572,12 @@ export function defaultAtmosphereForTemplate(templateId: string): string {
     case "editorial-serif":
       // Pure-typography breath scene — keep the negative space pristine.
       return "studio-flat";
+    case "cyber-data-cluster":
+    case "cyber-glitch-word":
+    case "cyber-pixel-still":
+      // Cyberlofi family — pair with the glitch-decay layer so the scanlines
+      // + intermittent RGB shift run continuously beneath the scene's content.
+      return "glitch-decay";
     default:
       return "noise-grain";
   }
