@@ -35,13 +35,24 @@ import { validateFreeformHtml, VALIDATOR_RULES } from "./validator.js";
  *  bump rotates every hash.
  *
  *  v2 (May 2026): switched default model from gemini-2.5-flash to
- *  gemini-2.5-pro for genuinely creative HTML/CSS, and rewrote the
- *  system prompt to demand CSS 3D + multi-layer depth + motion
- *  choreography across the FULL scene duration (not just an entrance).
- *  Also bumped the per-call retry budget from 1 retry (2 attempts
- *  total) to 2 retries (3 attempts total).
+ *  gemini-2.5-pro for genuinely creative HTML/CSS, and bumped the
+ *  per-call retry budget from 1 retry (2 attempts total) to 2 retries
+ *  (3 attempts total).
+ *
+ *  v3 (May 2026): reverted the v2 "cinematic 3D" prompt addendum. CSS
+ *  3D primitives (perspective / translateZ / rotateX/Y /
+ *  transform-style: preserve-3d) need a live compositor; the producer
+ *  captures via screenshot mode on macOS, where 3D transforms render
+ *  off-screen at the timestamps we sample. mix-blend-mode: screen on a
+ *  dark background ALSO composited to fully invisible. Together these
+ *  caused 4 of 5 v2 freeform scenes to render as black frames in a
+ *  retention-targeted dead-internet video. v3 keeps the 4-phase motion
+ *  choreography (entrance / settle / development / sustain) — which IS
+ *  the right fix for the static-after-1s retention floor — but
+ *  restricts the visual vocabulary to 2D constructs that survive
+ *  screenshot capture. Cache rotates because the prompt changed.
  */
-export const FREEFORM_GENERATOR_VERSION = 2;
+export const FREEFORM_GENERATOR_VERSION = 3;
 
 /**
  * Default model for freeform scene generation. Pro is ~4x the cost of
@@ -90,11 +101,13 @@ interface GeneratorToolInput {
 
 function buildSystemPrompt(): string {
   return [
-    "# Freeform scene generator — cinematic 3D HTML",
+    "# Freeform scene generator — kinetic 2D HTML",
     "",
-    "You are designing ONE scene of a short-form retention-optimized video. The hand-authored templates the user already has are flat 2D typography. Your job is to do something they CAN'T — a cinematic 3D scene with real depth, perspective, and motion that evolves through the entire scene duration.",
+    "You are designing ONE scene of a short-form retention-optimized video. Your job is to produce a flat-but-kinetic 2D scene that visualizes the narration with motion choreography evolving through the FULL scene duration.",
     "",
-    "**The retention bar is 90+/100.** Every prior render plateaued at ~70 because the scenes go static after a 1s entrance and sit while voiceover continues for another 5-6 seconds. Your scene must NOT do that. Motion choreography across the FULL duration is the entire point of using freeform.",
+    "**The retention bar is 85+/100.** Prior renders plateaued at ~70 because scenes go static after a 1s entrance and then sit while voiceover continues 5-6 more seconds. Your scene must NOT do that. Continuous motion across the full duration is the entire point of using freeform.",
+    "",
+    "**Capture model — read this twice.** The producer captures frames via screenshot mode (no live compositor). 3D transforms (`perspective`, `translateZ`, `rotateX/Y`, `transform-style: preserve-3d`) and `mix-blend-mode` either render off-screen or composite to invisible at the sampled timestamps. Stick to flat 2D primitives. The validator does not catch these — they will silently render as black frames if you use them.",
     "",
     "## Output contract (validator enforces)",
     "",
@@ -120,28 +133,29 @@ function buildSystemPrompt(): string {
     "",
     `7. **Size cap**: total output ≤ ${VALIDATOR_RULES.MAX_HTML_BYTES} bytes.`,
     "",
-    "## Visual ambition — what 'amazing 3D' means here",
+    "## Visual vocabulary — flat, layered, kinetic",
     "",
-    "The user wants a real cinematic feel, not just typography. Use CSS 3D primitives:",
+    "Build with constructs that survive single-frame capture:",
     "",
-    "- **`perspective`** on the outer wrapper (between 800px and 1600px) so child transforms have visible depth.",
-    "- **`transform-style: preserve-3d`** on container elements so nested 3D transforms compose properly.",
-    "- **`translateZ()` + `rotateX/rotateY/rotateZ`** for real depth — push background layers BACK on the Z axis (negative Z), pull foreground layers FORWARD. The eye should feel multiple planes.",
-    "- **At least 3 distinct depth planes**: background (Z < -100px, blurred or low-contrast), midground (Z ≈ 0, the focal data), foreground (Z > 100px, accent / overlay decoration).",
-    "- **Parallax**: when the background moves slowly and the foreground moves faster, the brain reads it as depth. Use this on slow camera-style sweeps.",
-    "- **Depth-of-field**: apply `filter: blur()` to elements you want to read as 'far'. Pull focus by changing blur values across the timeline.",
-    "- **Subtle camera moves**: a gentle `rotateX(2deg) rotateY(-2deg)` on the wrapper that breathes across 6-8s gives real cinematic life without being gimmicky.",
+    "- **Solid color blocks + bold typography** are the primary tools. Big mono-font numbers, display-font hero text, thin accent rules, asymmetric grids.",
+    "- **2D transforms only**: `translate`, `scale`, `rotate` (Z axis only). Nothing 3D.",
+    "- **Opacity + color shifts** for layering. Stacked elements with `position: absolute` + differing opacities + color treatments read as planes without needing depth.",
+    "- **Filters that survive capture**: `filter: blur(…)`, `filter: drop-shadow(…)`, `filter: hue-rotate(…)`, `filter: saturate(…)`. Use sparingly.",
+    "- **SVG line-art** (polylines, paths with `stroke-dasharray` + animated `stroke-dashoffset`) for trendlines, charts, connector strokes, glitch underlines. Animates beautifully with GSAP.",
+    "- **Chromatic-split / glitch text** via DUPLICATED LAYERS: stack two copies of the same text, one offset 2-4px in `accent` color, one offset 2-4px in `accent2` — produces the RGB-shift look without `mix-blend-mode`.",
+    "- **Scanline / grain overlays** via `repeating-linear-gradient` on a top-layer absolute div with low alpha (≤ 0.18). Pair with a `@keyframes` translate-Y loop for movement.",
+    "- **Asymmetric layout**: 60/40 splits, eyebrow + hero + footer rule, callout offset to one side. Avoid centered-symmetric layouts; they read as flat.",
     "",
-    "## Motion choreography (THE 90+ RETENTION RULE)",
+    "## Motion choreography — THE retention rule",
     "",
-    "**Every scene with narration > 3 seconds MUST have motion that evolves continuously.** The standard pattern that beats Gemini's 'static after entrance' complaint:",
+    "**Every scene with narration > 3 seconds MUST evolve continuously.** Hard pattern:",
     "",
-    "  - **0.0–0.8s**: ENTRANCE. Hero element resolves (translate + fade + chromatic split).",
-    "  - **0.8–2.0s**: SETTLE. Camera-style ease, depth blur pulls focus, secondary layer animates in.",
-    "  - **2.0–4.0s**: DEVELOPMENT. New visual beat — count-up, character ticker, layer swap, secondary callout reveal, glitch flicker, subtle parallax sweep. Whatever the data wants.",
-    "  - **4.0–end**: SUSTAIN. Continuous evolution: CSS infinite keyframes on the depth layers (slow rotate, breathing scale, scanline drift, accent pulse). NEVER let the scene sit fully static.",
+    "  - **0.0–0.8s ENTRANCE**: hero element resolves (translate + fade + duplicate-layer chromatic split sliding in).",
+    "  - **0.8–2.0s SETTLE**: secondary layer animates in, primary number ticks up via GSAP `to({ textContent: N, snap: { textContent: 1 } })`, accent rule draws via stroke-dashoffset.",
+    "  - **2.0–4.0s DEVELOPMENT**: new beat — counter ticks again, glitch flicker on hero, callout reveal with translate-from-edge, scanline drift restarts, accent color pulse.",
+    "  - **4.0–end SUSTAIN**: continuous CSS infinite animations on accent layers (slow `rotate(360deg)` over 12-20s, breathing `scale(0.97 ↔ 1.03)`, scanline scroll, accent color hue-rotate). NEVER let the scene sit fully static.",
     "",
-    "Every visible element should have either a GSAP tween OR a CSS infinite animation. Static elements that sit through the scene are the #1 retention killer.",
+    "Every visible element should have either a GSAP tween OR a CSS infinite animation. A static element that sits through the scene is the #1 retention killer.",
     "",
     "## Aesthetic + theme",
     "",
@@ -155,9 +169,11 @@ function buildSystemPrompt(): string {
     "",
     "## Forbidden",
     "",
-    "- NO `<script src=…>`. Validator rejects the entire scene.",
-    "- NO `on*=` event handler attributes.",
-    "- NO `position: fixed` — scenes are layered absolutely.",
+    "- NO `<script src=…>`. NO `on*=` attrs.",
+    "- NO 3D transforms: `perspective`, `translateZ`, `translate3d`, `rotateX`, `rotateY`, `transform-style: preserve-3d`. Renders off-screen under screenshot capture.",
+    "- NO `mix-blend-mode` (any value). Composites to invisible on dark backgrounds in screenshot mode — caused 4 of 5 prior freeform scenes to render fully black.",
+    "- NO `backdrop-filter`. Same compositor issue.",
+    "- NO `position: fixed`. Scenes are layered absolutely.",
     "- NO multiple timelines for the same scene id.",
     "- NO scripts that read or modify OTHER scenes' DOM. Stay in your own scene.",
     "- NO static visuals after ~1s. The 'static after entrance' pattern caps retention at ~70.",
@@ -166,7 +182,7 @@ function buildSystemPrompt(): string {
     "",
     "Call `emit_freeform_scene` with:",
     "  - `html`: the complete `<style>` + `<script>` + scene `<div>` markup",
-    "  - `designNotes`: 1-2 sentences on the depth structure + motion arc you chose",
+    "  - `designNotes`: 1-2 sentences on the layout + motion arc you chose",
   ].join("\n");
 }
 
@@ -244,9 +260,10 @@ export async function generateFreeformScene(
   opts: GenerateFreeformSceneOptions,
 ): Promise<GenerateFreeformResult> {
   // Pro by default for creative HTML/CSS. Ignore the global
-  // DEFAULT_GEMINI_MODEL (which is Flash) — Flash hits MALFORMED_FUNCTION_CALL
-  // ~30% of the time on the 3D-cinematic prompt because the structured
-  // output gets long. Pro handles it cleanly.
+  // DEFAULT_GEMINI_MODEL (which is Flash) — Flash hit
+  // MALFORMED_FUNCTION_CALL ~30% of the time on long structured outputs
+  // and produced lower-quality layouts. Pro handles it cleanly. Callers
+  // can override via opts.model when cost matters more than quality.
   const model = opts.model ?? FREEFORM_DEFAULT_MODEL;
   const system = buildSystemPrompt();
   const user = buildUserPrompt(opts);
