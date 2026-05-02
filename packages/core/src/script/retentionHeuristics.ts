@@ -55,11 +55,15 @@ export function inferScriptFormat(meta: ScriptMeta): ScriptFormat {
 /**
  * Apply all retention heuristics to a planned Script. Returns a new
  * Script — does not mutate the input.
+ *
+ * Order matters: avoidChartAtSceneOne runs FIRST so we know whether
+ * scene-0 is a hook before engineerFirstFiveSeconds tries to expand it.
  */
 export function applyRetentionHeuristics(script: Script): Script {
   const format = inferScriptFormat(script.meta);
   let scenes = script.scenes.slice();
   scenes = avoidChartAtSceneOne(scenes);
+  scenes = engineerFirstFiveSeconds(scenes, format);
   scenes = capConsecutiveCharts(scenes);
   scenes = autoEmitPayoff(scenes);
   scenes = clampChartDurations(scenes, format);
@@ -240,4 +244,156 @@ function asString(v: unknown): string {
   if (typeof v === "string") return v.trim();
   if (typeof v === "number" || typeof v === "boolean") return String(v);
   return "";
+}
+
+// ── engineerFirstFiveSeconds ───────────────────────────────────────────────
+//
+// Implements the "hyper-cut hook" pattern from retention-overdrive.md.
+// Detects a dense opening hook scene and splits it into 3-5 micro-scenes,
+// each 0.6-1.5s, rotating templates + bg flashes for visible
+// type-and-color changes. 4-6 cuts/sec is the retention-winning cadence
+// for the first 5 seconds.
+
+/** Templates rotated through the hyper-hook for visible type changes. */
+const HYPER_HOOK_TEMPLATE_ROTATION = [
+  "kinetic-words",
+  "cyber-glitch-word",
+  "hook-bigtext",
+  "kinetic-words",
+  "hook-bigtext",
+] as const;
+
+/** Bg-override flashes — 3-stop palette rotated through scenes. The
+ *  values are CSS background expressions that lean on the active theme's
+ *  accent + fg + bg colours; each consumer renders against whatever
+ *  theme is loaded so we don't hardcode brand colours here. We pass the
+ *  literal CSS string and the theme's accent shows through where we use
+ *  `currentColor` etc. (Templates that don't honour bgOverride just
+ *  ignore the prop — the rotation still produces a visible cut.) */
+const HYPER_HOOK_BG_ROTATION = [
+  null, // theme bg — first frame anchors
+  "linear-gradient(135deg, #000 0%, #1a0a14 100%)",
+  null,
+  "radial-gradient(ellipse at center, #1a1a2e 0%, #000 100%)",
+  null,
+] as const;
+
+/** Threshold for triggering hyper-hook engineering. */
+const HYPER_HOOK_MIN_DURATION_SEC = 2.5;
+const HYPER_HOOK_MIN_WORD_COUNT = 6;
+const HYPER_HOOK_MAX_MICRO_SCENES = 5;
+const HYPER_HOOK_MIN_MICRO_DURATION_SEC = 0.6;
+const HYPER_HOOK_MAX_MICRO_DURATION_SEC = 1.5;
+
+/**
+ * If the opening hook scene is dense enough to warrant it, replace it
+ * with a sequence of 3–5 micro-scenes that rotate templates + bg
+ * flashes. The micro-scenes share total duration with the original.
+ *
+ * Conservative — only triggers when:
+ *   - Scene 0 exists
+ *   - Scene 0 is a hook (template == "hook-bigtext", "kinetic-words",
+ *     "cyber-glitch-word", "hook-statreveal", or .hook === true)
+ *   - Scene 0's narration has >= 6 words
+ *   - Scene 0's durationHint OR text-implied duration is >= 2.5s
+ *
+ * For long-form, we only split if the hook is actually long (> 4s) so
+ * we don't fragment short hooks that work fine.
+ *
+ * Test coverage at retentionHeuristics.test.ts.
+ */
+export function engineerFirstFiveSeconds(scenes: SceneRef[], format: ScriptFormat): SceneRef[] {
+  if (scenes.length === 0) return scenes;
+  const opener = scenes[0];
+  if (!opener) return scenes;
+  if (!isHookScene(opener)) return scenes;
+
+  const text = opener.text || asString((opener.props ?? {}).title);
+  const words = text.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length < HYPER_HOOK_MIN_WORD_COUNT) return scenes;
+
+  const baseDur = opener.durationHint ?? estimateDurationFromWords(words.length);
+  // Long-form needs a hook that's actually long enough to warrant fragments.
+  const trigger = format === "short" ? HYPER_HOOK_MIN_DURATION_SEC : 4;
+  if (baseDur < trigger) return scenes;
+
+  // Plan the micro-scenes. We aim for one punchword cluster per micro,
+  // keeping duration in [0.6, 1.5]s. For a 4s hook with 8 words that's
+  // 4-5 micros at 0.8-1.0s each.
+  const microCount = Math.min(
+    HYPER_HOOK_MAX_MICRO_SCENES,
+    Math.max(3, Math.floor(baseDur / HYPER_HOOK_MAX_MICRO_DURATION_SEC) + 1),
+  );
+  const wordsPerMicro = Math.ceil(words.length / microCount);
+  const microDur = clamp(
+    baseDur / microCount,
+    HYPER_HOOK_MIN_MICRO_DURATION_SEC,
+    HYPER_HOOK_MAX_MICRO_DURATION_SEC,
+  );
+
+  const micros: SceneRef[] = [];
+  for (let i = 0; i < microCount; i++) {
+    const wordSlice = words.slice(i * wordsPerMicro, (i + 1) * wordsPerMicro).join(" ");
+    if (!wordSlice) continue;
+    const tplIdx = i % HYPER_HOOK_TEMPLATE_ROTATION.length;
+    const bgIdx = i % HYPER_HOOK_BG_ROTATION.length;
+    const template = HYPER_HOOK_TEMPLATE_ROTATION[tplIdx] ?? "kinetic-words";
+    const bgOverride = HYPER_HOOK_BG_ROTATION[bgIdx] ?? null;
+    micros.push({
+      id: `s00-hyper${i}`,
+      text: wordSlice,
+      template,
+      props: buildHyperHookProps(template, wordSlice, bgOverride),
+      hook: true,
+      durationHint: microDur,
+      transition: "cut", // hard cuts only — fades soften the cadence
+      reasoning:
+        `Auto-generated micro-scene ${i + 1}/${microCount} of the hyper-cut hook ` +
+        `(retention-overdrive.md). Original opener split into ${microCount} type-and-bg ` +
+        `flashes for 4–6 cuts/sec opening cadence.`,
+    });
+  }
+  if (micros.length === 0) return scenes;
+
+  return [...micros, ...scenes.slice(1)];
+}
+
+/** Did the planner flag this as a hook, or is it one of the hook templates? */
+function isHookScene(scene: SceneRef): boolean {
+  if (scene.hook === true) return true;
+  return (
+    scene.template === "hook-bigtext" ||
+    scene.template === "kinetic-words" ||
+    scene.template === "cyber-glitch-word" ||
+    scene.template === "hook-statreveal"
+  );
+}
+
+/** Build the right props shape for whichever template the rotation picked. */
+function buildHyperHookProps(
+  template: string,
+  text: string,
+  bgOverride: string | null,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {};
+  if (bgOverride) base.bgOverride = bgOverride;
+  if (template === "kinetic-words") {
+    // kinetic-words takes a `words` array
+    return { ...base, words: text.split(/\s+/).slice(0, 4) };
+  }
+  if (template === "cyber-glitch-word") {
+    // cyber-glitch-word takes a single `word`
+    return { ...base, word: text.split(/\s+/)[0] ?? text };
+  }
+  // hook-bigtext takes a `title`
+  return { ...base, title: text };
+}
+
+/** Rough duration estimate for a hook scene with N words at ~3 words/sec. */
+function estimateDurationFromWords(n: number): number {
+  return Math.max(2, n / 3);
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, v));
 }
