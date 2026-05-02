@@ -744,14 +744,11 @@ ${planned.scenes.map((_, i) => `          <div class="hf-tick-mark" data-scene-i
             }
           }
         }
-        // rAF is heavily throttled inside the studio's iframe — it can fire
-        // 0 times per second when the parent tab isn't focused. Combine
-        // multiple triggers so visibility stays correct under all conditions.
-        function loop() {
-          forceSync(root.time());
-          window.requestAnimationFrame(loop);
-        }
-        window.requestAnimationFrame(loop);
+        // Drive caption + scene-visibility sync via GSAP's ticker — see
+        // packages/core/src/script/assemble.ts source comments for why.
+        // tldr: avoids the producer's screenshot-mode fallback (~5x
+        // render speedup) and stays virtual-time-aware during render.
+        gsap.ticker.add(function(){ forceSync(root.time()); });
         // setInterval keeps a fallback heartbeat (still throttled in
         // background tabs, but to ~1 Hz, which is enough to repaint).
         setInterval(function(){ forceSync(root.time()); }, 100);

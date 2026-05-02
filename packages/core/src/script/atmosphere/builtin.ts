@@ -575,6 +575,10 @@ export function defaultAtmosphereForTemplate(templateId: string): string {
     case "cyber-data-cluster":
     case "cyber-glitch-word":
     case "cyber-pixel-still":
+    case "glitch-bar-chart":
+    case "cyber-counter-burst":
+    case "data-stream-reveal":
+    case "cyber-comparison":
       // Cyberlofi family — pair with the glitch-decay layer so the scanlines
       // + intermittent RGB shift run continuously beneath the scene's content.
       return "glitch-decay";
