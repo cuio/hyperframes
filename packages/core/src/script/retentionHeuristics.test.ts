@@ -6,6 +6,7 @@ import {
   capConsecutiveCharts,
   autoEmitPayoff,
   clampChartDurations,
+  engineerFirstFiveSeconds,
 } from "./retentionHeuristics.js";
 import type { Script, SceneRef } from "./types.js";
 
@@ -247,5 +248,113 @@ describe("applyRetentionHeuristics — full pipeline", () => {
     const beforeScenes = script.scenes.length;
     applyRetentionHeuristics(script);
     expect(script.scenes.length).toBe(beforeScenes);
+  });
+});
+
+describe("engineerFirstFiveSeconds", () => {
+  it("splits a dense long hook into 3-5 micro-scenes (short-form)", () => {
+    const scenes = [
+      makeScene({
+        id: "s01",
+        template: "hook-bigtext",
+        text: "Last year more than half of internet traffic was bots not humans bots",
+        hook: true,
+        durationHint: 4,
+      }),
+      makeScene({ id: "s02", template: "aroll-text" }),
+    ];
+    const out = engineerFirstFiveSeconds(scenes, "short");
+    expect(out.length).toBeGreaterThan(scenes.length);
+    // First micro-scene id pattern
+    expect(out[0]?.id).toMatch(/^s00-hyper\d+$/);
+    // All micros marked hook + use cut transition
+    const micros = out.filter((s) => s.id.startsWith("s00-hyper"));
+    expect(micros.length).toBeGreaterThanOrEqual(3);
+    expect(micros.length).toBeLessThanOrEqual(5);
+    for (const m of micros) {
+      expect(m.hook).toBe(true);
+      expect(m.transition).toBe("cut");
+      expect(m.durationHint).toBeGreaterThanOrEqual(0.6);
+      expect(m.durationHint).toBeLessThanOrEqual(1.5);
+    }
+    // Templates rotate through the rotation list
+    const templates = micros.map((m) => m.template);
+    expect(new Set(templates).size).toBeGreaterThan(1);
+    // Original opener is replaced; following scenes preserved
+    expect(out[out.length - 1]?.id).toBe("s02");
+  });
+
+  it("preserves the opener when narration is too short (<6 words)", () => {
+    const scenes = [
+      makeScene({
+        id: "s01",
+        template: "hook-bigtext",
+        text: "Bots wrote it",
+        hook: true,
+        durationHint: 4,
+      }),
+    ];
+    expect(engineerFirstFiveSeconds(scenes, "short")).toEqual(scenes);
+  });
+
+  it("preserves the opener when duration is too short (<2.5s short-form)", () => {
+    const scenes = [
+      makeScene({
+        id: "s01",
+        template: "hook-bigtext",
+        text: "Last year more than half of internet traffic was bots",
+        hook: true,
+        durationHint: 2,
+      }),
+    ];
+    expect(engineerFirstFiveSeconds(scenes, "short")).toEqual(scenes);
+  });
+
+  it("preserves the opener when duration is short for long-form (<4s)", () => {
+    const scenes = [
+      makeScene({
+        id: "s01",
+        template: "hook-bigtext",
+        text: "Last year more than half of internet traffic was bots",
+        hook: true,
+        durationHint: 3,
+      }),
+    ];
+    expect(engineerFirstFiveSeconds(scenes, "long")).toEqual(scenes);
+  });
+
+  it("does NOT trigger on non-hook openers", () => {
+    const scenes = [
+      makeScene({
+        id: "s01",
+        template: "aroll-text",
+        text: "Here is some long narration that goes on for several seconds",
+        durationHint: 5,
+      }),
+    ];
+    expect(engineerFirstFiveSeconds(scenes, "short")).toEqual(scenes);
+  });
+
+  it("alternates bg-override flashes (some null, some gradient) across micros", () => {
+    const scenes = [
+      makeScene({
+        id: "s01",
+        template: "kinetic-words",
+        text: "One two three four five six seven eight nine ten",
+        hook: true,
+        durationHint: 4,
+      }),
+    ];
+    const out = engineerFirstFiveSeconds(scenes, "short");
+    const bgs = out
+      .filter((s) => s.id.startsWith("s00-hyper"))
+      .map((s) => (s.props as { bgOverride?: string }).bgOverride);
+    // At least one flash and at least one un-flashed micro for visual rhythm
+    expect(bgs.some((b) => typeof b === "string")).toBe(true);
+    expect(bgs.some((b) => b === undefined)).toBe(true);
+  });
+
+  it("is a no-op on empty scene list", () => {
+    expect(engineerFirstFiveSeconds([], "short")).toEqual([]);
   });
 });

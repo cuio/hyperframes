@@ -66,6 +66,10 @@ const GROUPS: Group[] = [
         "Turn a written script into a video: AI scene planner + ElevenLabs TTS + master HTML",
       ],
       [
+        "score",
+        "Score a planned script's retention potential pre-render via Claude Haiku — per-scene scores + recommendations",
+      ],
+      [
         "optimize",
         "Close the Gemini retention loop on a rendered project (review → patch → re-render until target)",
       ],

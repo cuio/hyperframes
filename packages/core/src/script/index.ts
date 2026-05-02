@@ -134,3 +134,16 @@ export {
 } from "./themes.js";
 export { BUILTIN_CHARTS, getChart } from "./charts/index.js";
 export type { ChartDef, ChartContext } from "./charts/index.js";
+export {
+  scoreScript,
+  SCORER_DEFAULT_MODEL,
+  type ScriptScore,
+  type SceneScore,
+  type ArcAnalysis,
+  type SceneRecommendation,
+  type Sentiment,
+  type NarrativeRole,
+  type RecommendationType,
+  type Confidence,
+  type ScoreScriptOptions,
+} from "./scriptScorer.js";
