@@ -132,16 +132,45 @@ function renderGlitchBarChart(props: Record<string, unknown>, ctx: TemplateRende
       highlight: Boolean((b as BarSpec).highlight),
     }));
   const maxValue = Math.max(...bars.map((b) => b.value), 1);
+  // Round the chart's y-axis ceiling up to a clean tick boundary so the
+  // five horizontal gridlines + axis labels read like a real chart, not
+  // "0 to 49.6". niceCeiling(49.6) → 50; niceCeiling(247) → 250; etc.
+  const niceCeiling = (v: number): number => {
+    if (v <= 0) return 1;
+    const exp = Math.floor(Math.log10(v));
+    const base = Math.pow(10, exp);
+    const m = v / base;
+    const stepped = m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10;
+    return stepped * base;
+  };
+  const yMax = niceCeiling(maxValue);
+  // 5 horizontal ticks: 0%, 25%, 50%, 75%, 100% of yMax
+  const tickValues = [0, 0.25, 0.5, 0.75, 1.0].map((f) => f * yMax);
+  // Format tick labels — int when ≥10, one decimal when small.
+  const fmtTick = (v: number): string => (v >= 10 ? Math.round(v).toString() : v.toFixed(1));
 
   const barRows = bars
     .map((b, i) => {
-      const heightPct = (b.value / maxValue) * 100;
+      const heightPct = (b.value / yMax) * 100;
       const cls = b.highlight ? "gbc-bar gbc-bar-hi" : "gbc-bar";
       const valueLbl = b.valueLabel || `${b.value}`;
+      // Growth delta: pp difference vs the previous bar. Skip i=0 (no prior).
+      const delta = i > 0 ? b.value - (bars[i - 1]?.value ?? 0) : null;
+      const deltaTxt =
+        delta != null
+          ? `${delta > 0 ? "+" : ""}${Math.abs(delta) >= 10 ? Math.round(delta) : delta.toFixed(1)}`
+          : "";
+      const deltaSign = delta == null || delta === 0 ? "neutral" : delta > 0 ? "up" : "down";
+      const deltaArrow = delta == null || delta === 0 ? "" : delta > 0 ? "↗" : "↘";
       return `
       <div class="gbc-col" style="--i:${i}">
+        ${
+          delta != null
+            ? `<div class="gbc-delta gbc-delta-${deltaSign}">${escapeHtml(deltaArrow)} ${escapeHtml(deltaTxt)}</div>`
+            : ""
+        }
         <div class="gbc-bar-value">${escapeHtml(valueLbl)}</div>
-        <div class="${cls}" data-target-h="${heightPct.toFixed(2)}">
+        <div class="${cls}" data-target-h="${heightPct.toFixed(2)}" data-target-px-from-bottom="${heightPct.toFixed(2)}">
           <div class="gbc-bar-fill"></div>
           <div class="gbc-bar-r"></div>
           <div class="gbc-bar-g"></div>
@@ -150,6 +179,48 @@ function renderGlitchBarChart(props: Record<string, unknown>, ctx: TemplateRende
       </div>`;
     })
     .join("");
+
+  // Y-axis ticks (left edge) — five labels + gridlines stretching across
+  // the chart area. Renders top→bottom so the highest tick is at the
+  // top of the plot.
+  const yAxisTicks = [...tickValues]
+    .reverse()
+    .map((v, idx) => {
+      const topPct = (idx / (tickValues.length - 1)) * 100;
+      return `<div class="gbc-tick" style="--t:${topPct.toFixed(2)}%">
+        <span class="gbc-tick-label">${escapeHtml(fmtTick(v))}</span>
+        <span class="gbc-tick-line"></span>
+      </div>`;
+    })
+    .join("");
+
+  // SVG polyline trendline through the centers of the bar tops. Uses
+  // viewBox 0..1000 × 0..1000 so the path scales with the chart box;
+  // we map each bar to (cx, cy) where cx is the bar column center
+  // and cy is `1000 - heightPct*10`.
+  const trendPoints = bars
+    .map((b, i) => {
+      const cx = ((i + 0.5) / bars.length) * 1000;
+      const heightPct = (b.value / yMax) * 100;
+      const cy = 1000 - heightPct * 10;
+      return `${cx.toFixed(1)},${cy.toFixed(1)}`;
+    })
+    .join(" ");
+  const trendDots = bars
+    .map((b, i) => {
+      const cx = ((i + 0.5) / bars.length) * 1000;
+      const heightPct = (b.value / yMax) * 100;
+      const cy = 1000 - heightPct * 10;
+      return `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="6" class="gbc-trend-dot" style="--i:${i}" />`;
+    })
+    .join("");
+  const trendSvg =
+    bars.length >= 2
+      ? `<svg class="gbc-trend" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+        <polyline points="${trendPoints}" />
+        ${trendDots}
+      </svg>`
+      : "";
 
   return `
 <style>
@@ -291,13 +362,109 @@ function renderGlitchBarChart(props: Record<string, unknown>, ctx: TemplateRende
     will-change: transform;
     z-index: 2;
   }
+  /* Y-axis ticks — labels + horizontal gridlines stretching across
+     the plot area. Five values (0/25/50/75/100% of yMax). */
+  #${id} .gbc-y-axis {
+    position: absolute;
+    left: 4%; right: 8%;
+    top: 42%; bottom: 14%;
+    z-index: 1;
+    pointer-events: none;
+  }
+  #${id} .gbc-tick {
+    position: absolute;
+    left: 0; right: 0;
+    top: var(--t);
+    height: 1px;
+    transform: translateY(-50%);
+    display: flex; align-items: center;
+    opacity: 0;
+    will-change: opacity;
+  }
+  #${id} .gbc-tick-label {
+    flex: 0 0 auto;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: ${t.colors.muted};
+    width: 36px;
+    text-align: right;
+    padding-right: 8px;
+  }
+  #${id} .gbc-tick-line {
+    flex: 1 1 auto;
+    height: 1px;
+    background: repeating-linear-gradient(
+      to right,
+      ${t.colors.fg}1f 0,
+      ${t.colors.fg}1f 4px,
+      transparent 4px,
+      transparent 8px
+    );
+    transform-origin: left;
+    transform: scaleX(0);
+    will-change: transform;
+  }
+  /* SVG trendline + dots — overlaid on the chart, points map to bar tops */
+  #${id} .gbc-trend {
+    position: absolute;
+    left: 8%; right: 8%;
+    top: 42%; bottom: 14%;
+    width: calc(100% - 16%);
+    height: calc(100% - 56%);
+    z-index: 2;
+    pointer-events: none;
+    overflow: visible;
+  }
+  #${id} .gbc-trend polyline {
+    fill: none;
+    stroke: ${t.colors.accent};
+    stroke-width: 2.5;
+    stroke-dasharray: 1500;
+    stroke-dashoffset: 1500;
+    will-change: stroke-dashoffset;
+    filter: drop-shadow(0 0 4px ${t.colors.accent}66);
+  }
+  #${id} .gbc-trend-dot {
+    fill: ${t.colors.bg};
+    stroke: ${t.colors.accent};
+    stroke-width: 2.5;
+    opacity: 0;
+    will-change: opacity;
+  }
+  /* Per-bar growth delta callout — pinned above the bar value */
+  #${id} .gbc-delta {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    opacity: 0;
+    will-change: opacity, transform;
+  }
+  #${id} .gbc-delta-up {
+    color: ${t.colors.accent};
+    background: ${t.colors.accent}15;
+    border: 1px solid ${t.colors.accent}55;
+  }
+  #${id} .gbc-delta-down {
+    color: ${t.colors.accent2};
+    background: ${t.colors.accent2}15;
+    border: 1px solid ${t.colors.accent2}55;
+  }
+  #${id} .gbc-delta-neutral {
+    color: ${t.colors.muted};
+    border: 1px solid ${t.colors.muted}55;
+  }
 </style>
 <div id="${id}" class="scene-glitch-bar-chart" data-composition-id="${id}" data-scene-id="${id}" data-duration="${dur}">
   <div class="gbc-grid"></div>
   ${eyebrow ? `<div class="gbc-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
   <div class="gbc-title">${escapeHtml(title)}</div>
   <div class="gbc-sweep"></div>
+  <div class="gbc-y-axis">${yAxisTicks}</div>
   <div class="gbc-chart">${barRows}</div>
+  ${trendSvg}
   ${sourceTag ? `<div class="gbc-source">${escapeHtml(sourceTag)}</div>` : ""}
   <div class="gbc-scanlines"></div>
 </div>
@@ -308,20 +475,30 @@ function renderGlitchBarChart(props: Record<string, unknown>, ctx: TemplateRende
     ${tlVar}.to('#${id} .gbc-eyebrow', { opacity: 1, duration: 0.3 }, 0.05);
     ${tlVar}.to('#${id} .gbc-title', { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out' }, 0.1);
     ${tlVar}.to('#${id} .gbc-sweep', { scaleX: 1, duration: 0.6, ease: 'power3.out' }, 0.3);
-    // Bars rise sequentially. Faster + tighter than v1 / v2 — Gemini
-     // flagged the previous timing as "too slow vs voiceover pace" on
-     // s03 and s08. Per-bar duration 0.45s → 0.32s, stagger 0.10s →
-     // 0.06s. Whole chart now lands in <1s vs ~1.5s before.
+    // Y-axis ticks fade in + their gridlines sweep right at the same time
+    // so the chart reads like a real plot framework before bars rise.
+    ${tlVar}.to('#${id} .gbc-tick', { opacity: 1, duration: 0.25, stagger: 0.04, ease: 'power2.out' }, 0.25);
+    ${tlVar}.to('#${id} .gbc-tick-line', { scaleX: 1, duration: 0.5, stagger: 0.04, ease: 'power3.out' }, 0.3);
+    // Bars rise sequentially with a tight per-bar stagger.
     const bars = document.querySelectorAll('#${id} .gbc-bar');
     bars.forEach((bar, i) => {
       const targetH = parseFloat(bar.getAttribute('data-target-h')) + '%';
-      const startTime = 0.4 + i * 0.06;
+      const startTime = 0.6 + i * 0.06;
       ${tlVar}.to(bar, { height: targetH, duration: 0.32, ease: 'power3.out' }, startTime);
       ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-bar-value', { opacity: 1, duration: 0.20 }, startTime + 0.22);
       ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-bar-label', { opacity: 1, duration: 0.20 }, startTime + 0.06);
+      // Growth-delta callout fades in after the bar lands so the eye
+      // sees the bar arrive THEN the +X.X delta as a payoff beat.
+      ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-delta', { opacity: 1, duration: 0.25 }, startTime + 0.40);
     });
-    // Source tag late
-    ${tlVar}.to('#${id} .gbc-source', { opacity: 1, duration: 0.3 }, 1.2);
+    // Trendline draws across the bar tops AFTER bars land — the visual
+    // payoff of "the curve is accelerating, not flattening" (matches
+    // narration cadence on s03-style scripts).
+    const trendStart = 0.6 + bars.length * 0.06 + 0.32;
+    ${tlVar}.to('#${id} .gbc-trend polyline', { strokeDashoffset: 0, duration: 0.7, ease: 'power3.out' }, trendStart);
+    ${tlVar}.to('#${id} .gbc-trend-dot', { opacity: 1, duration: 0.18, stagger: 0.06, ease: 'power2.out' }, trendStart + 0.2);
+    // Source tag last
+    ${tlVar}.to('#${id} .gbc-source', { opacity: 1, duration: 0.3 }, trendStart + 0.7);
     window.__timelines = window.__timelines || {};
     window.__timelines['${id}'] = ${tlVar};
   })();
