@@ -308,15 +308,17 @@ function renderGlitchBarChart(props: Record<string, unknown>, ctx: TemplateRende
     ${tlVar}.to('#${id} .gbc-eyebrow', { opacity: 1, duration: 0.3 }, 0.05);
     ${tlVar}.to('#${id} .gbc-title', { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out' }, 0.1);
     ${tlVar}.to('#${id} .gbc-sweep', { scaleX: 1, duration: 0.6, ease: 'power3.out' }, 0.3);
-    // Bars rise sequentially, each 0.08s apart. Each bar gets a tiny RGB
-    // shimmer at the end of its rise as a hard-edge glitch beat.
+    // Bars rise sequentially. Faster + tighter than v1 / v2 — Gemini
+     // flagged the previous timing as "too slow vs voiceover pace" on
+     // s03 and s08. Per-bar duration 0.45s → 0.32s, stagger 0.10s →
+     // 0.06s. Whole chart now lands in <1s vs ~1.5s before.
     const bars = document.querySelectorAll('#${id} .gbc-bar');
     bars.forEach((bar, i) => {
       const targetH = parseFloat(bar.getAttribute('data-target-h')) + '%';
-      const startTime = 0.5 + i * 0.10;
-      ${tlVar}.to(bar, { height: targetH, duration: 0.45, ease: 'power3.out' }, startTime);
-      ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-bar-value', { opacity: 1, duration: 0.25 }, startTime + 0.30);
-      ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-bar-label', { opacity: 1, duration: 0.25 }, startTime + 0.10);
+      const startTime = 0.4 + i * 0.06;
+      ${tlVar}.to(bar, { height: targetH, duration: 0.32, ease: 'power3.out' }, startTime);
+      ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-bar-value', { opacity: 1, duration: 0.20 }, startTime + 0.22);
+      ${tlVar}.to('#${id} .gbc-col[style*="--i:' + i + '"] .gbc-bar-label', { opacity: 1, duration: 0.20 }, startTime + 0.06);
     });
     // Source tag late
     ${tlVar}.to('#${id} .gbc-source', { opacity: 1, duration: 0.3 }, 1.2);
@@ -459,6 +461,31 @@ function renderCyberCounterBurst(
   }
   #${id} .ccb-counter-r { color: ${t.colors.accent2}; transform: translate(-4px, 0); opacity: 0.5; }
   #${id} .ccb-counter-g { color: ${t.colors.accent}; transform: translate(4px, 0); opacity: 0.5; }
+  /* Continuous chromatic drift on the R / G layers — keeps the counter
+     alive after the GSAP rise lands. Tiny ±3px amplitude so it reads as
+     ambient digital decay, not a new beat. v1 / v2 of this template
+     scored 7/6/10 because Gemini flagged "static after reveal." Same
+     pattern that fixed cyber-glitch-word on the dead-internet v2 render. */
+  #${id} .ccb-counter-r,
+  #${id} .ccb-counter-g {
+    animation: ccb-rgb-drift-${id} 3.2s ease-in-out infinite;
+  }
+  #${id} .ccb-counter-g { animation-delay: 0.6s; }
+  @keyframes ccb-rgb-drift-${id} {
+    0%, 100% { transform: translate(-4px, 0); }
+    25%      { transform: translate(-7px, -1px); }
+    50%      { transform: translate(-2px, 1px); }
+    75%      { transform: translate(-5px, 0); }
+  }
+  /* Continuous burst pulse on the pixel-cut bars — every ~1.6s a single
+     bar flickers briefly. Adds a beat through the hold phase. */
+  #${id} .ccb-cut.a { animation: ccb-cut-pulse-${id} 3.2s steps(40) infinite; }
+  #${id} .ccb-cut.b { animation: ccb-cut-pulse-${id} 3.2s steps(40) infinite; animation-delay: 1.6s; }
+  @keyframes ccb-cut-pulse-${id} {
+    0%, 96%  { opacity: 0; }
+    97%, 99% { opacity: 0.8; }
+    100%     { opacity: 0; }
+  }
   #${id} .ccb-suffix {
     font-size: clamp(80px, 7vw, 130px);
     color: ${t.colors.fg};

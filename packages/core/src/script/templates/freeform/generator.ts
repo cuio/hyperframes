@@ -224,7 +224,12 @@ export async function generateFreeformScene(
       systemInstruction: system,
       tool: TOOL,
       temperature: 0.55,
-      maxOutputTokens: 4096,
+      // 4096 was too tight — the validator allows 16KB of HTML which is
+      // already ~4K tokens, plus the JSON wrapper + designNotes pushed
+      // Flash to MALFORMED_FUNCTION_CALL on real-world prompts. 8192 is
+      // the comfortable headroom; same number we landed on for the
+      // optimizer's render review tool.
+      maxOutputTokens: 8192,
     });
 
     const html = typeof result.html === "string" ? result.html : "";
