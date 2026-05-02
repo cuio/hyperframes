@@ -666,7 +666,10 @@ const LOLLIPOP_TIMELINE: ChartDef = {
       const cat = categories.find((c) => c.id === catId);
       return cat ? cat.color : t.colors.accent;
     };
-    const padX = 80;
+    // padX needs to leave room for centered labels at the leftmost/rightmost
+    // lollipops. Without enough room, labels overflow chart bounds and clip.
+    // 220px gives ~22 chars at the 20px label font size on each side.
+    const padX = 220;
     const axisY = h * 0.66; // axis sits ~2/3 down so labels above + dates below both fit
     const stemMax = axisY - 80; // space above axis for label + stem
     const colW = (w - padX * 2) / Math.max(events.length - 1, 1);
@@ -687,18 +690,29 @@ const LOLLIPOP_TIMELINE: ChartDef = {
         .filter(Boolean);
       const labelHeight = labelLines.length * 22;
       const labelTopY = dotY - 24 - labelHeight;
+      // Anchor labels to "start" near the left edge, "end" near the right
+      // edge, so they fit within the chart canvas instead of clipping.
+      // Inner lollipops keep middle anchoring as before.
+      const isLeftEdge = i === 0 && events.length > 1;
+      const isRightEdge = i === events.length - 1 && events.length > 1;
+      const textAnchor = isLeftEdge ? "start" : isRightEdge ? "end" : "middle";
+      const textX = isLeftEdge ? cx - 6 : isRightEdge ? cx + 6 : cx;
       const labelText = labelLines
         .map(
           (line, li) =>
-            `<text x="${cx.toFixed(1)}" y="${(labelTopY + 18 + li * 22).toFixed(1)}" text-anchor="middle" font-size="20" font-weight="700" fill="${t.colors.fg}">${escapeHtml(line)}</text>`,
+            `<text x="${textX.toFixed(1)}" y="${(labelTopY + 18 + li * 22).toFixed(1)}" text-anchor="${textAnchor}" font-size="20" font-weight="700" fill="${t.colors.fg}">${escapeHtml(line)}</text>`,
         )
         .join("\n  ");
+      // Date labels under the axis use the same anchor logic so the leftmost
+      // date sits inside the chart, not centered under the lollipop.
+      const dateAnchor = isLeftEdge ? "start" : isRightEdge ? "end" : "middle";
+      const dateX = isLeftEdge ? cx - 6 : isRightEdge ? cx + 6 : cx;
       return `
   <g class="hf-lollipop hf-lollipop-${i}" opacity="0">
     ${labelText}
     <line class="hf-lollipop-stem" x1="${cx.toFixed(1)}" y1="${axisY.toFixed(1)}" x2="${cx.toFixed(1)}" y2="${axisY.toFixed(1)}" data-target-y2="${dotY.toFixed(1)}" stroke="${color}" stroke-width="2.5" />
     <circle class="hf-lollipop-dot" cx="${cx.toFixed(1)}" cy="${dotY.toFixed(1)}" r="0" data-target-r="9" fill="${color}" />
-    <text x="${cx.toFixed(1)}" y="${(axisY + 36).toFixed(1)}" text-anchor="middle" font-size="22" font-weight="700" fill="${t.colors.muted}">${escapeHtml(evt.date)}</text>
+    <text x="${dateX.toFixed(1)}" y="${(axisY + 36).toFixed(1)}" text-anchor="${dateAnchor}" font-size="22" font-weight="700" fill="${t.colors.muted}">${escapeHtml(evt.date)}</text>
   </g>`;
     })
     .join("")}
@@ -887,6 +901,7 @@ const GROUPED_BARS: ChartDef = {
         tokens: t,
         classId: "ann-0",
         fontSize: 18,
+        bounds: { left: 0, top: 0, right: w, bottom: h },
       });
     }
     return `
@@ -1061,6 +1076,7 @@ const ANNOTATED_AREA: ChartDef = {
           tokens: t,
           classId: "ann-0",
           fontSize: 18,
+          bounds: { left: 0, top: 0, right: w, bottom: h },
         });
       }
     }
