@@ -16,7 +16,7 @@
  */
 
 import { defineCommand } from "citty";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Example } from "./_examples.js";
 import { c } from "../ui/colors.js";
@@ -303,13 +303,12 @@ function printSummary(result: OptimizeRetentionResult): void {
 function findMostRecentRender(projectDir: string): string | null {
   const rendersDir = join(projectDir, "renders");
   if (!existsSync(rendersDir)) return null;
-  const fs = require("node:fs") as typeof import("node:fs");
-  const entries = fs.readdirSync(rendersDir);
+  const entries = readdirSync(rendersDir);
   const mp4s = entries.filter((f: string) => f.toLowerCase().endsWith(".mp4"));
   if (mp4s.length === 0) return null;
   const withMtime = mp4s.map((f: string) => ({
     f,
-    mtime: fs.statSync(join(rendersDir, f)).mtimeMs,
+    mtime: statSync(join(rendersDir, f)).mtimeMs,
   }));
   withMtime.sort((a, b) => b.mtime - a.mtime);
   return withMtime[0] ? join(rendersDir, withMtime[0].f) : null;
