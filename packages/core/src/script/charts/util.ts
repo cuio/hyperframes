@@ -190,6 +190,14 @@ export interface AnnotationOptions {
   fontSize?: number;
   /** Show the curved leader arrow. Default true. */
   showLeader?: boolean;
+  /**
+   * Optional chart-canvas bounds. When supplied, the pill is clamped so it
+   * stays inside these bounds (with a small inset margin). Without bounds
+   * a pill anchored near the chart edge can render off-canvas — most
+   * commonly `position: "above"` on a tall bar. The leader arrow still
+   * points at the original anchor regardless of the clamp.
+   */
+  bounds?: { left: number; top: number; right: number; bottom: number };
 }
 
 /**
@@ -222,6 +230,7 @@ export function renderAnnotation(opts: AnnotationOptions): string {
     classId = "ann",
     fontSize = 18,
     showLeader = true,
+    bounds,
   } = opts;
   // Lay text into lines (max ~28 chars per line for the default width).
   const lines = wrapText(text, Math.max(18, Math.round(width / (fontSize * 0.45))));
@@ -231,34 +240,48 @@ export function renderAnnotation(opts: AnnotationOptions): string {
   // Pill near-edge midpoint (the side facing the anchor) in chart coords.
   let pillX: number;
   let pillY: number;
-  let arrowFromX: number;
-  let arrowFromY: number;
   switch (position) {
     case "above":
       pillX = anchor.x - width / 2;
       pillY = anchor.y - offset - height;
-      arrowFromX = anchor.x;
-      arrowFromY = pillY + height;
       break;
     case "below":
       pillX = anchor.x - width / 2;
       pillY = anchor.y + offset;
-      arrowFromX = anchor.x;
-      arrowFromY = pillY;
       break;
     case "left":
       pillX = anchor.x - offset - width;
       pillY = anchor.y - height / 2;
-      arrowFromX = pillX + width;
-      arrowFromY = anchor.y;
       break;
     case "right":
     default:
       pillX = anchor.x + offset;
       pillY = anchor.y - height / 2;
-      arrowFromX = pillX;
-      arrowFromY = anchor.y;
       break;
+  }
+  // Clamp pill into chart bounds (with 12px inset margin) if bounds were
+  // supplied. The leader arrow still points at the original anchor — only
+  // the pill body shifts. This prevents pills overflowing the canvas when
+  // the anchor is near an edge (common case: tall bar with "above" pill).
+  if (bounds) {
+    const margin = 12;
+    pillX = Math.max(bounds.left + margin, Math.min(pillX, bounds.right - width - margin));
+    pillY = Math.max(bounds.top + margin, Math.min(pillY, bounds.bottom - height - margin));
+  }
+  // Recompute arrow start point based on the (possibly clamped) pill
+  // position — pick the pill edge closest to the anchor for a clean leader.
+  const pillCenterX = pillX + width / 2;
+  const pillCenterY = pillY + height / 2;
+  let arrowFromX: number;
+  let arrowFromY: number;
+  if (Math.abs(anchor.x - pillCenterX) > Math.abs(anchor.y - pillCenterY)) {
+    // Anchor is more to the side — exit from left or right edge of pill.
+    arrowFromX = anchor.x > pillCenterX ? pillX + width : pillX;
+    arrowFromY = pillCenterY;
+  } else {
+    // Anchor is more above/below — exit from top or bottom edge of pill.
+    arrowFromX = pillCenterX;
+    arrowFromY = anchor.y > pillCenterY ? pillY + height : pillY;
   }
   // Arrow target — pull back ~14px from the anchor so the arrowhead doesn't
   // cover the data point.
@@ -291,21 +314,25 @@ export function renderAnnotation(opts: AnnotationOptions): string {
   // Estimate path length for stroke-dasharray (simple straight-line + bow
   // approximation; not perfect but close enough for stroke-dashoffset).
   const pathLen = Math.max(60, dist * 1.18);
-  // Pill body: subtle border in `subtle` token, fill that's a hair darker
-  // than bg so it reads against the parchment.
+  // Pill body: subtle border + soft fill that reads clearly on both light
+  // (parchment) and dark theme backgrounds. We use `subtle` (not `bg`)
+  // because subtle is tuned to be one-step-removed from bg in both
+  // directions — beige-on-cream for FT, soft-grey-on-deep-violet for
+  // Dreamspace. Higher opacity than v1 (was 0.45 → washed out on dark).
   const pillFill = tokens.colors.subtle;
   const pillStroke = tokens.colors.muted;
   // Each line is its own <text> for clean leading; first line at padY +
-  // fontSize, subsequent lines at +lineHeight.
+  // fontSize, subsequent lines at +lineHeight. Text colored in `fg` so it
+  // reads sharply against the pill in any theme.
   const textLines = lines
     .map((line, i) => {
       const lineY = pillY + padY + fontSize + i * lineHeight;
-      return `<text x="${(pillX + width / 2).toFixed(1)}" y="${lineY.toFixed(1)}" text-anchor="middle" font-size="${fontSize}" font-style="italic" fill="${tokens.colors.muted}">${escapeHtml(line)}</text>`;
+      return `<text x="${(pillX + width / 2).toFixed(1)}" y="${lineY.toFixed(1)}" text-anchor="middle" font-size="${fontSize}" font-style="italic" fill="${tokens.colors.fg}">${escapeHtml(line)}</text>`;
     })
     .join("\n  ");
   return `
   <g class="hf-pill hf-pill-${classId}" opacity="0">
-    <rect x="${pillX.toFixed(1)}" y="${pillY.toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}" rx="6" ry="6" fill="${pillFill}" fill-opacity="0.45" stroke="${pillStroke}" stroke-opacity="0.5" stroke-width="1" />
+    <rect x="${pillX.toFixed(1)}" y="${pillY.toFixed(1)}" width="${width.toFixed(1)}" height="${height.toFixed(1)}" rx="6" ry="6" fill="${pillFill}" fill-opacity="0.85" stroke="${pillStroke}" stroke-opacity="0.6" stroke-width="1" />
     ${textLines}
   </g>
   ${

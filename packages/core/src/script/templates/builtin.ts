@@ -780,6 +780,11 @@ const CHART_SCENE: Template = {
         description:
           "Which side of the footer the byline sits on. 'left' (default) puts byline LEFT, sources RIGHT — used in Images 1-3 of the FT references. 'right' swaps them.",
       },
+      bgOverride: {
+        type: "string",
+        description:
+          "Optional CSS background value that replaces the theme's solid bg color. Pass any valid CSS background expression (linear-gradient, radial-gradient, multi-stop, etc.) for atmosphere. Example: 'radial-gradient(ellipse at top, #1a0a2e 0%, #0d0d18 70%)'. Use sparingly — most editorial charts work best on the flat theme bg.",
+      },
       chart: {
         type: "object",
         description: "Chart spec — choose from BUILTIN_CHARTS",
@@ -809,6 +814,9 @@ const CHART_SCENE: Template = {
     const titleStyle =
       asString(props.titleStyle) === "underline-below" ? "underline-below" : "rule-above";
     const bylinePosition = asString(props.bylinePosition) === "right" ? "right" : "left";
+    // bgOverride accepts any CSS background expression — gradients, layered
+    // gradients, radial atmospheres. Falls back to the theme's solid bg.
+    const bgValue = asString(props.bgOverride) || t.colors.bg;
     const chartSpec = (props.chart ?? {}) as { type?: unknown; props?: unknown };
     const chartType = asString(chartSpec.type);
     const chartProps = (chartSpec.props ?? {}) as Record<string, unknown>;
@@ -830,7 +838,7 @@ const CHART_SCENE: Template = {
     return `
 <div class="scene scene-chart" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
   <style>
-    #${ctx.sceneId}.scene-chart { background: ${t.colors.bg}; color: ${t.colors.fg}; padding: 80px 110px 70px; display: flex; flex-direction: column; gap: 18px; position: absolute; inset: 0; font-family: ${t.fonts.display}; }
+    #${ctx.sceneId}.scene-chart { background: ${bgValue}; color: ${t.colors.fg}; padding: 80px 110px 70px; display: flex; flex-direction: column; gap: 18px; position: absolute; inset: 0; font-family: ${t.fonts.display}; }
     #${ctx.sceneId} .cs-rule { width: 120px; height: 5px; background: ${t.colors.accent}; opacity: 0; transform-origin: left; transform: scaleX(0.4); }
     #${ctx.sceneId} .cs-titlewrap { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
     #${ctx.sceneId} .cs-title { font-size: 56px; font-weight: 700; line-height: 1.12; max-width: 1700px; opacity: 0; transform: translateY(14px); letter-spacing: -0.01em; }
