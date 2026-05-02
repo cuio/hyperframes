@@ -6,3 +6,10 @@ export {
   defaultAtmosphereForTemplate,
   renderAtmosphere,
 } from "./builtin.js";
+export {
+  compose,
+  BUILTIN_COMPOSITIONS,
+  resolveAtmosphereOrComposition,
+  listAllAtmosphereIds,
+  type AtmosphereComposition,
+} from "./compose.js";

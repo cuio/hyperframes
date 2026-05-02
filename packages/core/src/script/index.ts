@@ -14,8 +14,28 @@ export {
   getAtmosphere,
   defaultAtmosphereForTemplate,
   renderAtmosphere,
+  compose,
+  BUILTIN_COMPOSITIONS,
+  resolveAtmosphereOrComposition,
+  listAllAtmosphereIds,
 } from "./atmosphere/index.js";
-export type { AtmospherePreset, AtmosphereContext } from "./atmosphere/index.js";
+export type {
+  AtmospherePreset,
+  AtmosphereContext,
+  AtmosphereComposition,
+} from "./atmosphere/index.js";
+export {
+  extractReferenceProfile,
+  normalizeProfile,
+  validateReferenceInputs,
+  readPersistedProfile,
+  REFERENCE_PROFILE_REL_PATH,
+} from "./referenceProfile.js";
+export type {
+  ReferenceProfile,
+  ExtractReferenceOptions,
+  ExtractReferenceResult,
+} from "./referenceProfile.js";
 export {
   TRANSITION_DURATIONS,
   TRANSITION_IDS,

@@ -32,7 +32,14 @@ const BUILTIN: LoadedTheme[] = [
     tokens: DATA_DRIFT_DARK,
     fonts: { googleFonts: [] },
     preferences: {
-      atmospheres: ["aurora", "cosmic-dust", "geometric-grid", "particle-field"],
+      // Removed cosmic-dust + particle-field + geometric-grid: they read as
+      // "starfield / polkadot / wallpaper-grid" on a dark bg and almost
+      // always make the render feel like a stock template instead of an
+      // editorial piece. The new defaults — aurora + gradient-mesh +
+      // studio-flat — keep the futuristic feel without the pattern noise.
+      // Users who genuinely want those patterns can opt in via the studio
+      // theme picker.
+      atmospheres: ["aurora", "gradient-mesh", "studio-flat", "noise-grain"],
       transitions: ["fade", "zoom-in", "wipe-left"],
       icons: [],
     },
@@ -55,7 +62,10 @@ const BUILTIN: LoadedTheme[] = [
       ],
     },
     preferences: {
-      atmospheres: ["aurora", "cosmic-dust", "radial-pulse", "flow-lines"],
+      // Removed cosmic-dust (star/dust pattern user disliked).
+      // radial-pulse and flow-lines kept — they're motion gradients, not
+      // pattern textures. Added gradient-mesh for variety.
+      atmospheres: ["aurora", "gradient-mesh", "radial-pulse", "studio-flat"],
       transitions: ["fade", "zoom-in", "zoom-out"],
       icons: ["sparkle", "bolt", "network", "target"],
     },
