@@ -7,6 +7,7 @@ import { BUILTIN_CHARTS } from "./charts/index.js";
 import { ATMOSPHERE_IDS } from "./atmosphere/index.js";
 import { TRANSITION_IDS } from "./transitions/index.js";
 import type { Script, SceneRef, ScriptMeta, SceneTransition } from "./types.js";
+import { applyRetentionHeuristics } from "./retentionHeuristics.js";
 import type { CostEventSink } from "../telemetry/cost.js";
 
 function emitAnthropicCost(
@@ -693,7 +694,11 @@ export async function planScript(rawScript: string, opts: PlanOptions): Promise<
     warnings: [...baseWarnings, ...lingeringSchemaWarnings],
   };
 
-  return { meta, scenes };
+  // Apply retention-ladder heuristics — auto-inserts hooks before charts at
+  // scene 1, caps consecutive chart-scenes, emits chart-payoff scenes after
+  // every chart-scene, and clamps chart durations for short-form. Pure
+  // post-processor; see retentionHeuristics.ts + retention-ladder.md skill.
+  return applyRetentionHeuristics({ meta, scenes });
 }
 
 // ── Variant generation ────────────────────────────────────────────────────

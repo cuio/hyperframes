@@ -785,6 +785,11 @@ const CHART_SCENE: Template = {
         description:
           "Optional CSS background value that replaces the theme's solid bg color. Pass any valid CSS background expression (linear-gradient, radial-gradient, multi-stop, etc.) for atmosphere. Example: 'radial-gradient(ellipse at top, #1a0a2e 0%, #0d0d18 70%)'. Use sparingly — most editorial charts work best on the flat theme bg.",
       },
+      dataDelaySec: {
+        type: "number",
+        description:
+          "Seconds to hold the chart's DATA layer (bars, lines, markers, pills) at opacity 0 while the chrome (title + subtitle + footer + gridlines + axis labels) plays its entrance. Lets the chart enter UNDER a voiceover that introduces the number — see retention-ladder.md, rule 1 ('Pre-roll the chrome'). Default 0. The assembler may override this from a word-level transcript when audio-sync is enabled (see audioSync.ts). Clamped to [0, 4].",
+      },
       chart: {
         type: "object",
         description: "Chart spec — choose from BUILTIN_CHARTS",
@@ -817,6 +822,14 @@ const CHART_SCENE: Template = {
     // bgOverride accepts any CSS background expression — gradients, layered
     // gradients, radial atmospheres. Falls back to the theme's solid bg.
     const bgValue = asString(props.bgOverride) || t.colors.bg;
+    // Data-layer entrance delay — see retention-ladder.md, rule 1. The
+    // chrome (title/subtitle/footer + gridlines + axis labels) plays its
+    // entrance immediately; the chart's DATA layer (bars + lines + markers
+    // + pills + lollipops) is held at opacity 0 for dataDelaySec seconds,
+    // then animates in. Author-set OR assembler-overridden by audioSync
+    // when a transcript is available.
+    const dataDelayRaw = Number(props.dataDelaySec);
+    const dataDelaySec = Number.isFinite(dataDelayRaw) ? Math.max(0, Math.min(4, dataDelayRaw)) : 0;
     const chartSpec = (props.chart ?? {}) as { type?: unknown; props?: unknown };
     const chartType = asString(chartSpec.type);
     const chartProps = (chartSpec.props ?? {}) as Record<string, unknown>;
@@ -876,6 +889,8 @@ const CHART_SCENE: Template = {
       tl.to(s.querySelector('.cs-chart'), { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0.4);
       // Editorial chart chrome: gridlines + y-axis labels fade in at 0.45-0.55s
       // — light enough to read as background context before the data lands.
+      // Gridlines + axis labels are CHROME (always immediate); only the data
+      // layer below honours dataDelay.
       var gridLines = s.querySelectorAll('.hf-grid-line');
       gridLines.forEach(function(g, i) {
         var to = g.getAttribute('data-target-opacity');
@@ -885,6 +900,11 @@ const CHART_SCENE: Template = {
       axisLabels.forEach(function(a, i) {
         tl.to(a, { opacity: 0.85, duration: 0.3, ease: 'power2.out' }, 0.5 + i * 0.04);
       });
+      // ── DATA LAYER ────────────────────────────────────────────────────
+      // Everything below honours dataDelay so the bars / lines / markers /
+      // pills can be held until a voiceover catches up. retention-ladder.md
+      // rule 1 ('Pre-roll the chrome') + rule 2 ('Voice leads chart').
+      var dataDelay = ${dataDelaySec.toFixed(2)};
       // Animate every chart primitive based on data-target attributes.
       var bars = s.querySelectorAll('.hf-bar');
       bars.forEach(function(b, i) {
@@ -894,108 +914,194 @@ const CHART_SCENE: Template = {
         var vars = { duration: 0.7, ease: '${t.motion.ease}' };
         if (tw) vars.attr = { width: parseFloat(tw) };
         if (ty || th) vars.attr = Object.assign(vars.attr || {}, { y: ty ? parseFloat(ty) : undefined, height: th ? parseFloat(th) : undefined });
-        tl.to(b, vars, 0.55 + i * 0.12);
+        tl.to(b, vars, 0.55 + dataDelay + i * 0.12);
       });
       var vals = s.querySelectorAll('.hf-bar-val');
       vals.forEach(function(v, i) {
-        tl.to(v, { opacity: 1, duration: 0.35, ease: '${t.motion.ease}' }, 0.85 + i * 0.12);
+        tl.to(v, { opacity: 1, duration: 0.35, ease: '${t.motion.ease}' }, 0.85 + dataDelay + i * 0.12);
       });
       var rise = s.querySelector('.hf-rise');
-      if (rise) tl.to(rise, { strokeDashoffset: 0, duration: 0.7, ease: '${t.motion.ease}' }, 0.55);
+      if (rise) tl.to(rise, { strokeDashoffset: 0, duration: 0.7, ease: '${t.motion.ease}' }, 0.55 + dataDelay);
       var crash = s.querySelector('.hf-crash');
-      if (crash) tl.to(crash, { strokeDashoffset: 0, duration: 0.7, ease: '${t.motion.ease}' }, 1.1);
+      if (crash) tl.to(crash, { strokeDashoffset: 0, duration: 0.7, ease: '${t.motion.ease}' }, 1.1 + dataDelay);
       var peak = s.querySelector('.hf-peak');
       if (peak) {
         var tr = peak.getAttribute('data-target-r');
-        if (tr) tl.to(peak, { attr: { r: parseFloat(tr) }, duration: 0.4, ease: 'back.out(2)' }, 1.0);
+        if (tr) tl.to(peak, { attr: { r: parseFloat(tr) }, duration: 0.4, ease: 'back.out(2)' }, 1.0 + dataDelay);
       }
       var peakLabel = s.querySelector('.hf-peak-label');
-      if (peakLabel) tl.to(peakLabel, { opacity: 1, duration: 0.35 }, 1.1);
+      if (peakLabel) tl.to(peakLabel, { opacity: 1, duration: 0.35 }, 1.1 + dataDelay);
       var dropBadge = s.querySelector('.hf-drop-badge');
-      if (dropBadge) tl.to(dropBadge, { opacity: 1, duration: 0.35 }, 1.5);
+      if (dropBadge) tl.to(dropBadge, { opacity: 1, duration: 0.35 }, 1.5 + dataDelay);
       var ring = s.querySelector('.hf-ring');
       if (ring) {
         var off = ring.getAttribute('data-target-offset');
-        if (off) tl.to(ring, { attr: { 'stroke-dashoffset': parseFloat(off) }, duration: 1.0, ease: '${t.motion.ease}' }, 0.55);
+        if (off) tl.to(ring, { attr: { 'stroke-dashoffset': parseFloat(off) }, duration: 1.0, ease: '${t.motion.ease}' }, 0.55 + dataDelay);
       }
       var centerVal = s.querySelector('.hf-center-value');
-      if (centerVal) tl.to(centerVal, { opacity: 1, duration: 0.4 }, 0.9);
+      if (centerVal) tl.to(centerVal, { opacity: 1, duration: 0.4 }, 0.9 + dataDelay);
       var centerCap = s.querySelector('.hf-center-caption');
-      if (centerCap) tl.to(centerCap, { opacity: 1, duration: 0.4 }, 1.1);
+      if (centerCap) tl.to(centerCap, { opacity: 1, duration: 0.4 }, 1.1 + dataDelay);
       var cells = s.querySelectorAll('.hf-cell');
       cells.forEach(function(cell, i) {
         var to = cell.getAttribute('data-target-opacity');
-        tl.to(cell, { opacity: to ? parseFloat(to) : 1, duration: 0.18 }, 0.55 + i * 0.012);
+        tl.to(cell, { opacity: to ? parseFloat(to) : 1, duration: 0.18 }, 0.55 + dataDelay + i * 0.012);
       });
       var spine = s.querySelector('.hf-spine');
       if (spine) {
         var ty2 = spine.getAttribute('data-target-y2');
-        if (ty2) tl.to(spine, { attr: { y2: parseFloat(ty2) }, duration: 0.6, ease: '${t.motion.ease}' }, 0.55);
+        if (ty2) tl.to(spine, { attr: { y2: parseFloat(ty2) }, duration: 0.6, ease: '${t.motion.ease}' }, 0.55 + dataDelay);
       }
       var events = s.querySelectorAll('.hf-event');
       events.forEach(function(evt, i) {
-        tl.to(evt, { opacity: 1, duration: 0.4 }, 0.9 + i * 0.18);
+        tl.to(evt, { opacity: 1, duration: 0.4 }, 0.9 + dataDelay + i * 0.18);
       });
       var layers = s.querySelectorAll('.hf-layer');
       layers.forEach(function(layer, i) {
         var tw = layer.getAttribute('data-target-w');
-        if (tw) tl.to(layer, { attr: { width: parseFloat(tw) }, duration: 0.5, ease: '${t.motion.ease}' }, 0.55 + i * 0.12);
+        if (tw) tl.to(layer, { attr: { width: parseFloat(tw) }, duration: 0.5, ease: '${t.motion.ease}' }, 0.55 + dataDelay + i * 0.12);
       });
       var lineA = s.querySelector('.hf-line-a');
-      if (lineA) tl.to(lineA, { strokeDashoffset: 0, duration: 1.2, ease: '${t.motion.ease}' }, 0.55);
+      if (lineA) tl.to(lineA, { strokeDashoffset: 0, duration: 1.2, ease: '${t.motion.ease}' }, 0.55 + dataDelay);
       var lineB = s.querySelector('.hf-line-b');
-      if (lineB) tl.to(lineB, { strokeDashoffset: 0, duration: 1.2, ease: '${t.motion.ease}' }, 0.55);
+      if (lineB) tl.to(lineB, { strokeDashoffset: 0, duration: 1.2, ease: '${t.motion.ease}' }, 0.55 + dataDelay);
       var fill = s.querySelector('.hf-fill');
       if (fill) {
         var fto = fill.getAttribute('data-target-opacity');
-        if (fto) tl.to(fill, { opacity: parseFloat(fto), duration: 0.6 }, 1.4);
+        if (fto) tl.to(fill, { opacity: parseFloat(fto), duration: 0.6 }, 1.4 + dataDelay);
       }
       var labelA = s.querySelector('.hf-label-a');
-      if (labelA) tl.to(labelA, { opacity: 1, duration: 0.35 }, 1.6);
+      if (labelA) tl.to(labelA, { opacity: 1, duration: 0.35 }, 1.6 + dataDelay);
       var labelB = s.querySelector('.hf-label-b');
-      if (labelB) tl.to(labelB, { opacity: 1, duration: 0.35 }, 1.6);
+      if (labelB) tl.to(labelB, { opacity: 1, duration: 0.35 }, 1.6 + dataDelay);
       var gap = s.querySelector('.hf-gap');
-      if (gap) tl.to(gap, { opacity: 1, duration: 0.3 }, 1.7);
+      if (gap) tl.to(gap, { opacity: 1, duration: 0.3 }, 1.7 + dataDelay);
       var gapLabel = s.querySelector('.hf-gap-label');
-      if (gapLabel) tl.to(gapLabel, { opacity: 1, duration: 0.3 }, 1.85);
+      if (gapLabel) tl.to(gapLabel, { opacity: 1, duration: 0.3 }, 1.85 + dataDelay);
       // Lollipop timeline: groups fade in left-to-right; within each group
       // the stem grows up to the dot, then the dot pops, label is already
       // baked into the group fade.
       var lollipops = s.querySelectorAll('.hf-lollipop');
       lollipops.forEach(function(lp, i) {
-        tl.to(lp, { opacity: 1, duration: 0.3 }, 0.6 + i * 0.18);
+        tl.to(lp, { opacity: 1, duration: 0.3 }, 0.6 + dataDelay + i * 0.18);
         var stem = lp.querySelector('.hf-lollipop-stem');
         if (stem) {
           var ty2 = stem.getAttribute('data-target-y2');
-          if (ty2) tl.to(stem, { attr: { y2: parseFloat(ty2) }, duration: 0.5, ease: '${t.motion.ease}' }, 0.65 + i * 0.18);
+          if (ty2) tl.to(stem, { attr: { y2: parseFloat(ty2) }, duration: 0.5, ease: '${t.motion.ease}' }, 0.65 + dataDelay + i * 0.18);
         }
         var dot = lp.querySelector('.hf-lollipop-dot');
         if (dot) {
           var tr = dot.getAttribute('data-target-r');
-          if (tr) tl.to(dot, { attr: { r: parseFloat(tr) }, duration: 0.35, ease: 'back.out(2)' }, 1.0 + i * 0.18);
+          if (tr) tl.to(dot, { attr: { r: parseFloat(tr) }, duration: 0.35, ease: 'back.out(2)' }, 1.0 + dataDelay + i * 0.18);
         }
       });
       // Markers (annotated-area data dots): pop in after the line draws.
       var markers = s.querySelectorAll('.hf-marker');
       markers.forEach(function(m, i) {
         var tr = m.getAttribute('data-target-r');
-        if (tr) tl.to(m, { attr: { r: parseFloat(tr) }, duration: 0.3, ease: 'back.out(2)' }, 1.4 + i * 0.05);
+        if (tr) tl.to(m, { attr: { r: parseFloat(tr) }, duration: 0.3, ease: 'back.out(2)' }, 1.4 + dataDelay + i * 0.05);
       });
       // Annotation pills + curved leader arrows: pill body fades in at 1.6s,
       // leader draws via stroke-dashoffset 0.3s later — the eye reaches the
       // data first, then the explanation.
       var pills = s.querySelectorAll('.hf-pill');
       pills.forEach(function(p, i) {
-        tl.to(p, { opacity: 1, duration: 0.45, ease: '${t.motion.ease}' }, 1.6 + i * 0.2);
+        tl.to(p, { opacity: 1, duration: 0.45, ease: '${t.motion.ease}' }, 1.6 + dataDelay + i * 0.2);
       });
       var leaders = s.querySelectorAll('.hf-pill-leader');
       leaders.forEach(function(l, i) {
-        tl.to(l, { strokeDashoffset: 0, duration: 0.6, ease: 'power2.inOut' }, 1.9 + i * 0.2);
+        tl.to(l, { strokeDashoffset: 0, duration: 0.6, ease: 'power2.inOut' }, 1.9 + dataDelay + i * 0.2);
       });
       // Legend fades in once the data is settled.
       var legend = s.querySelector('.hf-legend');
-      if (legend) tl.to(legend, { opacity: 1, duration: 0.4 }, 1.3);
+      if (legend) tl.to(legend, { opacity: 1, duration: 0.4 }, 1.3 + dataDelay);
+      // Footer is chrome — does NOT honour dataDelay, lands at the same time
+      // regardless of when the data plays.
       tl.to(s.querySelector('.cs-footer'), { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 1.1);
+      window.__timelines = window.__timelines || {};
+      window.__timelines['${ctx.sceneId}'] = tl;
+    })();
+  </script>
+</div>`.trim();
+  },
+};
+
+/**
+ * chart-payoff — a 1.5–2s scene that displays the chart's annotation
+ * text big and centered, in the chart's theme. Designed to be auto-paired
+ * with every `chart-scene` by the planner: the chart shows the data, the
+ * payoff lands the meaning. Implements rule 7 of retention-ladder.md
+ * ('End the chart on the annotation, not the chart').
+ *
+ * Visual: chart-scene's red rule/underline + same byline + same theme,
+ * but no chart canvas. Just the title + the payoff line in display font,
+ * 90+px, centered. Same animation feel as the chart-scene chrome so the
+ * pair reads as one beat.
+ */
+const CHART_PAYOFF: Template = {
+  id: "chart-payoff",
+  description:
+    "1.5–2s payoff card that lands the meaning of the preceding chart. Bold serif statement on the chart's theme. Use immediately after every chart-scene.",
+  whenToUse: [
+    "Always immediately after a chart-scene — encodes 'end on the annotation, not the chart'",
+    "When the visual focus should transition from data to interpretation",
+  ],
+  durationRange: { min: 1.5, max: 3 },
+  propsSchema: {
+    type: "object",
+    properties: {
+      payoff: {
+        type: "string",
+        description:
+          "The interpretation line — what the data MEANS. Usually the same text as the preceding chart-scene's annotation pill, optionally tightened.",
+      },
+      eyebrow: {
+        type: "string",
+        description: "Optional small label above the payoff, e.g. 'TAKEAWAY', 'BOTTOM LINE'.",
+      },
+      byline: {
+        type: "string",
+        description: "Match the preceding chart-scene's byline for visual continuity.",
+      },
+      bgOverride: {
+        type: "string",
+        description:
+          "Optional CSS background — same gradient as the preceding chart-scene if used.",
+      },
+    },
+    required: ["payoff"],
+  },
+  render(props, ctx) {
+    const t = ctx.tokens;
+    const dur = formatSec(ctx.durationSeconds);
+    const payoff = asString(props.payoff) || "";
+    const eyebrow = asString(props.eyebrow);
+    const byline = asString(props.byline);
+    const bgValue = asString(props.bgOverride) || t.colors.bg;
+    return `
+<div class="scene scene-chart-payoff" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
+  <style>
+    #${ctx.sceneId}.scene-chart-payoff { background: ${bgValue}; color: ${t.colors.fg}; padding: 80px 110px 70px; display: flex; flex-direction: column; gap: 24px; position: absolute; inset: 0; font-family: ${t.fonts.display}; justify-content: center; }
+    #${ctx.sceneId} .cp-rule { width: 220px; height: 5px; background: ${t.colors.accent}; opacity: 0; transform-origin: left; transform: scaleX(0); }
+    #${ctx.sceneId} .cp-eyebrow { font-size: 22px; font-weight: 700; letter-spacing: 0.24em; text-transform: uppercase; color: ${t.colors.accent}; font-family: ${t.fonts.mono}; opacity: 0; }
+    #${ctx.sceneId} .cp-payoff { font-size: 96px; font-weight: 700; line-height: 1.1; max-width: 1500px; opacity: 0; transform: translateY(16px); letter-spacing: -0.015em; }
+    #${ctx.sceneId} .cp-byline { position: absolute; bottom: 70px; left: 110px; font-size: 18px; font-weight: 700; color: ${t.colors.fg}; letter-spacing: 0.02em; opacity: 0; }
+  </style>
+  <div class="cp-rule"></div>
+  ${eyebrow ? `<div class="cp-eyebrow">${escapeHtml(eyebrow)}</div>` : ""}
+  <div class="cp-payoff">${escapeHtml(payoff)}</div>
+  ${byline ? `<div class="cp-byline">${escapeHtml(byline)}</div>` : ""}
+  <script>
+    (function(){
+      var s = document.getElementById('${ctx.sceneId}');
+      if (!window.gsap || !s) return;
+      var tl = window.gsap.timeline({ paused: true });
+      tl.to(s.querySelector('.cp-rule'), { opacity: 1, scaleX: 1, duration: 0.5, ease: 'expo.out' }, 0);
+      var eb = s.querySelector('.cp-eyebrow');
+      if (eb) tl.to(eb, { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0.15);
+      tl.to(s.querySelector('.cp-payoff'), { opacity: 1, y: 0, duration: 0.65, ease: '${t.motion.ease}' }, 0.25);
+      var by = s.querySelector('.cp-byline');
+      if (by) tl.to(by, { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0.6);
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
     })();
@@ -1015,6 +1121,7 @@ export const BUILTIN_TEMPLATES: readonly Template[] = [
   COMPARISON,
   QUOTE,
   CHART_SCENE,
+  CHART_PAYOFF,
   OUTRO_CTA,
   IMAGE_SCENE_TEMPLATE,
   // Cyberlofi family — pure-black canvas, JetBrains Mono everywhere,

@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { BUILTIN_TEMPLATES, DEFAULT_TOKENS, type DesignTokens } from "./templates/index.js";
 import type { ImageRef, Template } from "./templates/types.js";
@@ -11,6 +11,7 @@ import type { VisualDirectionPlan } from "./visualDirector.js";
 import { readSfxManifest, resolveSfxStartForScene, type SfxEntry } from "./sfx/manifest.js";
 import { readMusicManifest, resolveMusicSpan, type SceneSpan } from "./music/manifest.js";
 import { getCoreVersion } from "./coreVersion.js";
+import { findChartLeadInTranscript, type TranscriptWord } from "./audioSync.js";
 
 /**
  * Stamp constants. Studio-side staleness detection looks for these exact
@@ -97,6 +98,13 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
     sfxBySceneId.set(entry.sceneId, list);
   }
 
+  // Audio-sync transcript (optional): if the project has a word-level
+  // transcript.json (produced by `hyperframes transcribe`), we use it to
+  // compute the right `dataDelaySec` for each chart-scene so the data layer
+  // animates UNDER the spoken word, not before. Quiet no-op when missing.
+  // See audioSync.ts + retention-ladder.md rule 2 ('Voice leads chart').
+  const transcriptWords = loadProjectTranscript(opts.projectDir);
+
   // Music manifest: read here, emit AFTER the scene loop so we know each
   // scene's absolute cursor position. Music tracks span multiple scenes so
   // they need the full scene-span table to compute start + declared duration.
@@ -172,6 +180,31 @@ export function assembleMaster(planned: PlannedScript, opts: AssembleOptions): A
 
     const tpl = templates.find((t) => t.id === renderTemplateId);
     if (!tpl) continue;
+
+    // Audio-sync: for chart-scene, look up when the chart's lead value is
+    // SPOKEN within this scene's audio window and override `dataDelaySec`
+    // so the data layer rises with the voice. Author-set dataDelaySec wins
+    // if larger than the auto-computed value (so manual pre-roll is never
+    // shortened by audio-sync).
+    if (renderTemplateId === "chart-scene" && transcriptWords.length > 0 && scene.audio) {
+      const audioStartAbs = cursor + audioStartOffset;
+      const audioEndAbs = audioStartAbs + (scene.audio.durationSeconds ?? 0);
+      const window = transcriptWords.filter(
+        (w) => w.start >= audioStartAbs - 0.1 && w.end <= audioEndAbs + 0.1,
+      );
+      const chartProps = (renderProps.chart as { props?: unknown } | undefined)?.props;
+      const match = findChartLeadInTranscript({
+        chartProps,
+        transcriptWindow: window,
+        sceneStartSec: cursor,
+        leadSec: 0.25,
+      });
+      if (match) {
+        const authorDelay = Number(renderProps.dataDelaySec);
+        const finalDelay = Math.max(Number.isFinite(authorDelay) ? authorDelay : 0, match.delaySec);
+        renderProps = { ...renderProps, dataDelaySec: finalDelay };
+      }
+    }
 
     const fragment = tpl.render(renderProps, {
       sceneId: scene.id,
@@ -859,6 +892,38 @@ function directorPropsFor(scene: PlannedScene, treatment: string): Record<string
     ...(accentBlock ? { accentBlock } : {}),
     ...(accentWord ? { accentWord } : {}),
   };
+}
+
+/**
+ * Load `<projectDir>/transcript.json` (Whisper word-level format) and
+ * convert to a flat TranscriptWord[]. Returns [] when the file is missing
+ * or malformed — audio-sync degrades gracefully to no-op.
+ *
+ * Supports the standard whisper.json shape produced by `hyperframes
+ * transcribe`: { words: [{ text, start, end, ... }] } at the top level.
+ */
+function loadProjectTranscript(projectDir: string): TranscriptWord[] {
+  const path = join(projectDir, "transcript.json");
+  if (!existsSync(path)) return [];
+  try {
+    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    const words = (raw as { words?: unknown }).words;
+    if (!Array.isArray(words)) return [];
+    const out: TranscriptWord[] = [];
+    for (const w of words) {
+      if (!w || typeof w !== "object") continue;
+      const obj = w as Record<string, unknown>;
+      const text = typeof obj.text === "string" ? obj.text : "";
+      const start = Number(obj.start);
+      const end = Number(obj.end);
+      if (text && Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+        out.push({ text, start, end });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
 }
 
 /** Convert an ImageEntry to the leaner ImageRef the templates consume. */
