@@ -177,18 +177,24 @@ export interface OptimizeRetentionResult {
 const RENDER_REVIEW_TOOL: ToolFunctionDeclaration = {
   name: "report_render_review",
   description:
-    "Score retention, identify scroll-risk windows, audit brand consistency, grade each scene.",
+    "Score retention, identify scroll-risk windows, audit brand consistency, grade each scene. ALL numeric scores use 0-100 scale unless explicitly noted.",
   parameters: {
     type: "object",
     properties: {
-      overallRetentionScore: { type: "number" },
+      overallRetentionScore: {
+        type: "integer",
+        minimum: 0,
+        maximum: 100,
+        description:
+          "0-100. How likely is a feed viewer to watch to the end? 90+ = excellent retention; 70-89 = solid; 50-69 = risky; <50 = scrolls fast.",
+      },
       scrollRiskWindows: {
         type: "array",
         items: {
           type: "object",
           properties: {
-            startS: { type: "number" },
-            endS: { type: "number" },
+            startS: { type: "number", description: "Window start in seconds." },
+            endS: { type: "number", description: "Window end in seconds." },
             severity: { type: "string", enum: ["low", "med", "high"] },
             why: { type: "string" },
             fix: { type: "string" },
@@ -199,7 +205,13 @@ const RENDER_REVIEW_TOOL: ToolFunctionDeclaration = {
       brandConsistency: {
         type: "object",
         properties: {
-          score: { type: "number" },
+          score: {
+            type: "integer",
+            minimum: 0,
+            maximum: 100,
+            description:
+              "0-100. How consistent is the visual identity across scenes? 90+ = coherent; <70 = visible drift between scenes.",
+          },
           drift: { type: "array", items: { type: "string" } },
         },
       },
@@ -217,9 +229,24 @@ const RENDER_REVIEW_TOOL: ToolFunctionDeclaration = {
           type: "object",
           properties: {
             sceneId: { type: "string" },
-            visualHook: { type: "number" },
-            paceMatch: { type: "number" },
-            onBrand: { type: "number" },
+            visualHook: {
+              type: "integer",
+              minimum: 0,
+              maximum: 10,
+              description: "0-10 ONLY. Per-scene hook strength.",
+            },
+            paceMatch: {
+              type: "integer",
+              minimum: 0,
+              maximum: 10,
+              description: "0-10 ONLY. Does pacing match narration density?",
+            },
+            onBrand: {
+              type: "integer",
+              minimum: 0,
+              maximum: 10,
+              description: "0-10 ONLY. Per-scene brand fit.",
+            },
             note: { type: "string" },
           },
           required: ["sceneId", "visualHook", "paceMatch", "onBrand", "note"],
