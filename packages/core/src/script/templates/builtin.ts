@@ -9,6 +9,7 @@ import {
   EDITORIAL_SERIF_TEMPLATE,
 } from "./kinetic.js";
 import { CYBERLOFI_TEMPLATES } from "./cyberlofi.js";
+import { CYBERLOFI_DATA_TEMPLATES } from "./cyberlofi-data.js";
 import { FREEFORM_TEMPLATE } from "./freeform/index.js";
 
 /**
@@ -913,6 +914,12 @@ export const BUILTIN_TEMPLATES: readonly Template[] = [
   // Cyberlofi family — pure-black canvas, JetBrains Mono everywhere,
   // pixel-green/glitch-pink accents. Pairs with the cyberlofi theme.
   ...CYBERLOFI_TEMPLATES,
+  // Cyberlofi data-vis family — chart, counter, stream, comparison.
+  // Built to be the data-driven counterpart to the typography-focused
+  // cyberlofi templates. Continuous motion baked in (scanline scroll,
+  // RGB pulse, glitch burst) — addresses the static-hold issue Gemini
+  // flagged on the typography templates.
+  ...CYBERLOFI_DATA_TEMPLATES,
   // Freeform — Gemini generates the scene's HTML/CSS/JS at the
   // resolveFreeformScenes() pre-assembly step. The planner picks this
   // when no hand-authored template fits the reference profile or when

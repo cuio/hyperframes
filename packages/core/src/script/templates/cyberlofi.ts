@@ -294,7 +294,9 @@ function renderCyberGlitchWord(props: Record<string, unknown>, ctx: TemplateRend
     position: absolute; inset: 0; overflow: hidden;
     display: flex; align-items: center; justify-content: center;
   }
-  /* Scanline overlay — heavier than data-cluster's, this is a glitch moment */
+  /* Scanline overlay — heavier than data-cluster's, this is a glitch moment.
+     Continuous scroll keyframe runs the entire scene so the screen never
+     sits truly static after the word reveal lands. */
   #${id} .cgw-scanlines {
     position: absolute; inset: 0; pointer-events: none; z-index: 5;
     background-image: repeating-linear-gradient(
@@ -305,8 +307,34 @@ function renderCyberGlitchWord(props: Record<string, unknown>, ctx: TemplateRend
       transparent 3px
     );
     opacity: 0;
-    will-change: opacity;
+    will-change: opacity, transform;
     mix-blend-mode: screen;
+    animation: cgw-scan-scroll-${id} 5s linear infinite, cgw-scan-flicker-${id} 4s steps(8) infinite;
+  }
+  @keyframes cgw-scan-scroll-${id} {
+    from { transform: translateY(0); }
+    to   { transform: translateY(6px); }
+  }
+  @keyframes cgw-scan-flicker-${id} {
+    0%, 90% { opacity: 0.7; }
+    91%, 93% { opacity: 0.95; }
+    100%    { opacity: 0.7; }
+  }
+  /* Continuous RGB-pulse on the chromatic stack — keeps the scene alive
+     after the GSAP entrance lands. Tiny amplitude (≤3px) so it reads as
+     ambient digital decay, not a new beat. */
+  #${id} .cgw-word.r,
+  #${id} .cgw-word.g,
+  #${id} .cgw-word.b {
+    animation: cgw-rgb-drift-${id} 3.5s ease-in-out infinite;
+  }
+  #${id} .cgw-word.g { animation-delay: 0.5s; }
+  #${id} .cgw-word.b { animation-delay: 1.0s; }
+  @keyframes cgw-rgb-drift-${id} {
+    0%, 100% { filter: none; }
+    20%      { filter: hue-rotate(6deg); transform: translateX(-1px); }
+    50%      { transform: translateX(2px); }
+    75%      { filter: hue-rotate(-4deg); transform: translateX(-2px); }
   }
   /* Pixel grid backdrop — barely visible, anchors the void */
   #${id} .cgw-grid {
@@ -519,13 +547,48 @@ function renderCyberPixelStill(
     background-position: center;
     filter: grayscale(1) contrast(1.4) brightness(0.9);
   }
-  /* Halftone dot pattern — overlays everything inside the tile */
+  /* Halftone dot pattern — overlays everything inside the tile.
+     Subtle continuous shift on the dot grid so the still frame breathes
+     after the entrance. Without this the scene scored 4/4/7 in Gemini's
+     review (worst single scene in the previous render). */
   #${id} .cps-tile-halftone {
     position: absolute; inset: 0;
     background-image: url("data:image/svg+xml;utf8,${halftoneSvg}");
     background-size: 6px 6px;
     mix-blend-mode: difference;
     opacity: 0.85;
+    will-change: background-position;
+    animation: cps-halftone-drift-${id} 3.5s linear infinite;
+  }
+  @keyframes cps-halftone-drift-${id} {
+    from { background-position: 0 0; }
+    to   { background-position: 6px 6px; }
+  }
+  /* Continuous scanline scroll across the whole scene — same trick as
+     the other cyberlofi templates so the rendered video never goes
+     static after a beat lands. */
+  #${id} .cps-scanlines {
+    position: absolute; inset: 0; pointer-events: none; z-index: 4;
+    background-image: repeating-linear-gradient(
+      to bottom,
+      ${t.colors.fg}10 0,
+      ${t.colors.fg}10 1px,
+      transparent 1px,
+      transparent 4px
+    );
+    mix-blend-mode: screen;
+    opacity: 0.4;
+    will-change: transform, opacity;
+    animation: cps-scan-${id} 5.5s linear infinite, cps-flicker-${id} 4.5s steps(7) infinite;
+  }
+  @keyframes cps-scan-${id} {
+    from { transform: translateY(0); }
+    to   { transform: translateY(8px); }
+  }
+  @keyframes cps-flicker-${id} {
+    0%, 92% { opacity: 0.4; }
+    93%, 95% { opacity: 0.75; }
+    100%    { opacity: 0.4; }
   }
   /* Pixel grid INSIDE the tile — 16px squares, very subtle white */
   #${id} .cps-tile-grid {
@@ -587,6 +650,7 @@ function renderCyberPixelStill(
   <div class="cps-bracket"></div>
   <div class="cps-caption">${escapeHtml(caption)}</div>
   ${cornerLabel ? `<div class="cps-corner">${escapeHtml(cornerLabel)}</div>` : ""}
+  <div class="cps-scanlines"></div>
 </div>
 <script>
   (function(){

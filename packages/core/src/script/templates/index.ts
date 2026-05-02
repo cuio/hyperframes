@@ -14,6 +14,13 @@ export {
   CYBERLOFI_TEMPLATES,
 } from "./cyberlofi.js";
 export {
+  GLITCH_BAR_CHART_TEMPLATE,
+  CYBER_COUNTER_BURST_TEMPLATE,
+  DATA_STREAM_REVEAL_TEMPLATE,
+  CYBER_COMPARISON_TEMPLATE,
+  CYBERLOFI_DATA_TEMPLATES,
+} from "./cyberlofi-data.js";
+export {
   FREEFORM_TEMPLATE,
   resolveFreeformScenes,
   generateFreeformScene,
