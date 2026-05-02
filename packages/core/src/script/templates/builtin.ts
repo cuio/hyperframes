@@ -729,15 +729,21 @@ const OUTRO_CTA: Template = {
 };
 
 /**
- * Chart-scene wraps any chart from the chart library inside a HackerNoon-style
- * frame: red top rule, bold serif title, italic subtitle, source line bottom-left,
- * watermark bottom-right. Animated chart entrances are driven by a per-scene
- * timeline registered as window.__timelines[sceneId].
+ * Chart-scene wraps any chart from the chart library inside a HackerNoon /
+ * FT-style frame: a red rule (above the title OR underlined beneath it,
+ * author's choice), bold serif title, italic subtitle, and a footer with
+ * the byline + sources line.
+ *
+ * Animated chart entrances are driven by a per-scene timeline registered
+ * as window.__timelines[sceneId]. The timeline walks the SVG by class
+ * name (hf-bar, hf-line-a, hf-marker, hf-pill, etc.) and animates each
+ * element to its data-target-* values. Adding a new chart type means
+ * either reusing existing class names or wiring the new ones below.
  */
 const CHART_SCENE: Template = {
   id: "chart-scene",
   description:
-    "Editorial chart card with title, subtitle, source, and a chart from the chart catalog. Use whenever the scene is best told as data.",
+    "Editorial chart card with title, subtitle, byline, sources, and a chart from the chart catalog. Use whenever the scene is best told as data.",
   whenToUse: [
     "The scene's job is to land a comparison, ratio, trend, or magnitude",
     "Data is the visual hook — number(s), bars, lines, donut, waffle, timeline",
@@ -748,8 +754,32 @@ const CHART_SCENE: Template = {
     properties: {
       title: { type: "string", description: "Bold serif title at top of the card" },
       subtitle: { type: "string", description: "Italic subtitle, e.g. data range or methodology" },
-      source: { type: "string", description: "Source line, e.g. 'Sources: NIST; Bloomberg'" },
-      watermark: { type: "string", description: "Author/brand watermark bottom-right" },
+      source: {
+        type: "string",
+        description: "Sources line, e.g. 'Sources: Coinbase, ClawBank, CoinDesk'",
+      },
+      byline: {
+        type: "string",
+        description:
+          "Author byline, bold, e.g. 'Ishan Pandey  /  HackerNoon'. Pairs with `source` in the footer.",
+      },
+      watermark: {
+        type: "string",
+        description:
+          "DEPRECATED: legacy alias for byline. New compositions should use `byline` instead.",
+      },
+      titleStyle: {
+        type: "string",
+        enum: ["rule-above", "underline-below"],
+        description:
+          "Where the red accent bar sits relative to the title. 'rule-above' (default) puts a small red rectangle above; 'underline-below' draws a longer red underline beneath the title.",
+      },
+      bylinePosition: {
+        type: "string",
+        enum: ["left", "right"],
+        description:
+          "Which side of the footer the byline sits on. 'left' (default) puts byline LEFT, sources RIGHT — used in Images 1-3 of the FT references. 'right' swaps them.",
+      },
       chart: {
         type: "object",
         description: "Chart spec — choose from BUILTIN_CHARTS",
@@ -775,7 +805,10 @@ const CHART_SCENE: Template = {
     const title = asString(props.title);
     const subtitle = asString(props.subtitle);
     const source = asString(props.source);
-    const watermark = asString(props.watermark);
+    const byline = asString(props.byline) || asString(props.watermark);
+    const titleStyle =
+      asString(props.titleStyle) === "underline-below" ? "underline-below" : "rule-above";
+    const bylinePosition = asString(props.bylinePosition) === "right" ? "right" : "left";
     const chartSpec = (props.chart ?? {}) as { type?: unknown; props?: unknown };
     const chartType = asString(chartSpec.type);
     const chartProps = (chartSpec.props ?? {}) as Record<string, unknown>;
@@ -787,35 +820,63 @@ const CHART_SCENE: Template = {
       ? chart.render(chartProps, { chartId, width: chartW, height: chartH, tokens: t })
       : `<div style="color:${t.colors.muted};text-align:center;">Unknown chart type "${escapeHtml(chartType)}"</div>`;
     const enterMs = t.motion.enterMs;
+    // Footer columns — byline (bold) and sources (italic muted), arranged
+    // by the bylinePosition choice. Both are <div>s so flexbox handles the
+    // spread.
+    const bylineCol = `<div class="cs-byline">${byline ? escapeHtml(byline) : ""}</div>`;
+    const sourceCol = `<div class="cs-source">${source ? escapeHtml(source) : ""}</div>`;
+    const footerInner =
+      bylinePosition === "right" ? `${sourceCol}${bylineCol}` : `${bylineCol}${sourceCol}`;
     return `
 <div class="scene scene-chart" id="${ctx.sceneId}" data-composition-id="${ctx.sceneId}" data-start="0" data-duration="${dur}">
   <style>
     #${ctx.sceneId}.scene-chart { background: ${t.colors.bg}; color: ${t.colors.fg}; padding: 80px 110px 70px; display: flex; flex-direction: column; gap: 18px; position: absolute; inset: 0; font-family: ${t.fonts.display}; }
     #${ctx.sceneId} .cs-rule { width: 120px; height: 5px; background: ${t.colors.accent}; opacity: 0; transform-origin: left; transform: scaleX(0.4); }
+    #${ctx.sceneId} .cs-titlewrap { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
     #${ctx.sceneId} .cs-title { font-size: 56px; font-weight: 700; line-height: 1.12; max-width: 1700px; opacity: 0; transform: translateY(14px); letter-spacing: -0.01em; }
+    #${ctx.sceneId} .cs-underline { width: 0; height: 5px; background: ${t.colors.accent}; opacity: 0.95; }
     #${ctx.sceneId} .cs-subtitle { font-size: 26px; font-style: italic; color: ${t.colors.muted}; max-width: 1500px; opacity: 0; transform: translateY(10px); }
     #${ctx.sceneId} .cs-chart { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px 0 10px; opacity: 0; }
     #${ctx.sceneId} .cs-footer { display: flex; justify-content: space-between; align-items: end; font-size: 18px; color: ${t.colors.muted}; opacity: 0; }
-    #${ctx.sceneId} .cs-watermark { color: ${t.colors.subtle}; font-style: italic; }
+    #${ctx.sceneId} .cs-byline { font-weight: 700; color: ${t.colors.fg}; letter-spacing: 0.02em; }
+    #${ctx.sceneId} .cs-source { color: ${t.colors.muted}; font-style: italic; }
   </style>
-  <div class="cs-rule"></div>
-  <div class="cs-title">${escapeHtml(title)}</div>
+  ${titleStyle === "rule-above" ? `<div class="cs-rule"></div>` : ""}
+  <div class="cs-titlewrap">
+    ${titleStyle === "underline-below" ? `<div class="cs-underline"></div>` : ""}
+    <div class="cs-title">${escapeHtml(title)}</div>
+  </div>
   ${subtitle ? `<div class="cs-subtitle">${escapeHtml(subtitle)}</div>` : ""}
   <div class="cs-chart">${chartSvg}</div>
   <div class="cs-footer">
-    <div>${source ? escapeHtml(source) : ""}</div>
-    <div class="cs-watermark">${watermark ? escapeHtml(watermark) : ""}</div>
+    ${footerInner}
   </div>
   <script>
     (function(){
       var s = document.getElementById('${ctx.sceneId}');
       if (!window.gsap || !s) return;
       var tl = window.gsap.timeline({ paused: true });
-      tl.to(s.querySelector('.cs-rule'), { opacity: 1, scaleX: 1, duration: 0.45, ease: '${t.motion.ease}' }, 0);
+      // Title chrome: rule above OR underline below — only one is in the DOM
+      // depending on the titleStyle prop, but we tween whichever exists.
+      var rule = s.querySelector('.cs-rule');
+      if (rule) tl.to(rule, { opacity: 1, scaleX: 1, duration: 0.45, ease: '${t.motion.ease}' }, 0);
+      var underline = s.querySelector('.cs-underline');
+      if (underline) tl.to(underline, { width: 220, duration: 0.55, ease: 'expo.out' }, 0);
       tl.to(s.querySelector('.cs-title'), { opacity: 1, y: 0, duration: ${enterMs / 1000}, ease: '${t.motion.ease}' }, 0.1);
       var sub = s.querySelector('.cs-subtitle');
       if (sub) tl.to(sub, { opacity: 1, y: 0, duration: ${(enterMs * 0.8) / 1000}, ease: '${t.motion.ease}' }, 0.25);
       tl.to(s.querySelector('.cs-chart'), { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 0.4);
+      // Editorial chart chrome: gridlines + y-axis labels fade in at 0.45-0.55s
+      // — light enough to read as background context before the data lands.
+      var gridLines = s.querySelectorAll('.hf-grid-line');
+      gridLines.forEach(function(g, i) {
+        var to = g.getAttribute('data-target-opacity');
+        tl.to(g, { opacity: to ? parseFloat(to) : 0.35, duration: 0.3, ease: 'power2.out' }, 0.45 + i * 0.04);
+      });
+      var axisLabels = s.querySelectorAll('.hf-axis-label');
+      axisLabels.forEach(function(a, i) {
+        tl.to(a, { opacity: 0.85, duration: 0.3, ease: 'power2.out' }, 0.5 + i * 0.04);
+      });
       // Animate every chart primitive based on data-target attributes.
       var bars = s.querySelectorAll('.hf-bar');
       bars.forEach(function(b, i) {
@@ -889,6 +950,43 @@ const CHART_SCENE: Template = {
       if (gap) tl.to(gap, { opacity: 1, duration: 0.3 }, 1.7);
       var gapLabel = s.querySelector('.hf-gap-label');
       if (gapLabel) tl.to(gapLabel, { opacity: 1, duration: 0.3 }, 1.85);
+      // Lollipop timeline: groups fade in left-to-right; within each group
+      // the stem grows up to the dot, then the dot pops, label is already
+      // baked into the group fade.
+      var lollipops = s.querySelectorAll('.hf-lollipop');
+      lollipops.forEach(function(lp, i) {
+        tl.to(lp, { opacity: 1, duration: 0.3 }, 0.6 + i * 0.18);
+        var stem = lp.querySelector('.hf-lollipop-stem');
+        if (stem) {
+          var ty2 = stem.getAttribute('data-target-y2');
+          if (ty2) tl.to(stem, { attr: { y2: parseFloat(ty2) }, duration: 0.5, ease: '${t.motion.ease}' }, 0.65 + i * 0.18);
+        }
+        var dot = lp.querySelector('.hf-lollipop-dot');
+        if (dot) {
+          var tr = dot.getAttribute('data-target-r');
+          if (tr) tl.to(dot, { attr: { r: parseFloat(tr) }, duration: 0.35, ease: 'back.out(2)' }, 1.0 + i * 0.18);
+        }
+      });
+      // Markers (annotated-area data dots): pop in after the line draws.
+      var markers = s.querySelectorAll('.hf-marker');
+      markers.forEach(function(m, i) {
+        var tr = m.getAttribute('data-target-r');
+        if (tr) tl.to(m, { attr: { r: parseFloat(tr) }, duration: 0.3, ease: 'back.out(2)' }, 1.4 + i * 0.05);
+      });
+      // Annotation pills + curved leader arrows: pill body fades in at 1.6s,
+      // leader draws via stroke-dashoffset 0.3s later — the eye reaches the
+      // data first, then the explanation.
+      var pills = s.querySelectorAll('.hf-pill');
+      pills.forEach(function(p, i) {
+        tl.to(p, { opacity: 1, duration: 0.45, ease: '${t.motion.ease}' }, 1.6 + i * 0.2);
+      });
+      var leaders = s.querySelectorAll('.hf-pill-leader');
+      leaders.forEach(function(l, i) {
+        tl.to(l, { strokeDashoffset: 0, duration: 0.6, ease: 'power2.inOut' }, 1.9 + i * 0.2);
+      });
+      // Legend fades in once the data is settled.
+      var legend = s.querySelector('.hf-legend');
+      if (legend) tl.to(legend, { opacity: 1, duration: 0.4 }, 1.3);
       tl.to(s.querySelector('.cs-footer'), { opacity: 1, duration: 0.4, ease: '${t.motion.ease}' }, 1.1);
       window.__timelines = window.__timelines || {};
       window.__timelines['${ctx.sceneId}'] = tl;
