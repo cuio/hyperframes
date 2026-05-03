@@ -112,9 +112,61 @@ hyperframes optimize                # post-render Gemini review (closes the loop
 
 Two scoring passes — one cheap pre-render (Haiku, ~$0.01 per script), one expensive post-render (Gemini Flash on rendered video, ~$0.10 per review). Catches different classes of issue.
 
-## Future overdrive (not in PR #40)
+## All four follow-ups shipped (PR #41)
 
-- **Visual storyboard scorer** — deterministic scorer for template variety, atmosphere variety, color palette evolution, rhythm-match. ~150 LOC, no AI needed.
-- **Auto-apply mode** — `--apply-top N` actually edits the script.json based on high-confidence recommendations. Right now it just lists them.
-- **A/B variant scoring** — generate 3 variants of the opening, score each, pick the winner. Already have `planSceneVariants` — wire scoring around it.
-- **Sentiment-driven theme adjustments** — alarming sentiment auto-shifts theme to red-accented variant; aspirational to gradient; neutral to cream. Heuristic on top of the Haiku output.
+The four items previously queued landed as one cohesive PR. Use them via flags on `hyperframes score`:
+
+### Visual storyboard scorer
+
+`scoreVisualStoryboard(script)` runs a deterministic pass over the planned scenes' visual choices — no AI. Reports a 0–100 overall + per-axis subscores:
+
+- **Template variety** — penalises 3+ identical templates in a row
+- **Atmosphere variety** — penalises author-set monotony (defaults are no-opinion, not penalised)
+- **Palette evolution** — penalises identical theme+bgOverride across scenes that explicitly set them
+- **Rhythm match** — flags hooks > 4s and chart-scenes > 10s
+- **Opening density** — flags first-5s with < 3 beats
+
+Surfaced alongside the Haiku score in `hyperframes score`'s default output. Pure function, easy to call programmatically.
+
+### Auto-apply (`--apply-top N`)
+
+`hyperframes score --apply-top 3` takes the top N high-confidence Haiku recommendations and applies them to the script. Conservative scope:
+
+- `rewrite-text` → parses target from suggestion (`'X' → 'Y'`, `try 'Y'`, `to 'Y'`), writes to `scene.props[field]`
+- `duration-adjust` → parses `Ns` target, writes `scene.durationHint`
+- `template-swap` → parses kebab-case target, validates against the catalog
+- `theme-shift` → parses theme name, validates against registered themes
+
+Structural recommendations (`split-scene`, `merge-scene`, `add-hook`) are surfaced but not auto-applied — they need human judgment.
+
+Default `minConfidence: "high"`. Use `--dry-run` to preview without writing back.
+
+### A/B hook variant scoring (`--vary-hook`)
+
+`hyperframes score --vary-hook` generates 3 alternative visual treatments for scene 0 via `planSceneVariants`, scores each in a 1-scene Haiku call, picks the highest-retention winner, and replaces scene 0. Total cost ~$0.05.
+
+Reports the comparison so you can see which variant won and why.
+
+### Sentiment-driven theming (`--apply-themes`)
+
+After scoring, sentiment labels (alarming / aspirational / curious / warm / cold / neutral) map to `bgOverride` atmospheres on `chart-scene` and `chart-payoff` scenes. Author-set `bgOverride` is preserved. Light themes (cream FT) are skipped — preserving editorial parchment identity.
+
+Mapping (`SENTIMENT_BG_OVERRIDES`):
+
+- `alarming` → dark red gradient
+- `aspirational` → deep navy gradient
+- `curious` → ink-violet radial
+- `warm` → amber gradient
+- `cold` → desaturated grey gradient
+- `neutral` → no override
+
+### End-to-end iteration loop with all 4
+
+```bash
+hyperframes script ./script.md
+hyperframes score --vary-hook --apply-top 3 --apply-themes
+# review the diff, decide whether to re-score or render
+hyperframes render
+```
+
+One shell command runs all 4 features in order: vary the hook → score everything → apply top 3 high-confidence recs → apply sentiment theming. Total cost ~$0.06 vs ~30 min × $0.10 of render iteration.
