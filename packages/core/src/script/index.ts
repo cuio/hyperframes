@@ -147,3 +147,33 @@ export {
   type Confidence,
   type ScoreScriptOptions,
 } from "./scriptScorer.js";
+export {
+  scoreVisualStoryboard,
+  type VisualScore,
+  type VisualIssue,
+  type VisualIssueType,
+} from "./visualStoryboardScorer.js";
+export {
+  applyRecommendations,
+  parseRewriteTarget,
+  parseDurationTarget,
+  parseTemplateTarget,
+  parseThemeTarget,
+  type AppliedRecommendation,
+  type ApplyReport,
+  type ApplyOptions,
+} from "./scoreApplier.js";
+export {
+  applySentimentTheming,
+  SENTIMENT_BG_OVERRIDES,
+  type ApplySentimentThemingOptions,
+  type SentimentThemingReport,
+  type SentimentThemingChange,
+} from "./sentimentTheming.js";
+export {
+  varyHookAndScore,
+  applyHookWinner,
+  type VaryHookOptions,
+  type VaryHookResult,
+  type ScoredHookVariant,
+} from "./hookVariants.js";
