@@ -477,6 +477,7 @@ Skip on small edits (fixing a color, adjusting one duration). Run on new composi
 - **[references/narration.md](references/narration.md)** — Pacing, tone, script structure, number pronunciation, opening line patterns. Read when the composition includes voiceover or TTS.
 - **[references/design-picker.md](references/design-picker.md)** — Create a design.md via visual picker. Read when no design.md exists and the user wants to create one.
 - **[references/prompt-expansion.md](references/prompt-expansion.md)** — Step 2 prompt expansion process: ground intent against design.md and house-style, produce a consistent intermediate brief.
+- **[references/catalog.md](references/catalog.md)** — The 44 catalog blocks, 3 components, and 8 examples installable via `hyperframes add`. Read before authoring a scene from scratch — most asks have a closer-to-perfect catalog entry than the default empty composition.
 - **[visual-styles.md](visual-styles.md)** — Named visual styles (Swiss Pulse, Velvet Standard, Deconstructed, Maximalist Type, Data Drift, Soft Signal, Folk Frequency, Shadow Cut) with hex palettes, GSAP easing signatures, and shader pairings. Read when user named a style or when generating design.md.
 - **[house-style.md](house-style.md)** — Default motion, sizing, and color palettes when no design.md is specified.
 - **[patterns.md](patterns.md)** — PiP, title cards, slide show, text-behind-subject patterns.
