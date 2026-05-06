@@ -4,6 +4,7 @@ export const MIN_TIMELINE_ZOOM_PERCENT = 10;
 export const MAX_TIMELINE_ZOOM_PERCENT = 2000;
 const ZOOM_OUT_FACTOR = 0.8;
 const ZOOM_IN_FACTOR = 1.25;
+const PINCH_ZOOM_SENSITIVITY = 0.0035;
 
 export function clampTimelineZoomPercent(percent: number): number {
   if (!Number.isFinite(percent)) return 100;
@@ -35,4 +36,14 @@ export function getNextTimelineZoomPercent(
   const current = getTimelineZoomPercent(zoomMode, manualZoomPercent);
   const next = direction === "in" ? current * ZOOM_IN_FACTOR : current * ZOOM_OUT_FACTOR;
   return clampTimelineZoomPercent(next);
+}
+
+export function getPinchTimelineZoomPercent(
+  deltaY: number,
+  zoomMode: ZoomMode,
+  manualZoomPercent: number,
+): number {
+  const current = getTimelineZoomPercent(zoomMode, manualZoomPercent);
+  if (!Number.isFinite(deltaY) || deltaY === 0) return current;
+  return clampTimelineZoomPercent(current * Math.exp(-deltaY * PINCH_ZOOM_SENSITIVITY));
 }

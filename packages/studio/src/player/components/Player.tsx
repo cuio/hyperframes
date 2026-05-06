@@ -1,5 +1,7 @@
-import { forwardRef, useRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
+import { isLottieAnimationLoaded } from "@hyperframes/core/runtime/lottie-readiness";
 import { useMountEffect } from "../../hooks/useMountEffect";
+import { HyperframesLoader } from "../../components/ui";
 // NOTE: importing "@hyperframes/player" registers a class extending HTMLElement
 // at module load, which throws under SSR. Defer the import to the mount effect
 // so it only runs in the browser.
@@ -15,28 +17,17 @@ interface HyperframesPlayerElement extends HTMLElement {
   iframeElement: HTMLIFrameElement;
 }
 
-/**
- * Readiness check for a Lottie animation instance. Duck-types both supported
- * player shapes:
- *
- * - `lottie-web` exposes a boolean `isLoaded` on `AnimationItem`.
- * - `@dotlottie/player-component` doesn't; we infer readiness from
- *   `totalFrames > 0` since that value is only populated once the animation
- *   JSON has been parsed.
- *
- * Kept in sync with the runtime adapter's own checks in
- * `@hyperframes/core/runtime/adapters/lottie.ts` — that module would be a
- * more canonical home for the helper, but importing from the core package's
- * root index pulls Node-only submodules (path, url) into this browser bundle
- * and breaks Vite. If the helper grows, split a browser-safe submodule
- * export in core and switch this to import it.
- */
-function isLottieAnimationReady(anim: unknown): boolean {
-  if (typeof anim !== "object" || anim === null) return true;
-  const maybe = anim as { isLoaded?: boolean; totalFrames?: number };
-  if (maybe.isLoaded === true) return true;
-  if (typeof maybe.totalFrames === "number" && maybe.totalFrames > 0) return true;
-  return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function getShaderTransitionLoading(event: Event): boolean | null {
+  if (!(event instanceof CustomEvent)) return null;
+  const detail: unknown = event.detail;
+  if (!isRecord(detail)) return null;
+  const state = detail.state;
+  if (!isRecord(state)) return null;
+  return state.loading === true && state.ready !== true;
 }
 
 // Assets are considered ready when every `<video>`/`<audio>` has enough data
@@ -62,7 +53,7 @@ function hasUnloadedAssets(iframe: HTMLIFrameElement, lastResult: boolean): bool
     const lotties = win.__hfLottie;
     if (lotties?.length) {
       for (const anim of lotties) {
-        if (!isLottieAnimationReady(anim)) return true;
+        if (!isLottieAnimationLoaded(anim)) return true;
       }
     }
 
@@ -85,7 +76,11 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
     const containerRef = useRef<HTMLDivElement>(null);
     const loadCountRef = useRef(0);
     const assetPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const assetFadeRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [assetsLoading, setAssetsLoading] = useState(false);
+    const [assetOverlayVisible, setAssetOverlayVisible] = useState(false);
+    const [assetOverlayFading, setAssetOverlayFading] = useState(false);
+    const [shaderTransitionLoading, setShaderTransitionLoading] = useState(false);
 
     useMountEffect(() => {
       const container = containerRef.current;
@@ -101,6 +96,8 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
         // Create the web component imperatively to avoid JSX custom-element typing.
         const player = document.createElement("hyperframes-player") as HyperframesPlayerElement;
         const src = directUrl || `/api/projects/${projectId}/preview`;
+        player.setAttribute("shader-capture-scale", "1");
+        player.setAttribute("shader-loading", "player");
         player.setAttribute("src", src);
         player.setAttribute("width", String(portrait ? 1080 : 1920));
         player.setAttribute("height", String(portrait ? 1920 : 1080));
@@ -122,9 +119,16 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
         const preventToggle = (e: Event) => e.stopImmediatePropagation();
         player.addEventListener("click", preventToggle, { capture: true });
 
+        const handleShaderTransitionState = (event: Event) => {
+          const loading = getShaderTransitionLoading(event);
+          if (loading !== null) setShaderTransitionLoading(loading);
+        };
+        player.addEventListener("shadertransitionstate", handleShaderTransitionState);
+
         // Forward the iframe's native load event to the studio's onIframeLoad.
         const handleLoad = () => {
           loadCountRef.current++;
+          setShaderTransitionLoading(false);
           // Reveal animation on reload (hot-reload, composition switch)
           if (loadCountRef.current > 1) {
             container.classList.remove("preview-revealing");
@@ -174,6 +178,7 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
         cleanup = () => {
           iframe.removeEventListener("load", handleLoad);
           player.removeEventListener("click", preventToggle, { capture: true });
+          player.removeEventListener("shadertransitionstate", handleShaderTransitionState);
           if (assetPollRef.current) clearInterval(assetPollRef.current);
           assetPollRef.current = null;
           container.removeChild(player);
@@ -192,13 +197,57 @@ export const Player = forwardRef<HTMLIFrameElement, PlayerProps>(
       };
     });
 
+    useEffect(() => {
+      if (assetFadeRef.current) {
+        clearTimeout(assetFadeRef.current);
+        assetFadeRef.current = null;
+      }
+
+      if (assetsLoading) {
+        setAssetOverlayVisible(true);
+        setAssetOverlayFading(false);
+        return;
+      }
+
+      setAssetOverlayFading(true);
+      assetFadeRef.current = setTimeout(() => {
+        setAssetOverlayVisible(false);
+        setAssetOverlayFading(false);
+        assetFadeRef.current = null;
+      }, 240);
+
+      return () => {
+        if (assetFadeRef.current) {
+          clearTimeout(assetFadeRef.current);
+          assetFadeRef.current = null;
+        }
+      };
+    }, [assetsLoading]);
+
+    const showAssetOverlay = assetOverlayVisible && !shaderTransitionLoading;
+
     return (
       <div className="relative w-full h-full max-w-full max-h-full overflow-hidden bg-black flex items-center justify-center">
         <div ref={containerRef} className="w-full h-full" />
-        {assetsLoading && (
-          <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-20 pointer-events-none">
-            <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-            <span className="text-white/60 text-xs mt-3">Loading assets…</span>
+        {showAssetOverlay && (
+          <div
+            className="absolute inset-0 bg-black flex items-center justify-center z-20 select-none"
+            data-hyperframes-ignore=""
+            draggable={false}
+            style={{
+              opacity: assetOverlayFading ? 0 : 1,
+              pointerEvents: assetOverlayFading ? "none" : "auto",
+              transition: "opacity 240ms ease-out",
+            }}
+            onDragStart={(event) => event.preventDefault()}
+            onMouseDown={(event) => event.preventDefault()}
+            onPointerDown={(event) => event.preventDefault()}
+          >
+            <HyperframesLoader
+              title="Preparing preview assets"
+              detail="Waiting for media and motion assets before playback starts."
+              size={56}
+            />
           </div>
         )}
       </div>

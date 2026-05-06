@@ -58,13 +58,36 @@ export function extractBlocks(source: string, pattern: RegExp): ExtractedBlock[]
   return blocks;
 }
 
+/**
+ * Find the `<html>` open tag in the source. Distinct from `findRootTag`,
+ * which returns the first element inside `<body>` — the latter is "the
+ * composition's visible root", whereas `<html>` is where document-level
+ * metadata like `data-composition-variables` lives.
+ */
+export function findHtmlTag(source: string): OpenTag | null {
+  const match = /<html\b([^<>]*)>/i.exec(source);
+  if (!match) return null;
+  return {
+    raw: match[0],
+    name: "html",
+    attrs: match[1] ?? "",
+    index: match.index,
+  };
+}
+
 export function findRootTag(source: string): OpenTag | null {
-  const bodyMatch = source.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
-  const bodyContent = bodyMatch ? (bodyMatch[1] ?? source) : source;
+  const bodyOpenMatch = /<body\b[^>]*>/i.exec(source);
+  const bodyCloseMatch = /<\/body>/i.exec(source);
+  const bodyStart = bodyOpenMatch ? bodyOpenMatch.index + bodyOpenMatch[0].length : 0;
+  const bodyEnd =
+    bodyOpenMatch && bodyCloseMatch && bodyCloseMatch.index > bodyStart
+      ? bodyCloseMatch.index
+      : source.length;
+  const bodyContent = bodyOpenMatch ? source.slice(bodyStart, bodyEnd) : source;
   const bodyTags = extractOpenTags(bodyContent);
   for (const tag of bodyTags) {
     if (["script", "style", "meta", "link", "title"].includes(tag.name)) continue;
-    return tag;
+    return { ...tag, index: tag.index + bodyStart };
   }
   return null;
 }
@@ -74,6 +97,26 @@ export function readAttr(tagSource: string, attr: string): string | null {
   const escaped = attr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = tagSource.match(new RegExp(`\\b${escaped}\\s*=\\s*["']([^"']+)["']`, "i"));
   return match?.[1] || null;
+}
+
+/**
+ * Read an attribute that may legitimately contain the opposite quote
+ * character. `readAttr` truncates `data-variable-values='{"title":"Hello"}'`
+ * at the first internal `"` because its `[^"']+` class excludes both quote
+ * types. This variant alternates: a double-quoted value never contains an
+ * unescaped `"`, and a single-quoted value never contains an unescaped `'`,
+ * so each branch can use a quote-specific class.
+ *
+ * Use for attributes whose values are JSON or otherwise carry the opposite
+ * quote character. Existing single-token attributes (`id`, `class`, etc.)
+ * stick with `readAttr` for consistency with the rest of the lint code.
+ */
+export function readJsonAttr(tagSource: string, attr: string): string | null {
+  if (!tagSource) return null;
+  const escaped = attr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = tagSource.match(new RegExp(`\\b${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i"));
+  if (!match) return null;
+  return match[1] ?? match[2] ?? null;
 }
 
 export function collectCompositionIds(tags: OpenTag[]): Set<string> {

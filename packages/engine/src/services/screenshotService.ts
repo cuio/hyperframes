@@ -119,16 +119,22 @@ export async function beginFrameCapture(
 /**
  * Capture a screenshot using standard Page.captureScreenshot CDP call.
  * Fallback for environments where BeginFrame is unavailable (macOS, Windows).
+ *
+ * For `format: "png"` captures we disable Chrome's `optimizeForSpeed` fast
+ * path. The fast path uses a zero-alpha-aware codec that crushes real alpha
+ * values to 0 or 255 (verified empirically; CDP docs don't document this) —
+ * exactly the same caveat called out on `captureScreenshotWithAlpha` /
+ * `captureAlphaPng`. Keeping the fast path for opaque jpeg captures is fine.
  */
 export async function pageScreenshotCapture(page: Page, options: CaptureOptions): Promise<Buffer> {
   const client = await getCdpSession(page);
-  const format = options.format === "png" ? "png" : "jpeg";
+  const isPng = options.format === "png";
   const result = await client.send("Page.captureScreenshot", {
-    format,
-    quality: format === "jpeg" ? (options.quality ?? 80) : undefined,
+    format: isPng ? "png" : "jpeg",
+    quality: isPng ? undefined : (options.quality ?? 80),
     fromSurface: true,
     captureBeyondViewport: false,
-    optimizeForSpeed: true,
+    optimizeForSpeed: !isPng,
   });
   return Buffer.from(result.data, "base64");
 }
@@ -440,13 +446,15 @@ export async function injectVideoFramesBatch(
           }
         }
         img.decoding = "sync";
-        img.src = item.dataUri;
-        pendingDecodes.push(
-          img
-            .decode()
-            .catch(() => undefined)
-            .then(() => undefined),
-        );
+        if (img.getAttribute("src") !== item.dataUri) {
+          img.src = item.dataUri;
+          pendingDecodes.push(
+            img
+              .decode()
+              .catch(() => undefined)
+              .then(() => undefined),
+          );
+        }
         img.style.opacity = String(computedOpacity);
         img.style.visibility = "visible";
         // Hide the native <video> with visibility only — never clobber inline

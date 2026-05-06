@@ -15,6 +15,8 @@ describe("loadExternalCompositions", () => {
   afterEach(() => {
     document.body.innerHTML = "";
     document.head.querySelectorAll("style").forEach((s) => s.remove());
+    delete (window as Window & { gsap?: unknown; __selectedTitle?: unknown }).gsap;
+    delete (window as Window & { gsap?: unknown; __selectedTitle?: unknown }).__selectedTitle;
     vi.restoreAllMocks();
   });
 
@@ -52,6 +54,13 @@ describe("loadExternalCompositions", () => {
 
     expect(mountedParagraph).toBeTruthy();
     expect(mountedParagraph?.textContent).toBe("Hello World");
+    expect(host.getAttribute("data-width")).toBe("1920");
+    expect(host.getAttribute("data-height")).toBe("1080");
+    expect(
+      Array.from(host.children).some(
+        (child) => child.getAttribute("data-composition-id") === "scene-1",
+      ),
+    ).toBe(false);
   });
 
   it("injects styles into document head", async () => {
@@ -190,6 +199,50 @@ describe("loadExternalCompositions", () => {
     expect(injectedScripts[0].textContent).toContain("console.log");
   });
 
+  it("scopes injected styles and document selectors to the mounted composition root", async () => {
+    const otherRoot = document.createElement("div");
+    otherRoot.setAttribute("data-composition-id", "other");
+    otherRoot.innerHTML = '<h1 class="title">Other</h1>';
+    document.body.appendChild(otherRoot);
+
+    const host = document.createElement("div");
+    host.setAttribute("data-composition-src", "https://example.com/comp.html");
+    host.setAttribute("data-composition-id", "scene");
+    document.body.appendChild(host);
+
+    const compositionHtml = `
+      <html><body>
+        <div data-composition-id="scene" data-width="1920" data-height="1080">
+          <style>.title { opacity: 0; }</style>
+          <h1 class="title">Scene</h1>
+          <script>
+            window.__selectedTitle = document.querySelector('.title')?.textContent;
+          </script>
+        </div>
+      </body></html>
+    `;
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(compositionHtml, { status: 200 }));
+
+    const injectedStyles: HTMLStyleElement[] = [];
+    const injectedScripts: HTMLScriptElement[] = [];
+    await loadExternalCompositions({
+      ...defaultParams,
+      injectedStyles,
+      injectedScripts,
+    });
+
+    expect(injectedStyles[0]?.textContent).toContain('[data-composition-id="scene"] .title');
+    expect(injectedScripts[0]?.textContent).toContain('var __hfCompId = "scene";');
+    expect(injectedScripts[0]?.textContent).toContain("new Proxy(window.document");
+    expect(host.querySelector(".title")?.textContent).toBe("Scene");
+    expect(
+      Array.from(host.children).some(
+        (child) => child.getAttribute("data-composition-id") === "scene",
+      ),
+    ).toBe(false);
+  });
+
   it("handles multiple compositions in parallel", async () => {
     const host1 = document.createElement("div");
     host1.setAttribute("data-composition-src", "https://example.com/a.html");
@@ -210,6 +263,144 @@ describe("loadExternalCompositions", () => {
     await loadExternalCompositions({ ...defaultParams });
     expect(host1.querySelector("p")?.textContent).toBe("A");
     expect(host2.querySelector("p")?.textContent).toBe("B");
+  });
+
+  describe("variable scoping (window.__hfVariablesByComp)", () => {
+    type WindowWithScopedVars = Window & {
+      __hfVariablesByComp?: Record<string, Record<string, unknown>>;
+    };
+
+    afterEach(() => {
+      delete (window as WindowWithScopedVars).__hfVariablesByComp;
+    });
+
+    it("merges sub-comp declared defaults with host data-variable-values", async () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-src", "https://example.com/card.html");
+      host.setAttribute("data-composition-id", "card-1");
+      host.setAttribute("data-variable-values", '{"title":"Pro","price":"$29"}');
+      document.body.appendChild(host);
+
+      const compositionHtml = `
+        <html data-composition-variables='[
+          {"id":"title","type":"string","label":"Title","default":"Default"},
+          {"id":"price","type":"string","label":"Price","default":"$0"},
+          {"id":"theme","type":"string","label":"Theme","default":"light"}
+        ]'>
+          <body>
+            <div data-composition-id="card-1"><p>card</p></div>
+          </body>
+        </html>
+      `;
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(compositionHtml, { status: 200 }),
+      );
+
+      await loadExternalCompositions({ ...defaultParams });
+
+      const byComp = (window as WindowWithScopedVars).__hfVariablesByComp ?? {};
+      expect(byComp["card-1"]).toEqual({
+        title: "Pro", // host wins over declared default
+        price: "$29", // host wins
+        theme: "light", // host omits → declared default falls through
+      });
+    });
+
+    it("uses declared defaults when host has no data-variable-values", async () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-src", "https://example.com/card.html");
+      host.setAttribute("data-composition-id", "card-2");
+      document.body.appendChild(host);
+
+      const compositionHtml = `
+        <html data-composition-variables='[
+          {"id":"title","type":"string","label":"Title","default":"Default Title"}
+        ]'>
+          <body><div data-composition-id="card-2"><p>x</p></div></body>
+        </html>
+      `;
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(compositionHtml, { status: 200 }),
+      );
+
+      await loadExternalCompositions({ ...defaultParams });
+
+      const byComp = (window as WindowWithScopedVars).__hfVariablesByComp ?? {};
+      expect(byComp["card-2"]).toEqual({ title: "Default Title" });
+    });
+
+    it("skips registration when neither declared defaults nor host overrides exist", async () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-src", "https://example.com/card.html");
+      host.setAttribute("data-composition-id", "card-empty");
+      document.body.appendChild(host);
+
+      const compositionHtml = `
+        <html><body><div data-composition-id="card-empty"><p>x</p></div></body></html>
+      `;
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(compositionHtml, { status: 200 }),
+      );
+
+      await loadExternalCompositions({ ...defaultParams });
+
+      const byComp = (window as WindowWithScopedVars).__hfVariablesByComp;
+      expect(byComp?.["card-empty"]).toBeUndefined();
+    });
+
+    it("ignores invalid JSON in host data-variable-values", async () => {
+      const host = document.createElement("div");
+      host.setAttribute("data-composition-src", "https://example.com/card.html");
+      host.setAttribute("data-composition-id", "card-bad");
+      host.setAttribute("data-variable-values", "{not json");
+      document.body.appendChild(host);
+
+      const compositionHtml = `
+        <html data-composition-variables='[{"id":"title","type":"string","label":"Title","default":"OK"}]'>
+          <body><div data-composition-id="card-bad"><p>x</p></div></body>
+        </html>
+      `;
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(compositionHtml, { status: 200 }),
+      );
+
+      await loadExternalCompositions({ ...defaultParams });
+
+      const byComp = (window as WindowWithScopedVars).__hfVariablesByComp ?? {};
+      expect(byComp["card-bad"]).toEqual({ title: "OK" });
+    });
+
+    it("registers per-instance entries for multiple sub-comps with the same source", async () => {
+      const host1 = document.createElement("div");
+      host1.setAttribute("data-composition-src", "https://example.com/card.html");
+      host1.setAttribute("data-composition-id", "card-A");
+      host1.setAttribute("data-variable-values", '{"title":"Pro","price":"$29"}');
+      document.body.appendChild(host1);
+
+      const host2 = document.createElement("div");
+      host2.setAttribute("data-composition-src", "https://example.com/card.html");
+      host2.setAttribute("data-composition-id", "card-B");
+      host2.setAttribute("data-variable-values", '{"title":"Enterprise","price":"Custom"}');
+      document.body.appendChild(host2);
+
+      const compositionHtml = `
+        <html data-composition-variables='[
+          {"id":"title","type":"string","label":"Title","default":"Default"},
+          {"id":"price","type":"string","label":"Price","default":"$0"}
+        ]'>
+          <body><div data-composition-id="card-A"><p>x</p></div></body>
+        </html>
+      `;
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () => new Response(compositionHtml, { status: 200 }),
+      );
+
+      await loadExternalCompositions({ ...defaultParams });
+
+      const byComp = (window as WindowWithScopedVars).__hfVariablesByComp ?? {};
+      expect(byComp["card-A"]).toEqual({ title: "Pro", price: "$29" });
+      expect(byComp["card-B"]).toEqual({ title: "Enterprise", price: "Custom" });
+    });
   });
 });
 

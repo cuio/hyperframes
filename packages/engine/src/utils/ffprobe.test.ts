@@ -244,6 +244,46 @@ describe("ffprobe missing-binary fallback", () => {
     expect(meta.hasAlpha).toBe(true);
   });
 
+  // Regression: newer libavformat builds (and the output of `hyperframes
+  // remove-background` itself) write the VP9-alpha sidecar tag as
+  // `ALPHA_MODE` (uppercase). The lowercase-only check classified those
+  // files as having no alpha, the producer extracted them as JPGs, and
+  // the injected <img> overlays were fully opaque rectangles that hid
+  // every static element below them on the z-stack. The bug was silent —
+  // studio preview rendered correctly via native <video> playback while
+  // production renders covered headlines and captions with the avatar.
+  it("extractMediaMetadata detects ALPHA_MODE (uppercase) streams from newer ffmpeg builds", async () => {
+    const { spawn } = createSpawnSpy([
+      {
+        kind: "exit",
+        code: 0,
+        stdout: JSON.stringify({
+          streams: [
+            {
+              codec_type: "video",
+              codec_name: "vp9",
+              width: 320,
+              height: 180,
+              r_frame_rate: "30/1",
+              avg_frame_rate: "30/1",
+              pix_fmt: "yuv420p",
+              tags: { ALPHA_MODE: "1" },
+            },
+          ],
+          format: { duration: "1.5" },
+        }),
+      },
+    ]);
+    vi.resetModules();
+    vi.doMock("child_process", () => ({ spawn }));
+
+    const { extractMediaMetadata: extractMediaMetadataMocked } = await import("./ffprobe.js");
+    const meta = await extractMediaMetadataMocked("/tmp/alpha-uppercase.webm");
+
+    expect(meta.videoCodec).toBe("vp9");
+    expect(meta.hasAlpha).toBe(true);
+  });
+
   it("extractMediaMetadata rethrows ffprobe-missing error for non-image files without fallback", async () => {
     const { spawn } = createSpawnSpy([{ kind: "missing" }]);
     vi.resetModules();

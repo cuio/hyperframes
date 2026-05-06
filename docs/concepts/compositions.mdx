@@ -129,52 +129,62 @@ Every composition has two layers:
 
 HyperFrames does not automatically bind `data-var-*` attributes into your composition DOM or CSS.
 
-Today, the supported pattern is:
+The supported pattern is:
 
-1. Pass per-instance values on the composition host with `data-variable-values`
-2. Read those values inside the composition and apply them in your own script
+1. Declare the variables once on the sub-comp's `<html>` root with `data-composition-variables` (id + type + default).
+2. Pass per-instance values on each composition host with `data-variable-values`.
+3. Read the resolved values inside the composition with `window.__hyperframes.getVariables()`. The runtime layers the host's `data-variable-values` over the declared defaults on a per-instance basis, so the same source can be embedded multiple times with different values.
 
 ```html index.html
 <div
-  data-composition-id="card"
+  data-composition-id="card-pro"
   data-composition-src="compositions/card.html"
   data-start="0"
   data-track-index="1"
-  data-variable-values='{"title":"Hello","color":"#ff4d4f"}'
+  data-variable-values='{"title":"Pro","color":"#ff4d4f"}'
+></div>
+<div
+  data-composition-id="card-enterprise"
+  data-composition-src="compositions/card.html"
+  data-start="card-pro"
+  data-track-index="1"
+  data-variable-values='{"title":"Enterprise","color":"#22c55e"}'
 ></div>
 ```
 
 ```html compositions/card.html
-<template id="card-template">
-  <div data-composition-id="card" data-width="1920" data-height="1080">
-    <h1 class="title">Fallback</h1>
+<html data-composition-variables='[
+  {"id":"title","type":"string","label":"Title","default":"Fallback"},
+  {"id":"color","type":"color","label":"Color","default":"#111827"}
+]'>
+  <body>
+    <div data-composition-id="card" data-width="1920" data-height="1080">
+      <h1 class="title"></h1>
 
-    <style>
-      [data-composition-id="card"] {
-        --card-color: #111827;
-      }
+      <style>
+        [data-composition-id="card"] {
+          --card-color: #111827;
+        }
 
-      [data-composition-id="card"] .title {
-        color: var(--card-color);
-      }
-    </style>
+        [data-composition-id="card"] .title {
+          color: var(--card-color);
+        }
+      </style>
 
-    <script>
-      const root = document.querySelector('[data-composition-id="card"]');
-      const vars = JSON.parse(root?.getAttribute("data-variable-values") ?? "{}");
-      const titleEl = root?.querySelector(".title");
-
-      if (titleEl) {
-        titleEl.textContent = vars.title ?? "Fallback";
-      }
-
-      root?.style.setProperty("--card-color", String(vars.color ?? "#111827"));
-    </script>
-  </div>
-</template>
+      <script>
+        // Inside a sub-comp script, getVariables() returns the per-instance
+        // values: declared defaults < host data-variable-values overrides.
+        const { title, color } = __hyperframes.getVariables();
+        const root = document.querySelector('[data-composition-id="card"]');
+        root.querySelector(".title").textContent = title;
+        root.style.setProperty("--card-color", color);
+      </script>
+    </div>
+  </body>
+</html>
 ```
 
-If you are building tooling on top of `@hyperframes/core`, you can also declare variable metadata separately with `data-composition-variables` and read it via `extractCompositionMetadata()`. That metadata is descriptive only; you still apply the actual values manually inside the composition.
+If you are building tooling on top of `@hyperframes/core`, the same `data-composition-variables` array is readable via `extractCompositionMetadata()` for Studio editing UI and analysis pipelines.
 
 ## Listing Compositions
 

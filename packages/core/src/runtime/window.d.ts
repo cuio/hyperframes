@@ -44,6 +44,24 @@ declare global {
     };
     THREE?: ThreeLike;
     /**
+     * Global anime.js instance (set by including the anime.iife.min.js script).
+     * The adapter uses `anime.running` for auto-discovery.
+     */
+    anime?: {
+      (params: unknown): unknown;
+      timeline?: (params?: unknown) => unknown;
+      running: unknown[];
+    };
+    /**
+     * anime.js instances registered by compositions.
+     * The adapter seeks all instances when the player is seeked.
+     *
+     * Push your animation or timeline instance here:
+     *   window.__hfAnime = window.__hfAnime || [];
+     *   window.__hfAnime.push(anim);
+     */
+    __hfAnime?: unknown[];
+    /**
      * Global lottie-web instance (set by including the lottie.min.js script).
      * The adapter uses `lottie.getRegisteredAnimations()` for auto-discovery.
      */
@@ -60,6 +78,23 @@ declare global {
      *   window.__hfLottie.push(anim);
      */
     __hfLottie?: unknown[];
+    /**
+     * Render-time variable overrides injected by the engine when the user
+     * passes `hyperframes render --variables '<json>'`. Read indirectly via
+     * `window.__hyperframes.getVariables()` (or the named `getVariables`
+     * export from `@hyperframes/core`), which merges these over the
+     * declared defaults from `<html data-composition-variables="...">`.
+     */
+    __hfVariables?: Record<string, unknown>;
+    /**
+     * Per-instance, pre-merged variables for sub-compositions. Keyed by the
+     * sub-composition's `data-composition-id`. Populated by the runtime
+     * composition loader at mount time: layers the host element's
+     * `data-variable-values` over the sub-comp's declared defaults so the
+     * scoped `getVariables()` exposed by `compositionScoping.ts` returns the
+     * resolved values for the instance currently executing.
+     */
+    __hfVariablesByComp?: Record<string, Record<string, unknown>>;
   }
 }
 

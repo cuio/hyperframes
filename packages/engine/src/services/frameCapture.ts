@@ -16,14 +16,21 @@ import { quantizeTimeToFrame } from "@hyperframes/core";
 import {
   acquireBrowser,
   releaseBrowser,
+  forceReleaseBrowser,
   buildChromeArgs,
   resolveHeadlessShellPath,
   type CaptureMode,
 } from "./browserManager.js";
-import { beginFrameCapture, getCdpSession, pageScreenshotCapture } from "./screenshotService.js";
+import {
+  beginFrameCapture,
+  getCdpSession,
+  pageScreenshotCapture,
+  initTransparentBackground,
+} from "./screenshotService.js";
 import { DEFAULT_CONFIG, type EngineConfig } from "../config.js";
 import type {
   CaptureOptions,
+  CaptureVideoMetadataHint,
   CaptureResult,
   CaptureBufferResult,
   CapturePerfSummary,
@@ -68,6 +75,26 @@ export interface CaptureSession {
 // Circular buffer for browser console messages dumped on render failure diagnostics.
 // Complex compositions produce 100+ messages; 50 was too small to capture relevant errors.
 const BROWSER_CONSOLE_BUFFER_SIZE = 200;
+const CAPTURE_SESSION_CLOSE_TIMEOUT_MS = 5_000;
+
+async function waitForCloseWithTimeout(promise: Promise<unknown>): Promise<boolean> {
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    promise.then(
+      () => undefined,
+      () => undefined,
+    ),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, CAPTURE_SESSION_CLOSE_TIMEOUT_MS);
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return !timedOut;
+}
 
 export async function createCaptureSession(
   serverUrl: string,
@@ -78,7 +105,11 @@ export async function createCaptureSession(
 ): Promise<CaptureSession> {
   if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
 
-  // Determine capture mode before building args — BeginFrame flags only apply on Linux
+  // Determine capture mode before building args — BeginFrame flags only apply on Linux.
+  // BeginFrame's compositor does not preserve alpha; callers that pass
+  // `options.format === "png"` for transparent capture should also set
+  // `config.forceScreenshot = true` (the producer's renderOrchestrator does this
+  // automatically when `RenderConfig.format` is an alpha-capable value).
   const headlessShell = resolveHeadlessShellPath(config);
   const isLinux = process.platform === "linux";
   const forceScreenshot = config?.forceScreenshot ?? DEFAULT_CONFIG.forceScreenshot;
@@ -124,6 +155,22 @@ export async function createCaptureSession(
       w.__name = <T>(fn: T, _name: string): T => fn;
     }
   });
+  // Inject render-time variable overrides before any page script runs, so the
+  // runtime helper `getVariables()` returns the merged result on its first
+  // call. Pass the JSON string and parse inside the page so we don't require
+  // any JSON-incompatible value to round-trip through Puppeteer's serializer.
+  if (options.variables && Object.keys(options.variables).length > 0) {
+    const variablesJson = JSON.stringify(options.variables);
+    await page.evaluateOnNewDocument((json: string) => {
+      type WindowWithVariables = Window & { __hfVariables?: Record<string, unknown> };
+      try {
+        (window as WindowWithVariables).__hfVariables = JSON.parse(json);
+      } catch {
+        // The CLI validated the JSON before this point — a parse failure here
+        // means the page swapped JSON.parse, which is the page's problem.
+      }
+    }, variablesJson);
+  }
   const browserVersion = await browser.version();
   const expectedMajor = config?.expectedChromiumMajor;
   if (Number.isFinite(expectedMajor)) {
@@ -144,15 +191,12 @@ export async function createCaptureSession(
   };
   await page.setViewport(viewport);
 
-  // For PNG capture (used by WebM/transparency), make the page background transparent
-  // so Chrome's screenshot captures alpha channel data. Must use the same CDP session
-  // that the screenshot service uses (getCdpSession caches per page).
-  if (options.format === "png") {
-    const cdp = await getCdpSession(page);
-    await cdp.send("Emulation.setDefaultBackgroundColorOverride", {
-      color: { r: 0, g: 0, b: 0, a: 0 },
-    });
-  }
+  // Transparent-background setup is intentionally NOT done here. Chrome resets
+  // the default-background-color override on navigation, and the
+  // `[data-composition-id]{background:transparent}` stylesheet that
+  // `initTransparentBackground` injects must land in a real `document.head`.
+  // See `initializeSession()` below — it calls `initTransparentBackground` for
+  // PNG captures after `page.goto(...)` and the `window.__hf` readiness poll.
 
   return {
     browser,
@@ -213,6 +257,64 @@ async function pollPageExpression(
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return Boolean(await page.evaluate(expression));
+}
+
+async function applyVideoMetadataHints(
+  page: Page,
+  hints: readonly CaptureVideoMetadataHint[] | undefined,
+): Promise<void> {
+  if (!hints || hints.length === 0) return;
+
+  await page.evaluate(
+    (metadataHints: CaptureVideoMetadataHint[]) => {
+      for (const hint of metadataHints) {
+        if (
+          !hint.id ||
+          !Number.isFinite(hint.width) ||
+          !Number.isFinite(hint.height) ||
+          hint.width <= 0 ||
+          hint.height <= 0
+        ) {
+          continue;
+        }
+
+        const video = document.getElementById(hint.id) as HTMLVideoElement | null;
+        if (!video) continue;
+
+        if (!video.hasAttribute("width")) video.setAttribute("width", String(hint.width));
+        if (!video.hasAttribute("height")) video.setAttribute("height", String(hint.height));
+
+        const computed = window.getComputedStyle(video);
+        if (
+          !video.style.aspectRatio &&
+          (!computed.aspectRatio || computed.aspectRatio === "auto")
+        ) {
+          video.style.aspectRatio = `${hint.width} / ${hint.height}`;
+        }
+      }
+    },
+    [...hints],
+  );
+}
+
+async function waitForOptionalTailwindReady(page: Page, timeoutMs: number): Promise<void> {
+  const hasTailwindReady = await page.evaluate(
+    `(() => { const ready = window.__tailwindReady; return !!ready && typeof ready.then === "function"; })()`,
+  );
+  if (!hasTailwindReady) return;
+
+  const ready = await Promise.race([
+    page.evaluate(
+      `Promise.resolve(window.__tailwindReady).then(() => true, () => false)`,
+    ) as Promise<boolean>,
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+
+  if (!ready) {
+    throw new Error(
+      `[FrameCapture] window.__tailwindReady not resolved after ${timeoutMs}ms. Tailwind browser runtime must finish before frame capture starts.`,
+    );
+  }
 }
 
 export async function initializeSession(session: CaptureSession): Promise<void> {
@@ -284,24 +386,45 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
       );
     }
 
-    // Wait for all video elements to have loaded metadata (dimensions + duration)
-    // Without this, frame 0 captures videos at their 300x150 default size.
+    await applyVideoMetadataHints(page, session.options.videoMetadataHints);
+
+    // Wait for all video elements to have decoded their CURRENT frame, not
+    // just metadata. readyState >= 2 (HAVE_CURRENT_DATA) means a frame is
+    // actually rasterized and ready to paint — at >= 1 (HAVE_METADATA) we
+    // only know the dimensions, and the first <video> screenshot can come
+    // back as a black/blank rectangle. This bites compositions with two
+    // <video> elements of different codecs (h264 mp4 + VP9 webm) where the
+    // faster decoder lets the readiness check pass while the slower one
+    // hasn't painted, producing a black "first frame" for the slower clip.
     // skipReadinessVideoIds excludes natively-extracted videos (e.g. HDR HEVC
-    // sources) whose frames come from ffmpeg out-of-band — Chromium may not be
-    // able to decode them at all (e.g. HEVC on Linux headless-shell).
+    // sources) whose frames come from ffmpeg out-of-band. videoMetadataHints
+    // supply intrinsic dimensions for skipped videos whose layout depends on
+    // aspect ratio, while Chromium may still fail to decode/load metadata.
     const skipIdsLiteral = JSON.stringify(session.options.skipReadinessVideoIds ?? []);
     const videosReady = await pollPageExpression(
       page,
-      `(() => { const skip = new Set(${skipIdsLiteral}); const vids = Array.from(document.querySelectorAll("video")).filter(v => !skip.has(v.id)); return vids.length === 0 || vids.every(v => v.readyState >= 1); })()`,
+      `(() => { const skip = new Set(${skipIdsLiteral}); const vids = Array.from(document.querySelectorAll("video")).filter(v => !skip.has(v.id)); return vids.length === 0 || vids.every(v => v.readyState >= 2); })()`,
       pageReadyTimeout,
     );
     if (!videosReady) {
       throw new Error(
-        `[FrameCapture] video metadata not ready after ${pageReadyTimeout}ms. Video elements must load metadata before capture starts.`,
+        `[FrameCapture] video first frame not decoded after ${pageReadyTimeout}ms. Video elements must reach readyState >= 2 (HAVE_CURRENT_DATA) before capture starts.`,
       );
     }
 
     await page.evaluate(`document.fonts?.ready`);
+    await waitForOptionalTailwindReady(page, pageReadyTimeout);
+
+    // For PNG captures, force the page background fully transparent so the
+    // captured screenshots carry a real alpha channel. Must run AFTER
+    // navigation (Chrome resets the override on every goto) and AFTER the
+    // page is loaded (the injected stylesheet needs a real document.head).
+    // The override is overridden by `body { background: ... }` and
+    // `#root { background: ... }` rules — the helper handles that with a
+    // `[data-composition-id]{background:transparent !important}` injection.
+    if (session.options.format === "png") {
+      await initTransparentBackground(session.page);
+    }
 
     session.isInitialized = true;
     return;
@@ -365,15 +488,15 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
     );
   }
 
-  // Wait for all video elements to have loaded metadata (dimensions + duration).
-  // Without this, frame 0 captures videos at their 300x150 default size.
-  // See screenshot-mode comment above for why skipReadinessVideoIds exists.
+  await applyVideoMetadataHints(page, session.options.videoMetadataHints);
+
+  // Same readyState contract as the screenshot path above (>= 2 / HAVE_CURRENT_DATA).
   const beginframeSkipIdsLiteral = JSON.stringify(session.options.skipReadinessVideoIds ?? []);
   const videoDeadline =
     Date.now() + (session.config?.playerReadyTimeout ?? DEFAULT_CONFIG.playerReadyTimeout);
   while (Date.now() < videoDeadline) {
     const videosReady = await page.evaluate(
-      `(() => { const skip = new Set(${beginframeSkipIdsLiteral}); const vids = Array.from(document.querySelectorAll("video")).filter(v => !skip.has(v.id)); return vids.length === 0 || vids.every(v => v.readyState >= 1); })()`,
+      `(() => { const skip = new Set(${beginframeSkipIdsLiteral}); const vids = Array.from(document.querySelectorAll("video")).filter(v => !skip.has(v.id)); return vids.length === 0 || vids.every(v => v.readyState >= 2); })()`,
     );
     if (videosReady) break;
     await new Promise((r) => setTimeout(r, 100));
@@ -381,12 +504,23 @@ export async function initializeSession(session: CaptureSession): Promise<void> 
 
   // Font check (no rAF dependency — uses fonts.ready API directly)
   await page.evaluate(`document.fonts?.ready`);
+  await waitForOptionalTailwindReady(page, pageReadyTimeout);
 
   // Stop warmup
   warmupRunning = false;
 
   // Set base frame time ticks past warmup range
   session.beginFrameTimeTicks = (warmupTicks + 10) * session.beginFrameIntervalMs;
+
+  // For PNG captures, inject the transparent-background override + stylesheet
+  // (see the screenshot-mode branch above for the rationale). BeginFrame mode
+  // does not actually preserve alpha through its compositor — callers that
+  // need transparent output should set `forceScreenshot: true` so this branch
+  // is bypassed entirely. The call is left here as defense-in-depth for any
+  // future BeginFrame alpha support.
+  if (session.options.format === "png") {
+    await initTransparentBackground(session.page);
+  }
 
   session.isInitialized = true;
 }
@@ -580,11 +714,22 @@ export async function closeCaptureSession(session: CaptureSession): Promise<void
   // but browserReleased=false → second call no-ops on page and retries browser.
   // This matches the orchestrator's intent for HDR cleanup.
   if (!session.pageReleased && session.page) {
-    await session.page.close().catch(() => {});
+    const pageClosed = await waitForCloseWithTimeout(session.page.close());
+    if (!pageClosed) {
+      console.warn("[FrameCapture] Timed out closing page; forcing browser process shutdown");
+      forceReleaseBrowser(session.browser);
+      session.browserReleased = true;
+    }
     session.pageReleased = true;
   }
   if (!session.browserReleased && session.browser) {
-    await releaseBrowser(session.browser, session.config);
+    const browserClosed = await waitForCloseWithTimeout(
+      releaseBrowser(session.browser, session.config),
+    );
+    if (!browserClosed) {
+      console.warn("[FrameCapture] Timed out closing browser; forcing browser process shutdown");
+      forceReleaseBrowser(session.browser);
+    }
     session.browserReleased = true;
   }
   session.isInitialized = false;

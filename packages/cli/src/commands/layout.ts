@@ -1,11 +1,11 @@
 import { defineCommand } from "citty";
-import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Example } from "./_examples.js";
 import { c } from "../ui/colors.js";
 import { resolveProject } from "../utils/project.js";
+import { serveStaticProjectHtml } from "../utils/staticProjectServer.js";
 import { withMeta } from "../utils/updateCheck.js";
 import {
   buildLayoutSampleTimes,
@@ -107,78 +107,10 @@ async function seekTo(page: import("puppeteer-core").Page, time: number): Promis
 }
 
 async function bundleProjectHtml(projectDir: string): Promise<string> {
+  // `bundleToSingleHtml` now inlines the runtime IIFE by default, so the
+  // previous post-bundle runtime substitution is no longer needed.
   const { bundleToSingleHtml } = await import("@hyperframes/core/compiler");
-  let html = await bundleToSingleHtml(projectDir);
-
-  const runtimePath = resolve(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "core",
-    "dist",
-    "hyperframe.runtime.iife.js",
-  );
-  if (existsSync(runtimePath)) {
-    const runtimeSource = readFileSync(runtimePath, "utf-8");
-    html = html.replace(
-      /<script[^>]*data-hyperframes-preview-runtime[^>]*src="[^"]*"[^>]*><\/script>/,
-      () => `<script data-hyperframes-preview-runtime="1">${runtimeSource}</script>`,
-    );
-  }
-
-  return html;
-}
-
-async function serveProject(
-  projectDir: string,
-  html: string,
-): Promise<{
-  url: string;
-  close: () => Promise<void>;
-}> {
-  const { getMimeType } = await import("@hyperframes/core/studio-api");
-  const server = createServer((req, res) => {
-    const url = req.url ?? "/";
-    if (url === "/" || url === "/index.html") {
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(html);
-      return;
-    }
-
-    const filePath = resolve(projectDir, decodeURIComponent(url).replace(/^\//, ""));
-    const rel = relative(projectDir, filePath);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
-      res.writeHead(403);
-      res.end();
-      return;
-    }
-    if (existsSync(filePath)) {
-      res.writeHead(200, { "Content-Type": getMimeType(filePath) });
-      res.end(readFileSync(filePath));
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-
-  const port = await new Promise<number>((resolvePort, rejectPort) => {
-    server.on("error", rejectPort);
-    server.listen(0, () => {
-      const addr = server.address();
-      const resolvedPort = typeof addr === "object" && addr ? addr.port : 0;
-      if (!resolvedPort) rejectPort(new Error("Failed to bind local layout audit server"));
-      else resolvePort(resolvedPort);
-    });
-  });
-
-  return {
-    url: `http://127.0.0.1:${port}/`,
-    close: () =>
-      new Promise<void>((resolveClose) => {
-        server.close(() => resolveClose());
-      }),
-  };
+  return bundleToSingleHtml(projectDir);
 }
 
 async function alignViewportToComposition(
@@ -206,7 +138,11 @@ async function runLayoutAudit(
   const { ensureBrowser } = await import("../browser/manager.js");
   const puppeteer = await import("puppeteer-core");
   const html = await bundleProjectHtml(projectDir);
-  const server = await serveProject(projectDir, html);
+  const server = await serveStaticProjectHtml(
+    projectDir,
+    html,
+    "Failed to bind local layout audit server",
+  );
   let chromeBrowser: import("puppeteer-core").Browser | undefined;
 
   try {

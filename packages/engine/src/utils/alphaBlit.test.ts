@@ -511,6 +511,16 @@ describe("blitRgba8OverRgb48le", () => {
     expect(canvas.readUInt16LE(4)).toBe(0);
   });
 
+  it("fully opaque DOM with srgb transfer expands 8-bit channels to 16-bit SDR", () => {
+    const canvas = makeHdrFrame(1, 1, 10000, 20000, 30000);
+    const dom = makeDomRgba(1, 1, 255, 128, 1, 255);
+    blitRgba8OverRgb48le(dom, canvas, 1, 1, "srgb");
+
+    expect(canvas.readUInt16LE(0)).toBe(65535);
+    expect(canvas.readUInt16LE(2)).toBe(128 * 257);
+    expect(canvas.readUInt16LE(4)).toBe(257);
+  });
+
   it("sRGB→HLG: black stays black, white stays white", () => {
     const canvasBlack = makeHdrFrame(1, 1, 0, 0, 0);
     const domBlack = makeDomRgba(1, 1, 0, 0, 0, 255);
@@ -773,6 +783,25 @@ describe("blitRgb48leRegion", () => {
     const source = makeHdrFrame(1, 1, 40000, 40000, 40000);
     blitRgb48leRegion(canvas, source, 0, 0, 1, 1, 1, 1, 0.5);
     expect(canvas.readUInt16LE(0)).toBe(20000);
+  });
+
+  it("blends opacity over existing destination pixels", () => {
+    const canvas = makeHdrFrame(2, 1, 10000, 20000, 30000);
+    const source = makeHdrFrame(2, 1, 50000, 10000, 60000);
+    blitRgb48leRegion(canvas, source, 0, 0, 2, 1, 2, 1, 0.25);
+    expect(canvas.readUInt16LE(0)).toBe(20000);
+    expect(canvas.readUInt16LE(2)).toBe(17500);
+    expect(canvas.readUInt16LE(4)).toBe(37500);
+    expect(canvas.readUInt16LE(6)).toBe(20000);
+  });
+
+  it("skips exact-zero opacity without mutating the destination", () => {
+    const canvas = makeHdrFrame(1, 1, 10000, 20000, 30000);
+    const source = makeHdrFrame(1, 1, 50000, 50000, 50000);
+    blitRgb48leRegion(canvas, source, 0, 0, 1, 1, 1, 1, 0);
+    expect(canvas.readUInt16LE(0)).toBe(10000);
+    expect(canvas.readUInt16LE(2)).toBe(20000);
+    expect(canvas.readUInt16LE(4)).toBe(30000);
   });
 
   it("no-op for zero-size region", () => {

@@ -74,6 +74,7 @@ const GROUPS: Group[] = [
         "Close the Gemini retention loop on a rendered project (review → patch → re-render until target)",
       ],
       ["images", "Manage image assets used by the visual director"],
+      ["remove-background", "Remove background from a video or image to produce transparent media"],
     ],
   },
   {
@@ -119,7 +120,7 @@ const STATIC_EXAMPLES: Record<string, Example[]> = {
 
 // ── Render root help ───────────────────────────────────────────────────────
 function renderRootHelp(): string {
-  const NAME_COL = 16;
+  const NAME_COL = 19;
   const CMD_COL = 46;
   const lines: string[] = [];
 

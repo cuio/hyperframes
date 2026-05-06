@@ -271,6 +271,39 @@ describe("collectRuntimeTimelinePayload", () => {
     expect(result.clips[0].label).toBe("Hero Shot");
   });
 
+  it("uses a friendly label and null id for anonymous clips", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-duration", "10");
+    document.body.appendChild(root);
+
+    const clip = document.createElement("div");
+    clip.className = "clip hero-card";
+    clip.setAttribute("data-start", "0");
+    clip.setAttribute("data-duration", "5");
+    root.appendChild(clip);
+
+    const result = collectRuntimeTimelinePayload(defaultParams);
+    expect(result.clips[0].id).toBeNull();
+    expect(result.clips[0].label).toBe("Hero Card");
+  });
+
+  it("falls back to a readable ordinal label instead of a node index id", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-duration", "10");
+    document.body.appendChild(root);
+
+    const clip = document.createElement("div");
+    clip.setAttribute("data-start", "0");
+    clip.setAttribute("data-duration", "5");
+    root.appendChild(clip);
+
+    const result = collectRuntimeTimelinePayload(defaultParams);
+    expect(result.clips[0].id).toBeNull();
+    expect(result.clips[0].label).toBe("Element 1");
+  });
+
   it("handles timeline registry for composition duration", () => {
     const root = document.createElement("div");
     root.setAttribute("data-composition-id", "main");
@@ -400,6 +433,92 @@ describe("collectRuntimeTimelinePayload", () => {
     expect(s2).toBeDefined();
     expect(s2?.start).toBe(3);
     expect(s2?.duration).toBe(3);
+  });
+
+  it("does not offset GSAP scene clips by the master timeline start time", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-duration", "20");
+    document.body.appendChild(root);
+
+    const scene = document.createElement("div");
+    scene.id = "scene-1";
+    root.appendChild(scene);
+
+    const masterTimeline = {
+      duration: () => 20,
+      time: () => 1.25,
+      play: () => {},
+      pause: () => {},
+      seek: () => {},
+      add: () => {},
+      paused: () => {},
+      set: () => {},
+      startTime: () => 1.25,
+      getChildren: () => [
+        {
+          targets: () => [scene],
+          startTime: () => 4,
+          duration: () => 3,
+          parent: masterTimeline,
+        },
+      ],
+    };
+
+    (window as any).__timelines = {
+      main: masterTimeline,
+    };
+
+    const result = collectRuntimeTimelinePayload(defaultParams);
+    const clip = result.clips.find((c) => c.id === "scene-1");
+    expect(clip).toBeDefined();
+    expect(clip?.start).toBe(4);
+    expect(clip?.duration).toBe(3);
+  });
+
+  it("keeps nested GSAP timeline offsets below the master timeline", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-duration", "20");
+    document.body.appendChild(root);
+
+    const scene = document.createElement("div");
+    scene.id = "scene-1";
+    root.appendChild(scene);
+
+    const masterTimeline = {
+      duration: () => 20,
+      time: () => 1.25,
+      play: () => {},
+      pause: () => {},
+      seek: () => {},
+      add: () => {},
+      paused: () => {},
+      set: () => {},
+      startTime: () => 1.25,
+      getChildren: () => [] as unknown[],
+    };
+    const nestedTimeline = {
+      startTime: () => 6,
+      parent: masterTimeline,
+    };
+    const nestedTween = {
+      targets: () => [scene],
+      startTime: () => 2,
+      duration: () => 3,
+      parent: nestedTimeline,
+    };
+    masterTimeline.getChildren = () => [nestedTween];
+
+    (window as any).__timelines = {
+      main: masterTimeline,
+    };
+
+    const result = collectRuntimeTimelinePayload(defaultParams);
+    const clip = result.clips.find((c) => c.id === "scene-1");
+    expect(clip).toBeDefined();
+    expect(clip?.start).toBe(8);
+    expect(clip?.duration).toBe(3);
   });
 
   it("bubbles child tween ranges up to scene-level ancestors", () => {

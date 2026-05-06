@@ -90,6 +90,51 @@ describe("media rules", () => {
     expect(finding?.severity).toBe("error");
   });
 
+  it("reports error for media with src but no data-start", () => {
+    const html = `
+<html><body>
+  <div id="root" data-composition-id="c1" data-width="1920" data-height="1080">
+    <video id="demo-video" src="clip.mp4" muted playsinline></video>
+  </div>
+  <script>window.__timelines = window.__timelines || {}; window.__timelines["c1"] = gsap.timeline({ paused: true });</script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "media_missing_data_start");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("error");
+    expect(finding?.elementId).toBe("demo-video");
+  });
+
+  it("allows audible video clips to omit muted when data-has-audio is true", () => {
+    const html = `
+<html><body>
+  <div id="root" data-composition-id="c1" data-width="1920" data-height="1080">
+    <video id="demo-video" data-start="0" data-duration="5" data-has-audio="true" src="clip.mp4" playsinline></video>
+  </div>
+  <script>window.__timelines = window.__timelines || {}; window.__timelines["c1"] = gsap.timeline({ paused: true });</script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    expect(result.findings.find((f) => f.code === "video_missing_muted")).toBeUndefined();
+    expect(
+      result.findings.find((f) => f.code === "video_muted_with_declared_audio"),
+    ).toBeUndefined();
+  });
+
+  it("reports error for videos that declare audio while muted", () => {
+    const html = `
+<html><body>
+  <div id="root" data-composition-id="c1" data-width="1920" data-height="1080">
+    <video id="demo-video" data-start="0" data-duration="5" data-has-audio="true" src="clip.mp4" muted playsinline></video>
+  </div>
+  <script>window.__timelines = window.__timelines || {}; window.__timelines["c1"] = gsap.timeline({ paused: true });</script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "video_muted_with_declared_audio");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("error");
+    expect(finding?.elementId).toBe("demo-video");
+  });
+
   it("does NOT flag <video> as nested in a void element with data-start (regression)", () => {
     // Regression: void elements like <img> have no closing tag, so the previous
     // implementation kept them on the parent stack indefinitely and flagged any
@@ -140,6 +185,24 @@ describe("media rules", () => {
     const finding = result.findings.find((f) => f.code === "imperative_media_control");
     expect(finding).toBeDefined();
     expect(finding?.severity).toBe("error");
+  });
+
+  it("reports imperative muted/play control on class-selected media without ids", () => {
+    const html = `
+<template id="scene-template">
+  <div data-composition-id="scene" data-width="1920" data-height="1080">
+    <video class="demo-video" src="clip.mp4" muted playsinline></video>
+    <script>
+      const vid = document.querySelector('[data-composition-id="scene"] .demo-video');
+      if (vid) { vid.muted = true; vid.play(); }
+    </script>
+  </div>
+</template>`;
+    const result = lintHyperframeHtml(html, { filePath: "compositions/scene.html" });
+    const imperativeFindings = result.findings.filter((f) => f.code === "imperative_media_control");
+    expect(imperativeFindings.length).toBe(2);
+    expect(imperativeFindings.some((f) => f.snippet === "vid.muted =")).toBe(true);
+    expect(imperativeFindings.some((f) => f.snippet === "vid.play(")).toBe(true);
   });
 
   it("does not flag play() on non-media elements", () => {

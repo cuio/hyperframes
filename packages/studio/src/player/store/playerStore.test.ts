@@ -16,6 +16,7 @@ describe("usePlayerStore", () => {
       expect(state.elements).toEqual([]);
       expect(state.selectedElementId).toBeNull();
       expect(state.playbackRate).toBe(1);
+      expect(state.loopEnabled).toBe(false);
       expect(state.zoomMode).toBe("fit");
       expect(state.manualZoomPercent).toBe(100);
     });
@@ -58,6 +59,13 @@ describe("usePlayerStore", () => {
     it("updates playbackRate", () => {
       usePlayerStore.getState().setPlaybackRate(2);
       expect(usePlayerStore.getState().playbackRate).toBe(2);
+    });
+  });
+
+  describe("setLoopEnabled", () => {
+    it("updates loopEnabled", () => {
+      usePlayerStore.getState().setLoopEnabled(true);
+      expect(usePlayerStore.getState().loopEnabled).toBe(true);
     });
   });
 
@@ -205,9 +213,10 @@ describe("usePlayerStore", () => {
       expect(state.selectedElementId).toBeNull();
     });
 
-    it("does not reset playbackRate, zoomMode, or manualZoomPercent", () => {
+    it("does not reset playbackRate, loopEnabled, zoomMode, or manualZoomPercent", () => {
       const store = usePlayerStore.getState();
       store.setPlaybackRate(2);
+      store.setLoopEnabled(true);
       store.setZoomMode("manual");
       store.setManualZoomPercent(200);
 
@@ -216,6 +225,7 @@ describe("usePlayerStore", () => {
       const state = usePlayerStore.getState();
       // reset() only resets the fields explicitly listed in the reset function
       expect(state.playbackRate).toBe(2);
+      expect(state.loopEnabled).toBe(true);
       expect(state.zoomMode).toBe("manual");
       expect(state.manualZoomPercent).toBe(200);
     });

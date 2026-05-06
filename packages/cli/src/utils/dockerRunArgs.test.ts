@@ -5,9 +5,9 @@ const BASE: DockerRenderOptions = {
   fps: 30,
   quality: "standard",
   format: "mp4",
-  workers: 4,
   gpu: false,
-  hdr: false,
+  browserGpu: false,
+  hdrMode: "auto",
   crf: undefined,
   videoBitrate: undefined,
   quiet: false,
@@ -43,17 +43,28 @@ describe("buildDockerRunArgs", () => {
         "standard",
         "--format",
         "mp4",
-        "--workers",
-        "4",
+        "--no-browser-gpu",
       ]
     `);
+  });
+
+  it("omits --workers when auto sizing should happen inside the container", () => {
+    const args = buildDockerRunArgs({ ...FIXED_INPUT, options: BASE });
+    expect(args).not.toContain("--workers");
   });
 
   it("matches snapshot when every renderer flag is enabled", () => {
     expect(
       buildDockerRunArgs({
         ...FIXED_INPUT,
-        options: { ...BASE, gpu: true, hdr: true, crf: 18, videoBitrate: undefined, quiet: true },
+        options: {
+          ...BASE,
+          gpu: true,
+          hdrMode: "force-hdr",
+          crf: 18,
+          videoBitrate: undefined,
+          quiet: true,
+        },
       }),
     ).toMatchInlineSnapshot(`
       [
@@ -78,12 +89,11 @@ describe("buildDockerRunArgs", () => {
         "standard",
         "--format",
         "mp4",
-        "--workers",
-        "4",
         "--crf",
         "18",
         "--quiet",
         "--gpu",
+        "--no-browser-gpu",
         "--hdr",
       ]
     `);
@@ -92,17 +102,28 @@ describe("buildDockerRunArgs", () => {
   // Regression for the original PR feedback: --hdr was silently dropped from
   // the docker arg array. Keep this assertion explicit (in addition to the
   // snapshot above) so the failure message points directly at the flag.
-  it("forwards --hdr to the container when hdr is enabled", () => {
+  it("forwards --hdr to the container when hdrMode is force-hdr", () => {
     const args = buildDockerRunArgs({
       ...FIXED_INPUT,
-      options: { ...BASE, hdr: true },
+      options: { ...BASE, hdrMode: "force-hdr" },
     });
     expect(args).toContain("--hdr");
+    expect(args).not.toContain("--sdr");
   });
 
-  it("omits --hdr when hdr is disabled", () => {
+  it("forwards --sdr to the container when hdrMode is force-sdr", () => {
+    const args = buildDockerRunArgs({
+      ...FIXED_INPUT,
+      options: { ...BASE, hdrMode: "force-sdr" },
+    });
+    expect(args).toContain("--sdr");
+    expect(args).not.toContain("--hdr");
+  });
+
+  it("omits --hdr and --sdr when hdrMode is auto", () => {
     const args = buildDockerRunArgs({ ...FIXED_INPUT, options: BASE });
     expect(args).not.toContain("--hdr");
+    expect(args).not.toContain("--sdr");
   });
 
   it("requests host GPU passthrough only when gpu is enabled", () => {
@@ -121,6 +142,11 @@ describe("buildDockerRunArgs", () => {
     expect(on).toContain("--gpu");
   });
 
+  it("forces software browser capture inside Docker", () => {
+    const args = buildDockerRunArgs({ ...FIXED_INPUT, options: BASE });
+    expect(args).toContain("--no-browser-gpu");
+  });
+
   it("forwards every renderer-shaped option (regression tripwire for silent drops)", () => {
     const args = buildDockerRunArgs({
       ...FIXED_INPUT,
@@ -130,7 +156,8 @@ describe("buildDockerRunArgs", () => {
         format: "webm",
         workers: 8,
         gpu: true,
-        hdr: true,
+        browserGpu: false,
+        hdrMode: "force-hdr",
         crf: 16,
         videoBitrate: undefined,
         quiet: true,
@@ -147,6 +174,7 @@ describe("buildDockerRunArgs", () => {
     expect(args).toContain("16");
     expect(args).toContain("--quiet");
     expect(args).toContain("--gpu");
+    expect(args).toContain("--no-browser-gpu");
     expect(args).toContain("--hdr");
   });
 
@@ -158,5 +186,28 @@ describe("buildDockerRunArgs", () => {
     expect(args).toContain("--video-bitrate");
     expect(args).toContain("10M");
     expect(args).not.toContain("--crf");
+  });
+
+  it("forwards --variables JSON to the container when set", () => {
+    const args = buildDockerRunArgs({
+      ...FIXED_INPUT,
+      options: { ...BASE, variables: { title: "Hello", n: 3 } },
+    });
+    const idx = args.indexOf("--variables");
+    expect(idx).toBeGreaterThan(-1);
+    expect(args[idx + 1]).toBe('{"title":"Hello","n":3}');
+  });
+
+  it("omits --variables when none provided", () => {
+    const args = buildDockerRunArgs({ ...FIXED_INPUT, options: BASE });
+    expect(args).not.toContain("--variables");
+  });
+
+  it("omits --variables when payload is empty", () => {
+    const args = buildDockerRunArgs({
+      ...FIXED_INPUT,
+      options: { ...BASE, variables: {} },
+    });
+    expect(args).not.toContain("--variables");
   });
 });

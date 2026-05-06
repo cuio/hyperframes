@@ -3,7 +3,7 @@ import { initSandboxRuntimeModular } from "./init";
 import type { RuntimeTimelineLike } from "./types";
 
 function createMockTimeline(duration: number): RuntimeTimelineLike {
-  const state = { time: 0, paused: true };
+  const state = { time: 0, paused: true, duration };
   return {
     play: () => {
       state.paused = false;
@@ -18,7 +18,7 @@ function createMockTimeline(duration: number): RuntimeTimelineLike {
       state.time = time;
     },
     time: () => state.time,
-    duration: () => duration,
+    duration: () => state.duration,
     add: () => {},
     paused: (value?: boolean) => {
       if (typeof value === "boolean") {
@@ -30,6 +30,19 @@ function createMockTimeline(duration: number): RuntimeTimelineLike {
     set: () => {},
     getChildren: () => [],
   };
+}
+
+function createPaddableMockTimeline(duration: number): RuntimeTimelineLike {
+  const timeline = createMockTimeline(duration) as RuntimeTimelineLike & {
+    to: (_target: object, vars: { duration: number }, position: number) => void;
+  };
+  const baseDuration = timeline.duration;
+  let paddedDuration = baseDuration();
+  timeline.duration = () => paddedDuration;
+  timeline.to = (_target, vars, position) => {
+    paddedDuration = Math.max(paddedDuration, position + Math.max(0, Number(vars.duration) || 0));
+  };
+  return timeline;
 }
 
 describe("initSandboxRuntimeModular", () => {
@@ -62,6 +75,7 @@ describe("initSandboxRuntimeModular", () => {
     const root = document.createElement("div");
     root.setAttribute("data-composition-id", "main");
     root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
     root.setAttribute("data-width", "1920");
     root.setAttribute("data-height", "1080");
     document.body.appendChild(root);
@@ -95,6 +109,7 @@ describe("initSandboxRuntimeModular", () => {
     const root = document.createElement("div");
     root.setAttribute("data-composition-id", "main");
     root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
     root.setAttribute("data-width", "1920");
     root.setAttribute("data-height", "1080");
     document.body.appendChild(root);
@@ -122,6 +137,58 @@ describe("initSandboxRuntimeModular", () => {
     player?.renderSeek(3);
 
     expect(child.style.visibility).toBe("hidden");
+  });
+
+  it("pads the root timeline to the authored composition schedule before seeking visibility", () => {
+    const root = document.createElement("div");
+    root.setAttribute("data-composition-id", "main");
+    root.setAttribute("data-root", "true");
+    root.setAttribute("data-start", "0");
+    root.setAttribute("data-width", "1920");
+    root.setAttribute("data-height", "1080");
+    document.body.appendChild(root);
+
+    const slide1 = document.createElement("div");
+    slide1.id = "slide-1";
+    slide1.setAttribute("data-composition-id", "slide-1");
+    slide1.setAttribute("data-start", "0");
+    slide1.setAttribute("data-hf-authored-duration", "14");
+    root.appendChild(slide1);
+
+    const slide2 = document.createElement("div");
+    slide2.id = "slide-2";
+    slide2.setAttribute("data-composition-id", "slide-2");
+    slide2.setAttribute("data-start", "slide-1");
+    slide2.setAttribute("data-hf-authored-duration", "12");
+    root.appendChild(slide2);
+
+    const slide3 = document.createElement("div");
+    slide3.id = "slide-3";
+    slide3.setAttribute("data-composition-id", "slide-3");
+    slide3.setAttribute("data-start", "slide-2");
+    slide3.setAttribute("data-hf-authored-duration", "16");
+    root.appendChild(slide3);
+
+    (window as Window & { __timelines?: Record<string, RuntimeTimelineLike> }).__timelines = {
+      main: createPaddableMockTimeline(14),
+    };
+
+    initSandboxRuntimeModular();
+
+    const player = (
+      window as Window & {
+        __player?: { getDuration: () => number; seek: (timeSeconds: number) => void };
+      }
+    ).__player;
+    expect(player).toBeDefined();
+    expect(player?.getDuration()).toBe(42);
+
+    player?.seek(30);
+
+    expect(root.style.visibility).toBe("visible");
+    expect(slide1.style.visibility).toBe("hidden");
+    expect(slide2.style.visibility).toBe("hidden");
+    expect(slide3.style.visibility).toBe("visible");
   });
 
   it("pauses nested media that is outside the timed-media cache after a seek", () => {

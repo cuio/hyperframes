@@ -190,11 +190,11 @@ These are mistakes that cannot be caught by the linter. For automated checks, ru
   </Accordion>
 
   <Accordion title="Expected HDR output but got SDR">
-    **Symptom:** Rendered with `--hdr`, but the output looks the same as SDR or `ffprobe` reports `color_transfer=bt709`.
+    **Symptom:** Expected an HDR render, but the output looks the same as SDR or `ffprobe` reports `color_transfer=bt709`.
 
-    **Cause:** `--hdr` is a *detection* flag, not a *force* flag. Hyperframes only switches to HDR encoding when a source `<video>` or `<img>` is tagged with BT.2020 / PQ / HLG color metadata. Two common reasons HDR is not engaged:
+    **Cause:** By default, Hyperframes only switches to HDR encoding when a source `<video>` or `<img>` is tagged with BT.2020 / PQ / HLG color metadata. Common reasons HDR is not engaged:
 
-    1. **All sources are SDR.** `--hdr` is a no-op on SDR-only compositions. Verify with `ffprobe`:
+    1. **All sources are SDR.** Auto-detect leaves SDR-only compositions in SDR. Verify with `ffprobe`:
 
        ```bash Terminal
        ffprobe -v error -show_streams source.mp4 | grep color_transfer
@@ -204,7 +204,11 @@ These are mistakes that cannot be caught by the linter. For automated checks, ru
 
     2. **Wrong output format.** HDR output requires MP4. `--format mov` and `--format webm` fall back to SDR — Hyperframes logs a warning when this happens.
 
-    `--docker` works the same as local rendering — `--hdr` is forwarded into the container and produces the same HDR10 MP4 output (slower, since the container falls back to software WebGL for SDR DOM capture).
+    3. **SDR was forced.** `--sdr` disables HDR even when HDR sources are present.
+
+    If you need HDR regardless of source metadata, use `--hdr` to force it.
+
+    `--docker` works the same as local rendering — auto-detect, `--hdr`, and `--sdr` are all forwarded into the container and produce the same output decisions (slower, since the container falls back to software WebGL for SDR DOM capture).
 
     See [HDR Rendering](/guides/hdr) for the full source requirements and verification steps.
   </Accordion>

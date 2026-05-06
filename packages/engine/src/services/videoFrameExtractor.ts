@@ -7,7 +7,7 @@
 
 import { spawn } from "child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "fs";
-import { isAbsolute, join } from "path";
+import { isAbsolute, join, posix, resolve, sep } from "path";
 import { parseHTML } from "linkedom";
 import { extractMediaMetadata, type VideoMetadata } from "../utils/ffprobe.js";
 import {
@@ -230,8 +230,17 @@ export async function extractVideoFramesRange(
   if (isHdr && isMacOS) {
     args.push("-hwaccel", "videotoolbox");
   }
-  if (metadata.hasAlpha && metadata.videoCodec === "vp9") {
-    args.push("-c:v", "libvpx-vp9");
+  // Always force the alpha-aware decoder on codecs that can carry alpha. The
+  // alternative — gating on `metadata.hasAlpha` — relies on tag detection that
+  // has at least three known failure modes: case-sensitivity across ffmpeg
+  // versions (`alpha_mode` vs `ALPHA_MODE`), missing tags from older muxers,
+  // and mp4-as-webm rewraps that drop the sidecar. A wrong negative there
+  // silently strips alpha during decode and the bug doesn't surface until
+  // the rendered video is missing layers. Codec-based default has no such
+  // ambiguity: libvpx-vp9 reads the alpha sidecar when present and decodes
+  // normally when it isn't.
+  if (codecMayHaveAlpha(metadata.videoCodec)) {
+    args.push("-c:v", decoderForCodec(metadata.videoCodec));
   }
   args.push("-ss", String(startTime), "-i", videoPath, "-t", String(duration));
 
@@ -398,9 +407,31 @@ function resolveSegmentDuration(
   return sourceRemaining > 0 ? sourceRemaining : metadata.durationSeconds;
 }
 
+/**
+ * Codecs whose bitstream is allowed to carry an alpha channel. Default the
+ * extraction path to PNG output for these regardless of `metadata.hasAlpha`
+ * so a missed sidecar tag doesn't silently strip transparency. Opaque content
+ * encoded in one of these codecs pays a small file-size cost on the cached
+ * frames but stays correct on the rare case where alpha IS present and the
+ * tag was missed.
+ */
+const ALPHA_CAPABLE_CODECS = new Set(["vp9", "vp8", "prores"]);
+
+export function codecMayHaveAlpha(codec: string | undefined): boolean {
+  return ALPHA_CAPABLE_CODECS.has((codec ?? "").toLowerCase());
+}
+
+export function decoderForCodec(codec: string | undefined): string {
+  const c = (codec ?? "").toLowerCase();
+  if (c === "vp9") return "libvpx-vp9";
+  if (c === "vp8") return "libvpx";
+  return c;
+}
+
 function resolveFrameFormat(metadata: VideoMetadata, requested?: "jpg" | "png"): CacheFrameFormat {
   if (requested) return requested;
-  return metadata.hasAlpha ? "png" : "jpg";
+  if (metadata.hasAlpha || codecMayHaveAlpha(metadata.videoCodec)) return "png";
+  return "jpg";
 }
 
 /**
@@ -459,6 +490,54 @@ async function convertVfrToCfr(
   }
 }
 
+/**
+ * Resolve a relative `<video src>` to a filesystem path the way the browser
+ * resolves it as a URL. Browsers clamp `..` segments at the served origin's
+ * root; `path.join(projectDir, "../assets/foo")` does not. So a sub-comp
+ * `<video src="../assets/foo">` loads in the page (browser clamps to
+ * `<projectDir>/assets/foo`) but the filesystem-side resolver lands at
+ * `<parentOfProjectDir>/assets/foo` — file missing, extraction skipped,
+ * the rendered output shows the video's first frame for the whole clip.
+ *
+ * The clamp covers two escape patterns: leading `..` (`../assets/foo`) AND
+ * mid-path escapes (`assets/../../foo`) that `path.join` collapses past the
+ * project root silently. Both fall back to a project-rooted candidate that
+ * strips traversal from the resolved path.
+ *
+ * Returns the first existing candidate, or the base-dir join on miss so
+ * the caller's `existsSync` check produces a stable error path.
+ */
+export function resolveProjectRelativeSrc(
+  src: string,
+  baseDir: string,
+  compiledDir?: string,
+): string {
+  const fromCompiled = compiledDir ? join(compiledDir, src) : null;
+  const fromBase = join(baseDir, src);
+  const candidates: string[] = [];
+  if (fromCompiled) candidates.push(fromCompiled);
+  candidates.push(fromBase);
+  // If the joined result escapes the project root (either via leading `..`
+  // or mid-path traversal that path.join collapsed past baseDir), retry
+  // with the basename re-anchored at the project root. This mirrors the
+  // browser URL clamp without relying on a particular `..` shape.
+  const baseAbs = resolve(baseDir);
+  const fromBaseAbs = resolve(fromBase);
+  if (!fromBaseAbs.startsWith(baseAbs + sep) && fromBaseAbs !== baseAbs) {
+    // Normalize first (`assets/../../assets/foo.mp4` → `../assets/foo.mp4`)
+    // then strip any remaining leading `..` segments. Stripping `..` from the
+    // raw input would leave dangling siblings (`assets/../../assets/foo`
+    // would become `assets/assets/foo` instead of `assets/foo`).
+    const normalized = posix.normalize(src.replace(/\\/g, "/"));
+    const stripped = normalized.replace(/^(\.\.\/)+/, "");
+    if (stripped && stripped !== src && !stripped.startsWith("..")) {
+      if (compiledDir) candidates.push(join(compiledDir, stripped));
+      candidates.push(join(baseDir, stripped));
+    }
+  }
+  return candidates.find(existsSync) ?? fromBase;
+}
+
 export async function extractAllVideoFrames(
   videos: VideoElement[],
   baseDir: string,
@@ -487,6 +566,9 @@ export async function extractAllVideoFrames(
   // Phase 1: Resolve paths and download remote videos
   const phase1Start = Date.now();
   const resolvedVideos: Array<{ video: VideoElement; videoPath: string }> = [];
+  // Dedupe missing-src warnings: a composition with N <video> elements all
+  // pointing at the same broken src should only print one warning, not N.
+  const warnedSrcs = new Set<string>();
   for (const video of videos) {
     if (signal?.aborted) break;
     try {
@@ -496,9 +578,7 @@ export async function extractAllVideoFrames(
       // baseDir and produce duplicated, nonexistent paths
       // (e.g. C:\tmp\hf-vfr-test-X\C:\tmp\hf-vfr-test-X\vfr_screen.mp4).
       if (!isAbsolute(videoPath) && !isHttpUrl(videoPath)) {
-        const fromCompiled = compiledDir ? join(compiledDir, videoPath) : null;
-        videoPath =
-          fromCompiled && existsSync(fromCompiled) ? fromCompiled : join(baseDir, videoPath);
+        videoPath = resolveProjectRelativeSrc(video.src, baseDir, compiledDir);
       }
 
       if (isHttpUrl(videoPath)) {
@@ -508,6 +588,19 @@ export async function extractAllVideoFrames(
       }
 
       if (!existsSync(videoPath)) {
+        // Loud: silent miss leaves the rendered video frozen at frame 0 with
+        // no error in stdout — extremely confusing for authors. Dedupe by
+        // src so 50 broken videos pointing at the same path don't spam.
+        if (!warnedSrcs.has(video.src)) {
+          warnedSrcs.add(video.src);
+          process.stderr.write(
+            `[hyperframes:render] WARNING: video src="${video.src}" ` +
+              `could not be resolved on disk (looked for ${videoPath}). ` +
+              `The rendered output will show this video's first frame for the entire clip duration. ` +
+              `If your <video> lives inside a sub-composition, prefer project-root-relative paths ` +
+              `(e.g. src="assets/foo.mp4") over "../assets/foo.mp4".\n`,
+          );
+        }
         errors.push({ videoId: video.id, error: `Video file not found: ${videoPath}` });
         continue;
       }

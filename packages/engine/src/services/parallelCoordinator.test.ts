@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { distributeFrames } from "./parallelCoordinator.js";
+import { calculateOptimalWorkers, distributeFrames } from "./parallelCoordinator.js";
 
 describe("distributeFrames", () => {
   it("distributes frames evenly across workers", () => {
@@ -40,5 +40,31 @@ describe("distributeFrames", () => {
   it("assigns sequential worker IDs", () => {
     const tasks = distributeFrames(100, 3, "/tmp/work");
     expect(tasks.map((t) => t.workerId)).toEqual([0, 1, 2]);
+  });
+});
+
+describe("calculateOptimalWorkers", () => {
+  it("lets high-cost auto renders fall back to one worker when CPU budget requires it", () => {
+    const workers = calculateOptimalWorkers(180, undefined, {
+      concurrency: 6,
+      coresPerWorker: 100,
+      minParallelFrames: 120,
+      largeRenderThreshold: 1000,
+      captureCostMultiplier: 4,
+    });
+
+    expect(workers).toBe(1);
+  });
+
+  it("does not apply capture cost to explicit worker requests", () => {
+    const workers = calculateOptimalWorkers(180, 4, {
+      concurrency: 6,
+      coresPerWorker: 100,
+      minParallelFrames: 120,
+      largeRenderThreshold: 1000,
+      captureCostMultiplier: 4,
+    });
+
+    expect(workers).toBe(4);
   });
 });

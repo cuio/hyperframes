@@ -5,7 +5,7 @@
  * providing a CLI-specific adapter for single-project, in-process rendering.
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { resolve, join, basename } from "node:path";
@@ -14,11 +14,14 @@ import { loadRuntimeSource } from "./runtimeSource.js";
 import { VERSION as version } from "../version.js";
 import {
   createStudioApi,
+  createProjectSignature,
   getMimeType,
   type StudioApiAdapter,
   type ResolvedProject,
   type RenderJobState,
 } from "@hyperframes/core/studio-api";
+import { getElementScreenshotClip } from "@hyperframes/core/studio-api/screenshot-clip";
+import type { ScreenshotClip } from "@hyperframes/core/studio-api/screenshot-clip";
 
 // ── Path resolution ─────────────────────────────────────────────────────────
 
@@ -142,6 +145,10 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
   // ── CLI adapter for the shared studio API ──────────────────────────────
 
   const project: ResolvedProject = { id: projectId, dir: projectDir, title: projectId };
+  let cachedProjectSignature: string | null = null;
+  watcher.addListener(() => {
+    cachedProjectSignature = null;
+  });
 
   const adapter: StudioApiAdapter = {
     listProjects: () => [project],
@@ -151,8 +158,11 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
     async bundle(dir: string): Promise<string | null> {
       try {
         const { bundleToSingleHtml } = await import("@hyperframes/core/compiler");
-        let html = await bundleToSingleHtml(dir);
-        // Fix empty runtime src from bundler — point to the local runtime endpoint
+        // Studio dev server: ask the bundler for an empty `src=""` placeholder so
+        // we can point it at our hot-reloadable local runtime endpoint. Inlining
+        // ~150 KB of runtime body on every preview render would defeat browser
+        // caching across composition edits.
+        let html = await bundleToSingleHtml(dir, { runtime: "placeholder" });
         html = html.replace(
           'data-hyperframes-preview-runtime="1" src=""',
           'data-hyperframes-preview-runtime="1" src="/api/runtime.js"',
@@ -162,6 +172,12 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
         console.error("[studio] Bundle failed:", err);
         return null;
       }
+    },
+
+    getProjectSignature(dir: string): string {
+      if (resolve(dir) !== resolve(projectDir)) return createProjectSignature(dir);
+      cachedProjectSignature ??= createProjectSignature(projectDir);
+      return cachedProjectSignature;
     },
 
     async lint(html: string, opts?: { filePath?: string }) {
@@ -258,31 +274,22 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
         }, opts.seekTime);
         // Let the seek render settle.
         await new Promise((r) => setTimeout(r, 200));
-        let clip: { x: number; y: number; width: number; height: number } | undefined;
+        let clip: ScreenshotClip | undefined;
         if (opts.selector) {
-          clip = await page.evaluate((selector: string) => {
-            const el = document.querySelector(selector);
-            if (!(el instanceof HTMLElement)) return undefined;
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 4 || rect.height < 4) return undefined;
-            const pad = 8;
-            const x = Math.max(0, rect.left - pad);
-            const y = Math.max(0, rect.top - pad);
-            const maxWidth = window.innerWidth - x;
-            const maxHeight = window.innerHeight - y;
-            return {
-              x,
-              y,
-              width: Math.max(1, Math.min(rect.width + pad * 2, maxWidth)),
-              height: Math.max(1, Math.min(rect.height + pad * 2, maxHeight)),
-            };
-          }, opts.selector);
+          clip = await page.evaluate(getElementScreenshotClip, opts.selector);
         }
-        const screenshot = (await page.screenshot({
-          type: "jpeg",
-          quality: 80,
-          ...(clip ? { clip } : {}),
-        })) as Buffer;
+        const screenshot = (await page.screenshot(
+          opts.format === "png"
+            ? {
+                type: "png",
+                ...(clip ? { clip } : {}),
+              }
+            : {
+                type: "jpeg",
+                quality: 80,
+                ...(clip ? { clip } : {}),
+              },
+        )) as Buffer;
         return screenshot;
       } catch {
         return null;
@@ -353,23 +360,16 @@ export function createStudioServer(options: StudioServerOptions): StudioServer {
   });
 
   // Studio SPA static files
-  app.get("/assets/*", (c) => {
+  const serveStudioStaticFile = (c: Context) => {
     const filePath = resolve(studioDir, c.req.path.slice(1));
     if (!existsSync(filePath) || !statSync(filePath).isFile()) return c.text("not found", 404);
     const content = readFileSync(filePath);
     return new Response(content, {
       headers: { "Content-Type": getMimeType(filePath), "Cache-Control": "no-store" },
     });
-  });
-
-  app.get("/icons/*", (c) => {
-    const filePath = resolve(studioDir, c.req.path.slice(1));
-    if (!existsSync(filePath) || !statSync(filePath).isFile()) return c.text("not found", 404);
-    const content = readFileSync(filePath);
-    return new Response(content, {
-      headers: { "Content-Type": getMimeType(filePath), "Cache-Control": "no-store" },
-    });
-  });
+  };
+  app.get("/assets/*", serveStudioStaticFile);
+  app.get("/icons/*", serveStudioStaticFile);
 
   // SPA fallback
   app.get("*", (c) => {

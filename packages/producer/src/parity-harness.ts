@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
-import puppeteer, { type Page } from "puppeteer-core";
+import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import { MEDIA_VISUAL_STYLE_PROPERTIES, quantizeTimeToFrame } from "./utils/parityContract.js";
 
 type ParityHarnessOptions = {
@@ -262,10 +262,39 @@ async function captureCheckpoint(
   if (emulateProducerSwap) {
     await emulateProducerVideoSwap(page);
   }
-  await page.evaluate(
-    () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-  );
+  await page.evaluate(`new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    window.setTimeout(finish, 100);
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+  })`);
   return (await page.screenshot({ type: "png" })) as Buffer;
+}
+
+async function captureParitySide(
+  browser: Browser,
+  url: string,
+  checkpointSec: number,
+  fps: number,
+  emulateProducerSwap: boolean,
+): Promise<{ buffer: Buffer; styles: Record<string, unknown> }> {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url, {
+      waitUntil: "load",
+      timeout: 60_000,
+    });
+    await waitForParityReady(page);
+    const buffer = await captureCheckpoint(page, checkpointSec, fps, emulateProducerSwap);
+    const styles = await captureStyleSnapshot(page);
+    return { buffer, styles };
+  } finally {
+    await page.close().catch(() => {});
+  }
 }
 
 function sha256(data: Buffer): string {
@@ -277,8 +306,11 @@ async function run(): Promise<void> {
   console.log(`[ParityHarness] options=${JSON.stringify(options)}`);
   ensureDir(options.artifactsDir);
 
+  const browserTarget = process.env.PUPPETEER_EXECUTABLE_PATH
+    ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH }
+    : { channel: "chrome" as const };
   const browser = await puppeteer.launch({
-    channel: "chrome",
+    ...browserTarget,
     headless: true,
     defaultViewport: {
       width: options.width,
@@ -301,21 +333,6 @@ async function run(): Promise<void> {
   });
 
   try {
-    const previewPage = await browser.newPage();
-    const producerPage = await browser.newPage();
-
-    await Promise.all([
-      previewPage.goto(options.previewUrl, {
-        waitUntil: ["load", "networkidle2"],
-        timeout: 60_000,
-      }),
-      producerPage.goto(options.producerUrl, {
-        waitUntil: ["load", "networkidle2"],
-        timeout: 60_000,
-      }),
-    ]);
-    await Promise.all([waitForParityReady(previewPage), waitForParityReady(producerPage)]);
-
     let mismatches = 0;
     const results: Array<{
       checkpointSec: number;
@@ -333,10 +350,22 @@ async function run(): Promise<void> {
       const checkpointKey = checkpointSec.toFixed(3).replace(/\./g, "_");
       const artifactDir = join(options.artifactsDir, `checkpoint_${checkpointKey}s`);
       ensureDir(artifactDir);
-      const [previewBuffer, producerBuffer] = await Promise.all([
-        captureCheckpoint(previewPage, checkpointSec, options.fps, false),
-        captureCheckpoint(producerPage, checkpointSec, options.fps, options.emulateProducerSwap),
-      ]);
+      const previewCapture = await captureParitySide(
+        browser,
+        options.previewUrl,
+        checkpointSec,
+        options.fps,
+        false,
+      );
+      const producerCapture = await captureParitySide(
+        browser,
+        options.producerUrl,
+        checkpointSec,
+        options.fps,
+        options.emulateProducerSwap,
+      );
+      const previewBuffer = previewCapture.buffer;
+      const producerBuffer = producerCapture.buffer;
       const previewHash = sha256(previewBuffer);
       const producerHash = sha256(producerBuffer);
       const match = previewHash === producerHash;
@@ -349,10 +378,8 @@ async function run(): Promise<void> {
       if (diffImagePath) {
         writeImageDiff(previewImagePath, producerImagePath, diffImagePath);
       }
-      const [previewStyles, producerStyles] = await Promise.all([
-        captureStyleSnapshot(previewPage),
-        captureStyleSnapshot(producerPage),
-      ]);
+      const previewStyles = previewCapture.styles;
+      const producerStyles = producerCapture.styles;
       const previewStylesPath = join(artifactDir, "preview-styles.json");
       const producerStylesPath = join(artifactDir, "producer-styles.json");
       writeJson(previewStylesPath, previewStyles);

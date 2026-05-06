@@ -2,10 +2,12 @@ import { describe, expect, it, mock, beforeAll } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseHTML } from "linkedom";
 import {
   collectExternalAssets,
   compileForRender,
   detectRenderModeHints,
+  detectShaderTransitionUsage,
   inlineExternalScripts,
   recompileWithResolutions,
 } from "./htmlCompiler.js";
@@ -458,10 +460,41 @@ describe("detectRenderModeHints", () => {
   });
 });
 
+describe("detectShaderTransitionUsage", () => {
+  it("detects authored HyperShader initialization", () => {
+    const html = `<!doctype html>
+<html><body>
+  <script src="https://cdn.jsdelivr.net/npm/@hyperframes/shader-transitions/dist/index.global.js"></script>
+  <script>
+    window.HyperShader.init({
+      scenes: ["s1", "s2"],
+      transitions: [{ time: 1, shader: "cinematic-zoom", duration: 0.5 }],
+    });
+  </script>
+</body></html>`;
+
+    expect(detectShaderTransitionUsage(html)).toBe(true);
+  });
+
+  it("ignores comments and external scripts by themselves", () => {
+    const html = `<!doctype html>
+<html><body>
+  <script src="https://cdn.jsdelivr.net/npm/@hyperframes/shader-transitions/dist/index.global.js"></script>
+  <script>
+    // window.HyperShader.init({ scenes: ["s1", "s2"], transitions: [] });
+    const label = "safe";
+  </script>
+</body></html>`;
+
+    expect(detectShaderTransitionUsage(html)).toBe(false);
+  });
+});
+
 describe("template-wrapped sub-composition media offsets", () => {
   function writeTemplateWrappedProject(
     hostAttrs: string,
     mediaAttrs: string = 'data-start="0" data-duration="4"',
+    extraMediaMarkup: string = "",
   ): {
     projectDir: string;
     indexPath: string;
@@ -473,6 +506,7 @@ describe("template-wrapped sub-composition media offsets", () => {
       join(projectDir, "index.html"),
       `<!DOCTYPE html>
 <html>
+  <head></head>
   <body>
     <div
       id="root"
@@ -506,12 +540,15 @@ describe("template-wrapped sub-composition media offsets", () => {
     data-height="360"
     data-duration="4"
   >
+    <style>.title { opacity: 0; }</style>
+    <h1 class="title">Scene</h1>
     <video
       id="scene-video"
       src="../assets/clip.mp4"
       ${mediaAttrs}
       data-track-index="0"
     ></video>
+    ${extraMediaMarkup}
     <script>
       window.__timelines = window.__timelines || {};
       window.__timelines["scene"] = { duration: () => 4 };
@@ -593,5 +630,92 @@ describe("template-wrapped sub-composition media offsets", () => {
       start: 21.5,
       end: 25.5,
     });
+  });
+
+  it("includes explicit audio from template-wrapped sub-compositions", async () => {
+    const { projectDir, indexPath } = writeTemplateWrappedProject(
+      'data-start="5" data-duration="6" data-width="640" data-height="360"',
+      'data-start="1" data-duration="4"',
+      `<audio
+        id="scene-audio"
+        src="../assets/narration.wav"
+        data-start="2"
+        data-duration="3"
+        data-track-index="1"
+      ></audio>`,
+    );
+
+    const compiled = await compileForRender(projectDir, indexPath, projectDir);
+
+    expect(compiled.audios).toContainEqual(
+      expect.objectContaining({
+        id: "scene-audio",
+        start: 7,
+        end: 10,
+      }),
+    );
+  });
+
+  it("flattens the sub-composition root onto the host in compiled render HTML", async () => {
+    const { projectDir, indexPath } = writeTemplateWrappedProject(
+      'data-start="20" data-duration="6" data-width="640" data-height="360"',
+      'data-start="1.5" data-duration="4"',
+    );
+
+    const compiled = await compileForRender(projectDir, indexPath, projectDir);
+
+    const { document } = parseHTML(compiled.html);
+    const host = document.querySelector("#scene-host");
+
+    expect(host?.getAttribute("data-composition-id")).toBe("scene");
+    expect(host?.getAttribute("data-start")).toBe("20");
+    expect(host?.getAttribute("data-width")).toBe("640");
+    expect(host?.querySelector(".title")?.textContent).toBe("Scene");
+    expect(
+      Array.from(host?.children ?? []).some(
+        (child) => child.getAttribute("data-composition-id") === "scene",
+      ),
+    ).toBe(false);
+    expect(compiled.html).toContain('[data-composition-id="scene"] .title');
+    expect(compiled.html).toContain("new Proxy(window.document");
+    expect(compiled.html).toContain("__hfNormalizeSelector");
+  });
+
+  it("preserves the inferred composition boundary when the host has no composition id", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "hf-anonymous-host-"));
+    const compositionsDir = join(projectDir, "compositions");
+    mkdirSync(compositionsDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, "index.html"),
+      `<!DOCTYPE html>
+<html>
+  <body>
+    <div id="root" data-composition-id="root" data-width="640" data-height="360">
+      <div id="scene-host" data-composition-src="compositions/scene.html" data-start="0"></div>
+    </div>
+  </body>
+</html>`,
+    );
+    writeFileSync(
+      join(compositionsDir, "scene.html"),
+      `<template id="scene-template">
+  <div data-composition-id="scene" data-width="640" data-height="360" data-duration="4">
+    <style>.title { opacity: 0; }</style>
+    <h1 class="title">Scene</h1>
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines.scene = { duration: () => 4 };
+    </script>
+  </div>
+</template>`,
+    );
+
+    const compiled = await compileForRender(projectDir, join(projectDir, "index.html"), projectDir);
+    const { document } = parseHTML(compiled.html);
+    const host = document.querySelector("#scene-host");
+
+    expect(host?.getAttribute("data-composition-id")).toBeNull();
+    expect(host?.querySelector('[data-composition-id="scene"] .title')?.textContent).toBe("Scene");
+    expect(compiled.html).toContain('var __hfCompId = "scene";');
   });
 });

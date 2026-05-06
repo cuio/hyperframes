@@ -12,6 +12,7 @@ import { downloadToTemp, isHttpUrl } from "../utils/urlDownloader.js";
 import { DEFAULT_CONFIG, type EngineConfig } from "../config.js";
 import { runFfmpeg } from "../utils/runFfmpeg.js";
 import { unwrapTemplate } from "../utils/htmlTemplate.js";
+import { resolveProjectRelativeSrc } from "./videoFrameExtractor.js";
 import type { AudioElement, AudioTrack, MixResult } from "./audioMixer.types.js";
 
 export type { AudioElement, AudioTrack, MixResult } from "./audioMixer.types.js";
@@ -325,13 +326,10 @@ export async function processCompositionAudio(
       }
       try {
         let srcPath = element.src;
-        // Use isAbsolute() rather than startsWith("/"). On Windows, absolute paths
-        // like "C:\…" are not detected by the latter, so we'd re-join them under
-        // baseDir and produce duplicated, nonexistent paths.
         if (!isAbsolute(srcPath) && !isHttpUrl(srcPath)) {
-          const fromCompiled = compiledDir ? join(compiledDir, srcPath) : null;
-          srcPath =
-            fromCompiled && existsSync(fromCompiled) ? fromCompiled : join(baseDir, srcPath);
+          // Same browser-vs-filesystem path semantics as videos — see
+          // resolveProjectRelativeSrc in videoFrameExtractor for the full why.
+          srcPath = resolveProjectRelativeSrc(element.src, baseDir, compiledDir);
         }
 
         if (isHttpUrl(srcPath)) {

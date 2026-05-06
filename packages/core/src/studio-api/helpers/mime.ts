@@ -18,6 +18,9 @@ export const MIME_TYPES: Record<string, string> = {
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
   ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
+  ".opus": "audio/ogg",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
   ".ttf": "font/ttf",
@@ -29,4 +32,8 @@ export const MIME_TYPES: Record<string, string> = {
 export function getMimeType(path: string): string {
   const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
   return MIME_TYPES[ext] || "application/octet-stream";
+}
+
+export function isAudioFile(name: string): boolean {
+  return (getMimeType(name) ?? "").startsWith("audio/");
 }

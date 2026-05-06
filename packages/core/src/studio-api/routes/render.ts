@@ -13,32 +13,33 @@ export function registerRenderRoutes(api: Hono, adapter: StudioApiAdapter): void
   const CLEANUP_INTERVAL_MS = 60_000;
   let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
-  if (
+  const cleanupEnabled = () =>
     typeof process !== "undefined" &&
     process.env.NODE_ENV !== "production" &&
-    !process.argv.includes("build")
-  ) {
-    cleanupTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [key, job] of renderJobs) {
-        if (
-          (job.status === "complete" || job.status === "failed") &&
-          now - job.createdAt > TTL_MS
-        ) {
-          renderJobs.delete(key);
-        }
+    !process.argv.includes("build");
+
+  const cleanupFinishedJobs = () => {
+    const now = Date.now();
+    for (const [key, job] of renderJobs) {
+      if ((job.status === "complete" || job.status === "failed") && now - job.createdAt > TTL_MS) {
+        renderJobs.delete(key);
       }
-      // Self-cleanup when no jobs remain
-      if (renderJobs.size === 0 && cleanupTimer) {
-        clearInterval(cleanupTimer);
-        cleanupTimer = null;
-      }
-    }, CLEANUP_INTERVAL_MS);
-    // Prevent the timer from keeping the process alive
-    if (cleanupTimer && typeof cleanupTimer === "object" && "unref" in cleanupTimer) {
+    }
+    if (renderJobs.size === 0 && cleanupTimer) {
+      clearInterval(cleanupTimer);
+      cleanupTimer = null;
+    }
+  };
+
+  const ensureCleanupTimer = () => {
+    if (cleanupTimer || !cleanupEnabled()) return;
+    cleanupTimer = setInterval(cleanupFinishedJobs, CLEANUP_INTERVAL_MS);
+    if (typeof cleanupTimer === "object" && "unref" in cleanupTimer) {
       cleanupTimer.unref();
     }
-  }
+  };
+
+  ensureCleanupTimer();
 
   // Start a render
   api.post("/projects/:id/render", async (c) => {
@@ -78,27 +79,7 @@ export function registerRenderRoutes(api: Hono, adapter: StudioApiAdapter): void
     (jobState as RenderJobState & { createdAt: number }).createdAt = Date.now();
     renderJobs.set(jobId, jobState as RenderJobState & { createdAt: number });
 
-    // Restart cleanup timer if needed
-    if (!cleanupTimer && typeof process !== "undefined" && process.env.NODE_ENV !== "production") {
-      cleanupTimer = setInterval(() => {
-        const now = Date.now();
-        for (const [key, job] of renderJobs) {
-          if (
-            (job.status === "complete" || job.status === "failed") &&
-            now - job.createdAt > TTL_MS
-          ) {
-            renderJobs.delete(key);
-          }
-        }
-        if (renderJobs.size === 0 && cleanupTimer) {
-          clearInterval(cleanupTimer);
-          cleanupTimer = null;
-        }
-      }, CLEANUP_INTERVAL_MS);
-      if (cleanupTimer && typeof cleanupTimer === "object" && "unref" in cleanupTimer) {
-        cleanupTimer.unref();
-      }
-    }
+    ensureCleanupTimer();
 
     return c.json({ jobId, status: "rendering" });
   });

@@ -148,6 +148,9 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
     # Agent mode (default) — --example is required
     npx hyperframes init my-video --example blank --video video.mp4
 
+    # Include Tailwind CSS browser-runtime support
+    npx hyperframes init my-video --example blank --tailwind
+
     # Human mode — interactive prompts
     npx hyperframes init --human-friendly
     ```
@@ -157,6 +160,7 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
     | `--example, -e` | Example to scaffold (required in default mode, interactive in `--human-friendly`) |
     | `--video, -V` | Path to a video file (MP4, WebM, MOV) |
     | `--audio, -a` | Path to an audio file (MP3, WAV, M4A) |
+    | `--tailwind` | Add Tailwind CSS browser-runtime support to scaffolded HTML |
     | `--skip-skills` | Skip AI coding skills installation |
     | `--skip-transcribe` | Skip automatic whisper transcription |
     | `--model` | Whisper model for transcription (e.g. `small.en`, `medium.en`, `large-v3`) |
@@ -172,6 +176,8 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
     | `vignelli` | Bold typography with red accents |
 
     In default (agent) mode, `--example` is required — the CLI errors with a usage example if missing. In `--human-friendly` mode, you choose interactively. When `--video` or `--audio` is provided, the CLI automatically transcribes the audio with Whisper and patches captions into the composition (use `--skip-transcribe` to disable).
+
+    `--tailwind` injects the pinned Tailwind v4 browser runtime into scaffolded HTML and exposes a `window.__tailwindReady` promise that renders wait on before capturing frame 0. Use the `/tailwind` skill when editing these projects so agents follow v4 CSS-first patterns instead of v3 `tailwind.config.js` and `@tailwind` directive patterns. The browser runtime is still intended for scaffolded projects and quick iteration; for fully offline or locked-down production renders, compile Tailwind to CSS and include the stylesheet directly.
 
     After scaffolding, the CLI installs AI coding skills for Claude Code, Gemini CLI, and Codex CLI (use `--skip-skills` to disable). See [`skills`](#skills) command.
 
@@ -335,6 +341,59 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
     <Tip>
       Combine `tts` with `transcribe` to generate narration and word-level timestamps for captions in a single workflow: generate the audio with `tts`, then transcribe the output with `transcribe` to get word-level timing.
     </Tip>
+
+    ### `remove-background`
+
+    Remove the background from a video or image using a local AI model. The output is transparent media you can drop into any composition's `<video>` or `<img>` element — no green screen required.
+
+    ```bash
+    # Default: VP9-with-alpha WebM (HTML5-native, ~1 MB / 4s @ 1080p)
+    npx hyperframes remove-background avatar.mp4 -o transparent.webm
+
+    # ProRes 4444 .mov for editing round-trip
+    npx hyperframes remove-background avatar.mp4 -o transparent.mov
+
+    # Single image → transparent PNG
+    npx hyperframes remove-background portrait.jpg -o cutout.png
+
+    # Layer separation: cutout AND inverse-alpha background plate in one pass
+    npx hyperframes remove-background avatar.mp4 \
+      -o subject.webm --background-output plate.webm
+
+    # Force CPU on a machine that has CoreML or CUDA
+    npx hyperframes remove-background avatar.mp4 -o transparent.webm --device cpu
+
+    # Inspect detected providers without rendering
+    npx hyperframes remove-background --info
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--output, -o` | Output path. Format inferred from extension: `.webm` (default), `.mov`, `.png` |
+    | `--background-output, -b` | Optional second output: inverse-alpha background plate (subject region transparent, surroundings opaque). Same source RGB, complementary mask. Must be `.webm` or `.mov`. Hole-cut, not inpainted — composite something underneath to fill the hole. |
+    | `--device` | Execution provider: `auto` (default), `cpu`, `coreml`, `cuda` |
+    | `--quality` | WebM encoder preset: `fast` (crf 30, smallest), `balanced` (crf 18, default), `best` (crf 12, near-lossless). Higher quality keeps the cutout's RGB closer to the source mp4 — important when overlaying the cutout on its own source for text-behind-subject effects. Applies to both `--output` and `--background-output`. Ignored for `.mov` / `.png`. |
+    | `--info` | Print detected execution providers and exit (no render) |
+    | `--json` | Output result as JSON |
+
+    The model is `u2net_human_seg` (MIT, ~168 MB ONNX). Weights download to `~/.cache/hyperframes/background-removal/models/` on first run and are reused thereafter. Peak inference RAM is ~1.5 GB.
+
+    `--device auto` picks CoreML on Apple Silicon, CUDA when available, and CPU otherwise. The CLI bundles the CPU build of `onnxruntime-node`; for CUDA, set `HYPERFRAMES_CUDA=1` and provide a GPU-enabled `onnxruntime-node` build.
+
+    Output formats:
+
+    | Format | Use case | Size (4s @ 1080p) |
+    |--------|----------|-------------------|
+    | `.webm` (VP9 alpha) | Drop into `<video>` for HTML5-native transparent playback | ~1 MB |
+    | `.mov` (ProRes 4444) | Editing round-trip in Premiere / Resolve / DaVinci | ~50 MB |
+    | `.png` | Single-image cutout | varies |
+
+    <Tip>
+      The `<video>` element in Chrome only respects the alpha plane when the WebM is encoded as `yuva420p` with the `alpha_mode=1` metadata tag. The CLI sets both automatically — if you re-encode the output yourself, preserve those flags.
+    </Tip>
+
+    See the [Remove Background guide](/guides/remove-background) for the full workflow — using transparent videos in compositions, performance per platform, limitations of `u2net_human_seg`, and free alternative tools when this model isn't the right fit.
+
     ### `capture`
 
     Capture a website — extract screenshots, design tokens, fonts, assets, and animations for video production:
@@ -530,6 +589,12 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
 
     # With options
     npx hyperframes render --output output.mp4 --fps 60 --quality high
+
+    # Opt out of local browser GPU capture
+    npx hyperframes render --no-browser-gpu --output cpu-browser.mp4
+
+    # Add hardware FFmpeg encoding
+    npx hyperframes render --gpu --output gpu.mp4
     ```
 
     | Flag | Values | Default | Description |
@@ -540,13 +605,56 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
     | `--quality` | draft, standard, high | standard | Encoding quality preset (drives CRF/bitrate) |
     | `--crf` | 0-51 | — | Override encoder CRF (lower = higher quality). Mutually exclusive with `--video-bitrate` |
     | `--video-bitrate` | e.g. `10M`, `5000k` | — | Target video bitrate. Mutually exclusive with `--crf` |
-    | `--hdr` | — | off | Detect HDR sources and output HDR10 (H.265 10-bit, BT.2020 PQ/HLG). MP4 only. SDR-only compositions are unaffected. See [HDR Rendering](/guides/hdr) |
+    | `--hdr` | — | off | Force HDR output even if no HDR sources are detected. MP4 only. See [HDR Rendering](/guides/hdr) |
+    | `--sdr` | — | off | Force SDR output even if HDR sources are detected |
     | `--workers` | 1-8 | 4 | Parallel render workers |
-    | `--gpu` | — | off | GPU encoding (NVENC, VideoToolbox, VAAPI) |
+    | `--gpu` | — | off | GPU encoding (NVENC, VideoToolbox, VAAPI, QSV) |
+    | `--browser-gpu` / `--no-browser-gpu` | — | on locally, off in Docker | Use or opt out of host GPU acceleration for local Chrome/WebGL capture |
     | `--docker` | — | off | Use Docker for [deterministic rendering](/concepts/determinism) |
     | `--quiet` | — | off | Suppress verbose output |
+    | `--variables` | JSON object | — | Variable overrides merged over `data-composition-variables` defaults. Read via `window.__hyperframes.getVariables()` |
+    | `--variables-file` | path | — | Path to a JSON file with variable overrides (alternative to `--variables`) |
+    | `--strict-variables` | — | off | Fail render if any `--variables` key is undeclared or has a wrong type vs the composition's `data-composition-variables`. Without this flag, mismatches print as warnings and the render continues. |
 
     CRF and target bitrate default to the `--quality` preset. Use `--crf` or `--video-bitrate` for fine-grained overrides; `RenderConfig.crf` and `RenderConfig.videoBitrate` accept the same overrides programmatically.
+
+    #### Parametrized renders
+
+    Render the same composition with different content by declaring variables on the composition root and overriding them at render time:
+
+    ```html index.html
+    <html
+      data-composition-id="root"
+      data-composition-variables='[
+        {"id":"title","label":"Title","type":"string","default":"Hello"},
+        {"id":"theme","label":"Theme","type":"enum","options":[
+          {"value":"light","label":"Light"},
+          {"value":"dark","label":"Dark"}
+        ],"default":"light"}
+      ]'>
+      <body>
+        <h1 id="hero" class="clip" data-start="0" data-duration="3"></h1>
+        <script>
+          const vars = window.__hyperframes.getVariables();
+          document.getElementById("hero").textContent = vars.title;
+          document.body.dataset.theme = vars.theme;
+        </script>
+      </body>
+    </html>
+    ```
+
+    ```bash
+    # Render with declared defaults (preview also uses the defaults)
+    npx hyperframes render --output default.mp4
+
+    # Override at render time — missing keys fall through to declared defaults
+    npx hyperframes render --variables '{"title":"Q4 Report","theme":"dark"}' --output q4.mp4
+
+    # Pass values from a JSON file
+    npx hyperframes render --variables-file ./vars.json --output out.mp4
+    ```
+
+    `getVariables()` returns the merged result of declared defaults and any `--variables` overrides, so the same composition runs unchanged in dev preview and in production renders.
 
     #### WebM with Transparency
 
@@ -689,7 +797,7 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
 
     ### `skills`
 
-    Install HyperFrames and GSAP skills for AI coding tools:
+    Install HyperFrames skills for AI coding tools, including first-party runtime adapter skills:
 
     ```bash
     # Install to all default targets (Claude Code, Gemini CLI, Codex CLI)
@@ -708,7 +816,7 @@ This is suppressed in CI environments, non-TTY shells, and when `HYPERFRAMES_NO_
     | `--codex` | Install to Codex CLI (`~/.codex/skills/`) |
     | `--cursor` | Install to Cursor (`.cursor/skills/` in current project) |
 
-    Skills are fetched from GitHub and include composition authoring, GSAP animation patterns, registry block/component wiring, and other domain-specific knowledge. The `init` command also offers to install skills automatically after scaffolding a project.
+    Skills are fetched from GitHub and include composition authoring, Tailwind v4 browser-runtime guidance, GSAP animation patterns, Anime.js, CSS animation, Lottie, Three.js, and WAAPI adapter patterns, registry block/component wiring, and other domain-specific knowledge. The `init` command also offers to install skills automatically after scaffolding a project.
 
     #### Troubleshooting: `fatal: active post-checkout hook found during git clone`
 

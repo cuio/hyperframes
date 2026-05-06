@@ -26,7 +26,7 @@ import {
   type TimelineTrackStyle,
   type TimelineTheme,
 } from "./timelineTheme";
-import { getTimelinePixelsPerSecond } from "./timelineZoom";
+import { getPinchTimelineZoomPercent, getTimelinePixelsPerSecond } from "./timelineZoom";
 import { TIMELINE_ASSET_MIME } from "../../utils/timelineAssetDrop";
 
 /* ── Layout ─────────────────────────────────────────────────────── */
@@ -154,16 +154,47 @@ export function deriveTimelineLaneLabel(
 }
 
 /* ── Tick Generation ────────────────────────────────────────────── */
-export function generateTicks(duration: number): { major: number[]; minor: number[] } {
+function getMajorTickInterval(duration: number, pixelsPerSecond?: number): number {
+  const zoomIntervals = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
+  if (Number.isFinite(pixelsPerSecond) && (pixelsPerSecond ?? 0) > 0) {
+    const targetMajorPx = 128;
+    return (
+      zoomIntervals.find((interval) => interval * (pixelsPerSecond ?? 0) >= targetMajorPx) ?? 600
+    );
+  }
+  const durationIntervals = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60];
+  const target = duration / 6;
+  return durationIntervals.find((interval) => interval >= target) ?? 60;
+}
+
+function getMinorTickInterval(majorInterval: number, pixelsPerSecond?: number): number {
+  let interval = majorInterval / 2;
+  if (majorInterval >= 30) interval = majorInterval / 6;
+  else if (majorInterval >= 15) interval = majorInterval / 3;
+  else if (majorInterval >= 5) interval = majorInterval / 5;
+  else if (majorInterval >= 1) interval = majorInterval / 4;
+
+  if (
+    Number.isFinite(pixelsPerSecond) &&
+    (pixelsPerSecond ?? 0) > 0 &&
+    interval * (pixelsPerSecond ?? 0) < 20
+  ) {
+    return Math.max(0.25, majorInterval / 2);
+  }
+  return Math.max(0.25, interval);
+}
+
+export function generateTicks(
+  duration: number,
+  pixelsPerSecond?: number,
+): { major: number[]; minor: number[] } {
   if (duration <= 0 || !Number.isFinite(duration) || duration > 7200)
     return { major: [], minor: [] };
-  const intervals = [0.5, 1, 2, 5, 10, 15, 30, 60];
-  const target = duration / 6;
-  const majorInterval = intervals.find((i) => i >= target) ?? 60;
-  const minorInterval = Math.max(0.25, majorInterval / 2);
+  const majorInterval = getMajorTickInterval(duration, pixelsPerSecond);
+  const minorInterval = getMinorTickInterval(majorInterval, pixelsPerSecond);
   const major: number[] = [];
   const minor: number[] = [];
-  const maxTicks = 500; // Safety cap to prevent infinite loop
+  const maxTicks = 2000; // Safety cap to prevent runaway tick generation
   for (
     let t = 0;
     t <= duration + 0.001 && major.length + minor.length < maxTicks;
@@ -177,6 +208,25 @@ export function generateTicks(duration: number): { major: number[]; minor: numbe
     else minor.push(rounded);
   }
   return { major, minor };
+}
+
+export function formatTimelineTickLabel(time: number, duration: number, majorInterval: number) {
+  if (!Number.isFinite(time)) return "0:00";
+  const safeTime = Math.max(0, time);
+  if (majorInterval < 1) {
+    const totalTenths = Math.round(safeTime * 10);
+    const wholeSeconds = Math.floor(totalTenths / 10);
+    const tenth = totalTenths % 10;
+    return `${formatTime(wholeSeconds)}.${tenth}`;
+  }
+  if (duration >= 3600 || safeTime >= 3600) {
+    const totalSeconds = Math.floor(safeTime);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+  }
+  return formatTime(safeTime);
 }
 
 export function shouldAutoScrollTimeline(
@@ -196,6 +246,31 @@ export function getTimelineScrollLeftForZoomTransition(
 ): number {
   if (previousZoomMode === "manual" && nextZoomMode === "fit") return 0;
   return currentScrollLeft;
+}
+
+export function getTimelineScrollLeftForZoomAnchor(input: {
+  pointerX: number;
+  currentScrollLeft: number;
+  gutter: number;
+  currentPixelsPerSecond: number;
+  nextPixelsPerSecond: number;
+  duration: number;
+}): number {
+  const currentPps = Math.max(0, input.currentPixelsPerSecond);
+  const nextPps = Math.max(0, input.nextPixelsPerSecond);
+  if (
+    !Number.isFinite(input.pointerX) ||
+    !Number.isFinite(input.currentScrollLeft) ||
+    !Number.isFinite(input.duration) ||
+    input.duration <= 0 ||
+    currentPps <= 0 ||
+    nextPps <= 0
+  ) {
+    return Math.max(0, input.currentScrollLeft);
+  }
+  const timelineX = Math.max(0, input.currentScrollLeft + input.pointerX - input.gutter);
+  const timeAtPointer = Math.max(0, Math.min(input.duration, timelineX / currentPps));
+  return Math.max(0, input.gutter + timeAtPointer * nextPps - input.pointerX);
 }
 
 export function getTimelinePlayheadLeft(time: number, pixelsPerSecond: number): number {
@@ -372,6 +447,8 @@ export const Timeline = memo(function Timeline({
   const currentTime = usePlayerStore((s) => s.currentTime);
   const zoomMode = usePlayerStore((s) => s.zoomMode);
   const manualZoomPercent = usePlayerStore((s) => s.manualZoomPercent);
+  const setZoomMode = usePlayerStore((s) => s.setZoomMode);
+  const setManualZoomPercent = usePlayerStore((s) => s.setManualZoomPercent);
   const playheadRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -518,7 +595,11 @@ export const Timeline = memo(function Timeline({
   const trackContentWidth = Math.max(0, effectiveDuration * pps);
   const zoomModeRef = useRef(zoomMode);
   zoomModeRef.current = zoomMode;
+  const manualZoomPercentRef = useRef(manualZoomPercent);
+  manualZoomPercentRef.current = manualZoomPercent;
   const previousZoomModeRef = useRef<ZoomMode | null>(zoomMode);
+  const fitPpsRef = useRef(fitPps);
+  fitPpsRef.current = fitPps;
 
   const durationRef = useRef(effectiveDuration);
   durationRef.current = effectiveDuration;
@@ -1008,10 +1089,18 @@ export const Timeline = memo(function Timeline({
     cancelAnimationFrame(dragScrollRaf.current);
   }, []);
 
-  const { major, minor } = useMemo(() => generateTicks(effectiveDuration), [effectiveDuration]);
+  const { major, minor } = useMemo(
+    () => generateTicks(effectiveDuration, pps),
+    [effectiveDuration, pps],
+  );
+  const majorTickInterval =
+    major.length >= 2 ? Math.max(0.25, major[1] - major[0]) : effectiveDuration;
   const getPreviewElement = useCallback(
     (element: TimelineElement): TimelineElement => {
-      if (resizingClip?.element.id === element.id) {
+      if (
+        resizingClip &&
+        (resizingClip.element.key ?? resizingClip.element.id) === (element.key ?? element.id)
+      ) {
         return {
           ...element,
           start: resizingClip.previewStart,
@@ -1093,6 +1182,57 @@ export const Timeline = memo(function Timeline({
     },
     [onAssetDrop, onFileDrop],
   );
+
+  const handlePinchWheel = useCallback(
+    (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      const scroll = scrollRef.current;
+      if (!scroll || durationRef.current <= 0 || fitPpsRef.current <= 0 || ppsRef.current <= 0) {
+        return;
+      }
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const rect = scroll.getBoundingClientRect();
+      const pointerX = e.clientX - rect.left;
+      const nextZoomPercent = getPinchTimelineZoomPercent(
+        e.deltaY,
+        zoomModeRef.current,
+        manualZoomPercentRef.current,
+      );
+      if (nextZoomPercent === manualZoomPercentRef.current && zoomModeRef.current === "manual") {
+        return;
+      }
+
+      const nextPps = fitPpsRef.current * (nextZoomPercent / 100);
+      const nextScrollLeft = getTimelineScrollLeftForZoomAnchor({
+        pointerX,
+        currentScrollLeft: scroll.scrollLeft,
+        gutter: GUTTER,
+        currentPixelsPerSecond: ppsRef.current,
+        nextPixelsPerSecond: nextPps,
+        duration: durationRef.current,
+      });
+
+      setZoomMode("manual");
+      setManualZoomPercent(nextZoomPercent);
+      requestAnimationFrame(() => {
+        const maxScrollLeft = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+        scroll.scrollLeft = Math.min(maxScrollLeft, nextScrollLeft);
+      });
+    },
+    [setManualZoomPercent, setZoomMode],
+  );
+
+  useEffect(() => {
+    const scroll = scrollRef.current;
+    if (!scroll) return;
+    scroll.addEventListener("wheel", handlePinchWheel, { passive: false, capture: true });
+    return () => {
+      scroll.removeEventListener("wheel", handlePinchWheel, { capture: true });
+    };
+  }, [handlePinchWheel, timelineReady, elements.length]);
 
   if (!timelineReady || elements.length === 0) {
     return (
@@ -1188,7 +1328,7 @@ export const Timeline = memo(function Timeline({
     draggedClip?.started === true && draggedElement
       ? getRenderedTimelineElement({
           element: draggedElement,
-          draggedElementId: draggedElement.id,
+          draggedElementId: draggedElement.key ?? draggedElement.id,
           previewStart: draggedClip.previewStart,
           previewTrack: draggedClip.previewTrack,
         })
@@ -1325,7 +1465,7 @@ export const Timeline = memo(function Timeline({
                   className="text-[9px] font-mono tabular-nums leading-none mb-0.5"
                   style={{ color: theme.tickText }}
                 >
-                  {formatTime(t)}
+                  {formatTimelineTickLabel(t, effectiveDuration, majorTickInterval)}
                 </span>
                 <div className="w-px h-[5px]" style={{ background: theme.tickMajor }} />
               </div>

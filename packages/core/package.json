@@ -1,6 +1,6 @@
 {
   "name": "@hyperframes/core",
-  "version": "0.4.27",
+  "version": "0.4.45",
   "description": "",
   "repository": {
     "type": "git",
@@ -30,9 +30,17 @@
       "types": "./src/compiler/index.ts"
     },
     "./runtime": "./dist/hyperframe.runtime.iife.js",
+    "./runtime/lottie-readiness": {
+      "import": "./src/runtime/adapters/lottieReadiness.ts",
+      "types": "./src/runtime/adapters/lottieReadiness.ts"
+    },
     "./studio-api": {
       "import": "./src/studio-api/index.ts",
       "types": "./src/studio-api/index.ts"
+    },
+    "./studio-api/screenshot-clip": {
+      "import": "./src/studio-api/helpers/screenshotClip.ts",
+      "types": "./src/studio-api/helpers/screenshotClip.ts"
     },
     "./text": {
       "import": "./src/text/index.ts",
@@ -77,9 +85,17 @@
         "types": "./dist/compiler/index.d.ts"
       },
       "./runtime": "./dist/hyperframe.runtime.iife.js",
+      "./runtime/lottie-readiness": {
+        "import": "./dist/runtime/adapters/lottieReadiness.js",
+        "types": "./dist/runtime/adapters/lottieReadiness.d.ts"
+      },
       "./studio-api": {
         "import": "./dist/studio-api/index.js",
         "types": "./dist/studio-api/index.d.ts"
+      },
+      "./studio-api/screenshot-clip": {
+        "import": "./dist/studio-api/helpers/screenshotClip.js",
+        "types": "./dist/studio-api/helpers/screenshotClip.d.ts"
       },
       "./text": {
         "import": "./dist/text/index.js",
@@ -135,6 +151,7 @@
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.5",
+    "postcss": "^8.5.8",
     "sharp": "^0.34.5"
   },
   "devDependencies": {

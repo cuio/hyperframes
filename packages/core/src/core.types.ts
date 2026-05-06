@@ -88,6 +88,20 @@ export interface TimelineCompositionElement extends TimelineElementBase {
 // Composition Variable Types
 export type CompositionVariableType = "string" | "number" | "color" | "boolean" | "enum";
 
+/**
+ * Runtime list of every valid `CompositionVariableType`. Use this anywhere
+ * a Set/array of valid type strings is needed (lint rules, validators).
+ * The `satisfies` guard turns adding a new variant to the union without
+ * also adding it here into a compile error.
+ */
+export const COMPOSITION_VARIABLE_TYPES = [
+  "string",
+  "number",
+  "color",
+  "boolean",
+  "enum",
+] as const satisfies readonly CompositionVariableType[];
+
 export interface CompositionVariableBase {
   id: string;
   type: CompositionVariableType;

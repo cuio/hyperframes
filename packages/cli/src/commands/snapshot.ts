@@ -2,14 +2,12 @@ import { spawn } from "node:child_process";
 import { defineCommand } from "citty";
 import { existsSync, mkdtempSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve, join, dirname, relative, isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, join, relative, isAbsolute } from "node:path";
 import { resolveProject } from "../utils/project.js";
+import { resolveCompositionViewportFromHtml } from "../utils/compositionViewport.js";
+import { serveStaticProjectHtml } from "../utils/staticProjectServer.js";
 import { c } from "../ui/colors.js";
 import type { Example } from "./_examples.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 /** Maximum time a single-frame FFmpeg extract is allowed to run. Mirrors the
  * default applied by `@hyperframes/engine`'s `runFfmpeg` so a pathological
@@ -99,63 +97,11 @@ async function captureSnapshots(
 
   const numFrames = opts.frames ?? 5;
 
-  // 1. Bundle
-  let html = await bundleToSingleHtml(projectDir);
+  // 1. Bundle. `bundleToSingleHtml` now inlines the runtime IIFE by default,
+  // so the previous post-bundle runtime substitution is no longer needed.
+  const html = await bundleToSingleHtml(projectDir);
 
-  // Inject local runtime if available
-  const runtimePath = resolve(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "core",
-    "dist",
-    "hyperframe.runtime.iife.js",
-  );
-  if (existsSync(runtimePath)) {
-    const runtimeSource = readFileSync(runtimePath, "utf-8");
-    html = html.replace(
-      /<script[^>]*data-hyperframes-preview-runtime[^>]*src="[^"]*"[^>]*><\/script>/,
-      () => `<script data-hyperframes-preview-runtime="1">${runtimeSource}</script>`,
-    );
-  }
-
-  // 2. Start minimal file server
-  const { createServer } = await import("node:http");
-  const { getMimeType } = await import("@hyperframes/core/studio-api");
-
-  const server = createServer((req, res) => {
-    const url = req.url ?? "/";
-    if (url === "/" || url === "/index.html") {
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end(html);
-      return;
-    }
-    const filePath = resolve(projectDir, decodeURIComponent(url).replace(/^\//, ""));
-    const rel = relative(projectDir, filePath);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
-      res.writeHead(403);
-      res.end();
-      return;
-    }
-    if (existsSync(filePath)) {
-      res.writeHead(200, { "Content-Type": getMimeType(filePath) });
-      res.end(readFileSync(filePath));
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-
-  const port = await new Promise<number>((resolvePort, rejectPort) => {
-    server.on("error", rejectPort); // register before listen to catch sync bind errors
-    server.listen(0, () => {
-      const addr = server.address();
-      const p = typeof addr === "object" && addr ? addr.port : 0;
-      if (!p) rejectPort(new Error("Failed to bind local HTTP server"));
-      else resolvePort(p);
-    });
-  });
+  const server = await serveStaticProjectHtml(projectDir, html);
 
   const savedPaths: string[] = [];
 
@@ -178,9 +124,9 @@ async function captureSnapshots(
 
     try {
       const page = await chromeBrowser.newPage();
-      await page.setViewport({ width: 1920, height: 1080 });
+      await page.setViewport(resolveCompositionViewportFromHtml(html));
 
-      await page.goto(`http://127.0.0.1:${port}/`, {
+      await page.goto(server.url, {
         waitUntil: "domcontentloaded",
         timeout: 10000,
       });
@@ -424,7 +370,7 @@ async function captureSnapshots(
       await chromeBrowser.close();
     }
   } finally {
-    server.close();
+    await server.close();
   }
 
   return savedPaths;

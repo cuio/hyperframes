@@ -38,6 +38,7 @@ export {
   CANVAS_DIMENSIONS,
   TIMELINE_COLORS,
   DEFAULT_DURATIONS,
+  COMPOSITION_VARIABLE_TYPES,
   isTextElement,
   isMediaElement,
   isCompositionElement,
@@ -110,6 +111,7 @@ export {
   injectDurations,
   extractResolvedMedia,
   clampDurations,
+  shouldClampMediaDuration,
 } from "./compiler/timingCompiler";
 
 // Lint
@@ -164,6 +166,16 @@ export { createGSAPFrameAdapter } from "./adapters/gsap";
 // Text measurement
 export { fitTextFontSize } from "./text/index.js";
 export type { FitTextOptions, FitTextResult } from "./text/index.js";
+
+// Runtime helpers (composition-side)
+export { getVariables } from "./runtime/getVariables.js";
+
+// Variable validation (CLI / tooling-side)
+export {
+  validateVariables,
+  formatVariableValidationIssue,
+  type VariableValidationIssue,
+} from "./runtime/validateVariables.js";
 
 // Registry
 export type {

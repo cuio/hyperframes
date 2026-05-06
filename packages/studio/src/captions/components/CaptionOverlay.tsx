@@ -1,6 +1,7 @@
 import { memo, useState, useCallback, useRef } from "react";
 import { useCaptionStore } from "../store";
 import { useMountEffect } from "../../hooks/useMountEffect";
+import { shouldHandleCaptionNudgeKey } from "../keyboard";
 
 interface CaptionOverlayProps {
   iframeRef: React.RefObject<HTMLIFrameElement | null>;
@@ -329,7 +330,7 @@ export const CaptionOverlay = memo(function CaptionOverlay({ iframeRef }: Captio
       const { selectedSegmentIds: sel, model: m } = useCaptionStore.getState();
       if (sel.size === 0 || !m) return;
       const arrow = e.key;
-      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(arrow)) return;
+      if (!shouldHandleCaptionNudgeKey(e)) return;
 
       e.preventDefault();
       const step = e.shiftKey ? 10 : 1;

@@ -3,10 +3,10 @@ title: HDR Rendering
 description: "Render compositions to HDR10 MP4 (BT.2020 PQ or HLG, 10-bit H.265) when sources contain HDR video or images."
 ---
 
-Hyperframes can render to HDR10 MP4 (H.265 10-bit, BT.2020) when your composition references HDR video or HDR still images. HDR is opt-in via the `--hdr` flag — it auto-detects HDR sources and falls back to SDR when none are present.
+Hyperframes can render to HDR10 MP4 (H.265 10-bit, BT.2020) when your composition references HDR video or HDR still images. HDR is auto-detected by default from your media sources and falls back to SDR when none are present.
 
 <Note>
-  The `--hdr` flag does not *force* HDR. It enables HDR detection. If your composition contains only SDR media, the flag is a no-op and you get a normal SDR render.
+  By default, Hyperframes probes your media and enables HDR only when HDR sources are present. Use `--hdr` to force HDR even without HDR sources, or `--sdr` to force SDR even when HDR sources are present.
 </Note>
 
 ## Quickstart
@@ -20,12 +20,12 @@ Hyperframes can render to HDR10 MP4 (H.265 10-bit, BT.2020) when your compositio
 
     See [Source Media](#source-media-requirements) for full details.
   </Step>
-  <Step title="Render with --hdr">
+  <Step title="Render normally">
     ```bash Terminal
-    npx hyperframes render --hdr --output output.mp4
+    npx hyperframes render --output output.mp4
     ```
 
-    HDR output requires `--format mp4`. If you also pass `--format mov` or `--format webm`, Hyperframes logs a warning and falls back to SDR.
+    HDR output requires `--format mp4`. If Hyperframes detects HDR sources, it renders HDR automatically. If you also pass `--format mov` or `--format webm`, Hyperframes logs a warning and falls back to SDR.
   </Step>
   <Step title="Verify the output is HDR">
     Use `ffprobe` to confirm the encoded stream carries HDR color tagging and HDR10 metadata:
@@ -40,14 +40,14 @@ Hyperframes can render to HDR10 MP4 (H.265 10-bit, BT.2020) when your compositio
 
 ## How HDR Mode Works
 
-When `--hdr` is set, the producer:
+During render, the producer:
 
 <Steps>
   <Step title="Probes every video and image source">
-    Runs `ffprobe` on each `<video>` and `<img>` source to read its color space (primaries, transfer function, matrix). Probing is gated on `--hdr` to avoid `ffprobe` overhead on SDR-only renders.
+    Runs `ffprobe` on each `<video>` and `<img>` source to read its color space (primaries, transfer function, matrix). This probe drives the default auto-detect behavior and is skipped only when you explicitly force SDR with `--sdr`.
   </Step>
   <Step title="Picks the dominant HDR transfer">
-    If any source uses PQ (`smpte2084`), the output uses **PQ**. Otherwise, if any source uses HLG (`arib-std-b67`), the output uses **HLG**. If no HDR sources are found, the flag is a no-op and you get an SDR render.
+    If any source uses PQ (`smpte2084`), the output uses **PQ**. Otherwise, if any source uses HLG (`arib-std-b67`), the output uses **HLG**. If no HDR sources are found, the render stays SDR.
   </Step>
   <Step title="Encodes to H.265 10-bit BT.2020">
     The video encoder switches to `libx265` with `-pix_fmt yuv420p10le`, color tagging `colorprim=bt2020:transfer=<smpte2084|arib-std-b67>:colormatrix=bt2020nc`, and HDR10 static metadata (`master-display` and `max-cll`). Without that metadata, players (QuickTime, YouTube, HDR TVs) tone-map the stream as if it were SDR BT.2020 — which looks wrong.
@@ -89,7 +89,7 @@ Hyperframes supports HDR still images delivered as **16-bit PNGs** tagged with B
      src="./assets/hdr-photo.png" />
 ```
 
-When `--hdr` is set, the image is decoded once to 16-bit linear-light RGB and composited natively into the HDR output.
+When HDR is enabled, the image is decoded once to 16-bit linear-light RGB and composited natively into the HDR output.
 
 <Note>
   HDR `<img>` decoding is limited to **16-bit PNG**. JPEG, WebP, AVIF, and APNG are not recognized as HDR sources — they load through the normal SDR DOM path. For HDR motion, use a `<video>` element.
@@ -113,7 +113,7 @@ This is the same pipeline that handles compositions where, for example, an HDR d
 | `mov` | No — falls back to SDR |
 | `webm` | No — falls back to SDR |
 
-If you set `--hdr` together with `--format mov` or `--format webm`, Hyperframes logs a message and produces the equivalent SDR render. There is no error — the render still completes — so check the logs (or your verification step) to confirm you got HDR.
+If HDR is enabled and you also pass `--format mov` or `--format webm`, Hyperframes logs a message and produces the equivalent SDR render. There is no error — the render still completes — so check the logs (or your verification step) to confirm you got HDR.
 
 ## Verifying HDR Output
 
@@ -147,10 +147,10 @@ For HLG renders the only difference is `color_transfer=arib-std-b67` — the res
 
 ## Docker Rendering
 
-`--hdr` is forwarded into the Docker render pipeline, so you can produce HDR10 MP4 output from the containerized renderer:
+Docker uses the same auto-detect logic as local rendering, so you can produce HDR10 MP4 output from the containerized renderer without extra flags:
 
 ```bash Terminal
-npx hyperframes render --hdr --docker --output output.mp4
+npx hyperframes render --docker --output output.mp4
 ```
 
 The container runs the same probe → composite → encode pipeline as the local renderer. Verify the output with the same `ffprobe` checks described in [Verifying HDR output](#verifying-hdr-output).
@@ -161,7 +161,7 @@ The container runs the same probe → composite → encode pipeline as the local
 
 ## Limitations
 
-- **MP4 only** — `--hdr` with `--format mov` or `--format webm` falls back to SDR
+- **MP4 only** — HDR output with `--format mov` or `--format webm` falls back to SDR
 - **HDR images: 16-bit PNG only** — other formats (JPEG, WebP, AVIF, APNG) are not decoded as HDR and fall through the SDR DOM path
 - **H.265 only — H.264 is stripped** — calling the encoder with `codec: "h264"` and `hdr: { transfer }` is rejected; the encoder logs a warning, drops `hdr`, and tags the output as SDR/BT.709. `libx264` cannot encode HDR, so the alternative would be a "half-HDR" file (BT.2020 container tags but a BT.709 VUI block in the bitstream) which confuses HDR-aware players.
 - **GPU H.265 emits color tags but no static mastering metadata** — `useGpu: true` with HDR (nvenc, videotoolbox, qsv, vaapi) tags the stream with BT.2020 + the correct transfer (smpte2084 / arib-std-b67) but does **not** embed `master-display` or `max-cll` SEI. ffmpeg does not let those flags pass through hardware encoders. The output is suitable for previews and authoring but not for HDR10-aware delivery (Apple TV, YouTube, Netflix). For spec-compliant HDR10 production output, leave `useGpu: false` so the SW `libx265` path embeds the mastering metadata.
@@ -172,7 +172,7 @@ The container runs the same probe → composite → encode pipeline as the local
 
 | Symptom | Likely cause |
 |---------|--------------|
-| Output looks identical to SDR | Source media is SDR — `--hdr` is a no-op without an HDR source. Run `ffprobe` on your inputs |
+| Output looks identical to SDR | Source media is SDR, or SDR was forced with `--sdr`. Run `ffprobe` on your inputs and check the render logs |
 | Output is "kind of HDR" but tone-mapped wrong on YouTube/QuickTime | Missing HDR10 static metadata on the encoded stream. Verify with the ffprobe snippet above |
 | Docker render is much slower than local | Expected — the container falls back to software WebGL for SDR DOM capture. Pixel output is the same |
 | Used `--format webm` and got SDR | Expected — HDR output is MP4 only |
@@ -185,7 +185,7 @@ The container runs the same probe → composite → encode pipeline as the local
     Local vs Docker, quality presets, workers
   </Card>
   <Card title="CLI" icon="terminal" href="/packages/cli">
-    Full `render` command reference including `--hdr`
+    Full `render` command reference including HDR auto-detect, `--hdr`, and `--sdr`
   </Card>
   <Card title="Engine: HDR APIs" icon="gear" href="/packages/engine#hdr-apis">
     Public HDR utilities exported from `@hyperframes/engine`

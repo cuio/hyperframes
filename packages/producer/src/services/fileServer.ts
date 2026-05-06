@@ -12,7 +12,10 @@ import { serve } from "@hono/node-server";
 import type { IncomingMessage } from "node:http";
 import { readFileSync, existsSync, realpathSync, statSync } from "node:fs";
 import { join, extname, resolve, sep } from "node:path";
+import { injectScriptsAtHeadStart, injectScriptsIntoHtml } from "@hyperframes/core/compiler";
 import { getVerifiedHyperframeRuntimeSource } from "./hyperframeRuntimeLoader.js";
+
+export { injectScriptsAtHeadStart, injectScriptsIntoHtml };
 
 type PathModuleLike = {
   resolve: (...segments: string[]) => string;
@@ -407,88 +410,6 @@ const HF_BRIDGE_SCRIPT = `(function() {
   }, 50);
 })();`;
 
-function stripEmbeddedRuntimeScripts(html: string): string {
-  if (!html) return html;
-  const scriptRe = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
-  const runtimeSrcMarkers = [
-    "hyperframe.runtime.iife.js",
-    "hyperframe-runtime.modular-runtime.inline.js",
-    "data-hyperframes-preview-runtime",
-  ];
-  const runtimeInlineMarkers = [
-    "__hyperframeRuntimeBootstrapped",
-    "__hyperframeRuntime",
-    "__hyperframeRuntimeTeardown",
-    "window.__player =",
-    "window.__playerReady",
-    "window.__renderReady",
-  ];
-
-  const shouldStrip = (block: string): boolean => {
-    const lowered = block.toLowerCase();
-    for (const marker of runtimeSrcMarkers) {
-      if (lowered.includes(marker.toLowerCase())) {
-        return true;
-      }
-    }
-    for (const marker of runtimeInlineMarkers) {
-      if (block.includes(marker)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  return html.replace(scriptRe, (block) => (shouldStrip(block) ? "" : block));
-}
-
-export function injectScriptsIntoHtml(
-  html: string,
-  headScripts: string[],
-  bodyScripts: string[],
-  stripEmbedded: boolean,
-): string {
-  if (stripEmbedded) {
-    html = stripEmbeddedRuntimeScripts(html);
-  }
-
-  if (headScripts.length > 0) {
-    const headTags = headScripts.map((src) => `<script>${src}</script>`).join("\n");
-    if (html.includes("</head>")) {
-      // Use function replacement to avoid $& interpolation in runtime source
-      html = html.replace("</head>", () => `${headTags}\n</head>`);
-    } else if (html.includes("<body")) {
-      html = html.replace("<body", () => `${headTags}\n<body`);
-    } else {
-      html = headTags + "\n" + html;
-    }
-  }
-
-  if (bodyScripts.length > 0) {
-    const bodyTags = bodyScripts.map((src) => `<script>${src}</script>`).join("\n");
-    if (html.includes("</body>")) {
-      // Use function replacement to avoid $& interpolation in runtime source
-      html = html.replace("</body>", () => `${bodyTags}\n</body>`);
-    } else {
-      html = html + "\n" + bodyTags;
-    }
-  }
-
-  return html;
-}
-
-export function injectScriptsAtHeadStart(html: string, scripts: string[]): string {
-  if (scripts.length === 0) return html;
-  const headTags = scripts.map((src) => `<script>${src}</script>`).join("\n");
-  if (html.includes("<head")) {
-    return html.replace(/<head\b[^>]*>/i, (match) => `${match}\n${headTags}`);
-  }
-  if (html.includes("<body")) {
-    return html.replace("<body", () => `${headTags}\n<body`);
-  }
-  return headTags + "\n" + html;
-}
-
 export interface FileServerOptions {
   projectDir: string;
   compiledDir?: string;
@@ -529,8 +450,17 @@ export function createFileServer(options: FileServerOptions): Promise<FileServer
     let requestPath = c.req.path;
     if (requestPath === "/") requestPath = "/index.html";
 
-    // Remove leading slash
-    const relativePath = requestPath.replace(/^\//, "");
+    const relativePath = requestPath
+      .replace(/^\//, "")
+      .split("/")
+      .map((seg) => {
+        try {
+          return decodeURIComponent(seg);
+        } catch {
+          return seg;
+        }
+      })
+      .join("/");
 
     // Resolve against compiledDir first (preferred — overrides project files
     // for compositions emitted by the build), then projectDir as fallback.

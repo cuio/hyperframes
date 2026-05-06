@@ -34,8 +34,16 @@ type TestMetadata = {
     fps: 24 | 30 | 60;
     format?: "mp4" | "webm"; // Optional: defaults to "mp4"
     workers?: number; // Optional: auto-calculates if omitted
-    /** Enable HDR color-space probing + HDR10 encode pipeline. */
+    /** Force HDR in the harness; omitted/false preserves historical SDR-only test behavior. */
     hdr?: boolean;
+    /**
+     * Render-time variable overrides, equivalent to `hyperframes render
+     * --variables '<json>'`. Injected as `window.__hfVariables` before any
+     * page script runs so the runtime helper `getVariables()` returns the
+     * merged result of declared defaults (`data-composition-variables`)
+     * and these overrides. Omit when the test doesn't exercise variables.
+     */
+    variables?: Record<string, unknown>;
   };
 };
 
@@ -159,6 +167,12 @@ function validateMetadata(meta: unknown): TestMetadata {
   }
   if (rc.hdr !== undefined && typeof rc.hdr !== "boolean") {
     throw new Error("meta.json: 'renderConfig.hdr' must be a boolean (or omit for false)");
+  }
+  if (
+    rc.variables !== undefined &&
+    (rc.variables === null || typeof rc.variables !== "object" || Array.isArray(rc.variables))
+  ) {
+    throw new Error("meta.json: 'renderConfig.variables' must be a JSON object (or omitted)");
   }
 
   return m as TestMetadata;
@@ -600,7 +614,8 @@ async function runTestSuite(
       workers: suite.meta.renderConfig.workers,
       useGpu: false,
       debug: false,
-      hdr: suite.meta.renderConfig.hdr ?? false,
+      hdrMode: suite.meta.renderConfig.hdr ? "force-hdr" : "force-sdr",
+      variables: suite.meta.renderConfig.variables,
     });
 
     await executeRenderJob(job, tempSrcDir, renderedOutputPath);
@@ -635,7 +650,14 @@ async function runTestSuite(
     // Visual comparison (100 frames, 1 per 1% of video duration)
     logPretty("Comparing visual quality (100 checkpoints)...", "🔍");
     const videoMetadata = await extractMediaMetadata(renderedOutputPath);
-    const videoDuration = videoMetadata.durationSeconds;
+    const snapshotMetadata = await extractMediaMetadata(snapshotVideoPath);
+    // Sample at the common duration. Container duration can drift between
+    // rendered and snapshot when encoder/mux flags change (e.g. -avoid_negative_ts
+    // can shift the first audio sample, extending reported duration without
+    // changing video frame count). Using the rendered duration alone makes the
+    // last checkpoint land on a frame index that may not exist in the snapshot,
+    // which causes ffmpeg's PSNR filter to emit no `average:` line.
+    const videoDuration = Math.min(videoMetadata.durationSeconds, snapshotMetadata.durationSeconds);
 
     const visualCheckpoints: Array<{ time: number; psnr: number; passed: boolean }> = [];
     for (let i = 0; i < 100; i++) {

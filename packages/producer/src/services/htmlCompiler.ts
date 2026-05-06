@@ -12,17 +12,18 @@
 import { readFileSync, existsSync, mkdirSync } from "fs";
 import { join, dirname, resolve } from "path";
 import { parseHTML } from "linkedom";
-import postcss from "postcss";
 import {
   compileTimingAttrs,
   injectDurations,
   extractResolvedMedia,
   clampDurations,
+  shouldClampMediaDuration,
   type ResolvedDuration,
   type UnresolvedElement,
   rewriteAssetPaths,
   rewriteCssAssetUrls,
 } from "@hyperframes/core";
+import { scopeCssToComposition, wrapScopedCompositionScript } from "@hyperframes/core/compiler";
 import { extractMediaMetadata, extractAudioMetadata } from "../utils/ffprobe.js";
 import { isPathInside, toExternalAssetKey } from "../utils/paths.js";
 import {
@@ -51,6 +52,7 @@ export interface CompiledComposition {
   height: number;
   staticDuration: number;
   renderModeHints: RenderModeHints;
+  hasShaderTransitions: boolean;
 }
 
 export type RenderModeHintCode = "iframe" | "requestAnimationFrame";
@@ -124,6 +126,22 @@ export function detectRenderModeHints(html: string): RenderModeHints {
   };
 }
 
+const SHADER_TRANSITION_USAGE_PATTERN =
+  /\b(?:(?:window|globalThis)\s*\.\s*)?HyperShader\s*\.\s*init\s*\(|\b__hf\s*\.\s*transitions\s*=/;
+
+export function detectShaderTransitionUsage(html: string): boolean {
+  let scriptMatch: RegExpExecArray | null;
+  const scriptPattern = new RegExp(INLINE_SCRIPT_PATTERN.source, INLINE_SCRIPT_PATTERN.flags);
+  while ((scriptMatch = scriptPattern.exec(html)) !== null) {
+    const attrs = scriptMatch[1] || "";
+    if (/\bsrc\s*=/i.test(attrs)) continue;
+    const content = stripJsComments(stripCompilerMountBootstrap(scriptMatch[2] || ""));
+    if (SHADER_TRANSITION_USAGE_PATTERN.test(content)) return true;
+  }
+
+  return false;
+}
+
 async function resolveMediaDuration(
   src: string,
   mediaStart: number,
@@ -150,10 +168,19 @@ async function resolveMediaDuration(
     return { duration: 0, resolvedPath: filePath };
   }
 
-  const metadata =
-    tagName === "video"
-      ? await extractMediaMetadata(filePath)
-      : await extractAudioMetadata(filePath);
+  let metadata: { durationSeconds: number };
+  if (tagName === "video") {
+    metadata = await extractMediaMetadata(filePath);
+  } else {
+    try {
+      metadata = await extractAudioMetadata(filePath);
+    } catch {
+      // Source file has no audio stream (e.g. a silent video used as an audio src).
+      // Return duration 0 so the element is excluded from the composition gracefully,
+      // matching how missing files and failed downloads are already handled above.
+      return { duration: 0, resolvedPath: filePath };
+    }
+  }
 
   const fileDuration = metadata.durationSeconds;
   const effectiveDuration = fileDuration - mediaStart;
@@ -210,7 +237,7 @@ async function compileHtmlFile(
   );
   const clampList: ResolvedDuration[] = [];
   for (const r of clampResults) {
-    if (r.maxDuration > 0 && r.duration > r.maxDuration) {
+    if (r.maxDuration > 0 && shouldClampMediaDuration(r.duration, r.maxDuration)) {
       clampList.push({ id: r.id, duration: r.maxDuration });
     }
   }
@@ -448,45 +475,6 @@ function promoteCssImportsToLinkTags(html: string): string {
  * export, preventing font-loading and animation-ordering regressions.
  */
 
-/**
- * Scope CSS rules to a specific composition by prepending each selector
- * with `[data-composition-id="<id>"]`. This prevents class name collisions
- * when multiple sub-compositions use the same class names (e.g. ".content").
- *
- * Handles:
- * - Regular rules: `.foo { }` → `[data-composition-id="x"] .foo { }`
- * - @media and other at-rules: preserved, inner selectors are scoped
- * - @import, @font-face, @keyframes: left unscoped (global by nature)
- */
-function scopeCssToComposition(css: string, compositionId: string): string {
-  const scope = `[data-composition-id="${compositionId}"]`;
-  const globalAtRules = new Set(["keyframes", "-webkit-keyframes", "font-face"]);
-  const root = postcss.parse(css);
-
-  root.walkRules((rule) => {
-    // Skip rules nested inside @keyframes or @font-face — they're global
-    let node: postcss.Node | undefined = rule.parent;
-    while (node) {
-      if (
-        node.type === "atrule" &&
-        globalAtRules.has((node as postcss.AtRule).name.toLowerCase())
-      ) {
-        return;
-      }
-      node = (node as postcss.ChildNode).parent;
-    }
-
-    rule.selectors = rule.selectors.map((sel) => {
-      if (!sel.trim()) return sel;
-      if (/^(html|body|:root|\*)$/i.test(sel.trim())) return sel;
-      if (sel.includes(`data-composition-id="${compositionId}"`)) return sel;
-      return `${scope} ${sel}`;
-    });
-  });
-
-  return root.toResult().css;
-}
-
 function coalesceHeadStylesAndBodyScripts(html: string): string {
   const { document } = parseHTML(html);
   const head = document.querySelector("head");
@@ -665,28 +653,15 @@ function inlineSubCompositions(
       const content = (scriptEl.textContent || "").trim();
       if (content) {
         const scriptMountCompId = compId || inferredCompId || "";
-        const compIdLiteral = JSON.stringify(scriptMountCompId);
-        collectedScripts.push(`(function(){
-  var __compId = ${compIdLiteral};
-  var __run = function() {
-    try {
-      ${content}
-    } catch (_err) {
-      console.error("[Compiler] Composition script failed", __compId, _err);
-    }
-  };
-  if (!__compId) { __run(); return; }
-  ${COMPILER_MOUNT_BLOCK_START}
-  var __selector = '[data-composition-id="' + (__compId + '').replace(/"/g, '\\\\"') + '"]';
-  var __attempt = 0;
-  var __tryRun = function() {
-    if (document.querySelector(__selector)) { __run(); return; }
-    if (++__attempt >= 8) { __run(); return; }
-    requestAnimationFrame(__tryRun);
-  };
-  __tryRun();
-  ${COMPILER_MOUNT_BLOCK_END}
-})()`);
+        collectedScripts.push(
+          scriptMountCompId
+            ? wrapScopedCompositionScript(
+                content,
+                scriptMountCompId,
+                "[Compiler] Composition script failed",
+              )
+            : `(function(){ try { ${content} } catch (_err) { console.error("[Compiler] Composition script failed", _err); } })()`,
+        );
       }
       scriptEl.remove();
     }
@@ -707,27 +682,13 @@ function inlineSubCompositions(
       if (innerW && !host.getAttribute("data-width")) host.setAttribute("data-width", innerW);
       if (innerH && !host.getAttribute("data-height")) host.setAttribute("data-height", innerH);
       innerRoot.querySelectorAll("style, script").forEach((el) => el.remove());
-      if (!compId && inferredCompId) {
-        host.innerHTML = innerRoot.outerHTML || "";
-      } else {
-        host.innerHTML = innerRoot.innerHTML || "";
-      }
+      host.innerHTML = compId ? innerRoot.innerHTML || "" : innerRoot.outerHTML || "";
     } else {
       contentDoc.querySelectorAll("style, script").forEach((el) => el.remove());
       host.innerHTML = contentDoc.toString();
     }
 
     host.removeAttribute("data-composition-src");
-
-    // Propagate data-start from the host element to the inserted inner composition
-    // node so runtime timeline nesting resolves the correct start offset.
-    const hostDataStart = host.getAttribute("data-start");
-    if (hostDataStart != null) {
-      const innerComp = host.querySelector("[data-composition-id]");
-      if (innerComp && !innerComp.getAttribute("data-start")) {
-        innerComp.setAttribute("data-start", hostDataStart);
-      }
-    }
 
     // Set explicit pixel dimensions on the host element so children using
     // width/height: 100% resolve correctly. The runtime does this
@@ -998,6 +959,7 @@ export async function compileForRender(
     "$1",
   );
   const renderModeHints = detectRenderModeHints(sanitizedHtml);
+  const hasShaderTransitions = detectShaderTransitionUsage(sanitizedHtml);
 
   const coalescedHtml = await injectDeterministicFontFaces(
     coalesceHeadStylesAndBodyScripts(promoteCssImportsToLinkTags(sanitizedHtml)),
@@ -1080,6 +1042,7 @@ export async function compileForRender(
     height,
     staticDuration,
     renderModeHints,
+    hasShaderTransitions,
   };
 }
 
@@ -1255,5 +1218,6 @@ export async function recompileWithResolutions(
     images,
     unresolvedCompositions: remaining,
     renderModeHints: compiled.renderModeHints,
+    hasShaderTransitions: compiled.hasShaderTransitions,
   };
 }
