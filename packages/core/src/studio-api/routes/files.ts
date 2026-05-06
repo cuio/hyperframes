@@ -13,6 +13,8 @@ import {
 } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
+import { isAudioFile } from "../helpers/mime.js";
+import { generateWaveformCache } from "../helpers/waveform.js";
 import { validateUploadedMediaBuffer } from "../helpers/mediaValidation.js";
 import { isSafePath } from "../helpers/safePath.js";
 import { removeElementFromHtml } from "../helpers/sourceMutation.js";
@@ -345,7 +347,11 @@ export function registerFileRoutes(api: Hono, adapter: StudioApiAdapter): void {
           continue;
         }
         writeFileSync(finalPath, buffer);
-        uploaded.push(subDir ? join(subDir, finalName) : finalName);
+        const relativePath = subDir ? join(subDir, finalName) : finalName;
+        uploaded.push(relativePath);
+        if (isAudioFile(finalName)) {
+          generateWaveformCache(project.dir, relativePath).catch(() => {});
+        }
       }
 
       return c.json({ ok: true, files: uploaded, skipped, invalid }, 201);

@@ -2,6 +2,7 @@ import { memo, useRef, useState, useCallback, useEffect } from "react";
 
 interface AudioWaveformProps {
   audioUrl: string;
+  waveformUrl?: string;
   label: string;
   labelColor: string;
 }
@@ -49,6 +50,7 @@ function fakePeaks(url: string, count: number): number[] {
 
 // Module-level cache so decoded audio persists across re-renders and re-mounts
 const peaksCache = new Map<string, number[]>();
+const decodeInFlight = new Map<string, Promise<number[]>>();
 
 /**
  * Audio waveform rendered from real PCM data via Web Audio API.
@@ -57,43 +59,56 @@ const peaksCache = new Map<string, number[]>();
  */
 export const AudioWaveform = memo(function AudioWaveform({
   audioUrl,
+  waveformUrl,
   label,
   labelColor,
 }: AudioWaveformProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const barsRef = useRef<HTMLDivElement | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
-  const [peaks, setPeaks] = useState<number[] | null>(peaksCache.get(audioUrl) ?? null);
+  const cacheKey = waveformUrl ?? audioUrl;
+  const [peaks, setPeaks] = useState<number[] | null>(peaksCache.get(cacheKey) ?? null);
 
-  // Fetch + decode audio once
   useEffect(() => {
-    if (peaks || !audioUrl) return;
+    if (peaks || !cacheKey) return;
 
-    const ctrl = new AbortController();
-    fetch(audioUrl, { signal: ctrl.signal })
-      .then((r) => r.arrayBuffer())
-      .then((buf) => {
-        const ctx = new AudioContext();
-        return ctx.decodeAudioData(buf).finally(() => ctx.close());
-      })
-      .then((decoded) => {
-        if (ctrl.signal.aborted) return;
-        const channel = decoded.getChannelData(0);
-        // Extract enough peaks for wide clips (up to 4000 bars)
-        const p = extractPeaks(channel, 4000);
-        peaksCache.set(audioUrl, p);
-        setPeaks(p);
-      })
-      .catch(() => {
-        if (ctrl.signal.aborted) return;
-        // Fallback to fake waveform
-        const p = fakePeaks(audioUrl, 4000);
-        peaksCache.set(audioUrl, p);
-        setPeaks(p);
-      });
+    let cancelled = false;
 
-    return () => ctrl.abort();
-  }, [audioUrl, peaks]);
+    let promise = decodeInFlight.get(cacheKey);
+    if (!promise) {
+      promise = (
+        waveformUrl
+          ? fetch(waveformUrl)
+              .then((r) => r.json())
+              .then((d: { peaks?: number[] }) => {
+                if (!Array.isArray(d.peaks)) throw new Error("bad response");
+                return d.peaks;
+              })
+          : fetch(audioUrl)
+              .then((r) => r.arrayBuffer())
+              .then((buf) => {
+                const ctx = new AudioContext();
+                return ctx.decodeAudioData(buf).finally(() => ctx.close());
+              })
+              .then((decoded) => extractPeaks(decoded.getChannelData(0), 4000))
+      )
+        .catch(() => fakePeaks(cacheKey, 4000))
+        .then((p) => {
+          peaksCache.set(cacheKey, p);
+          return p;
+        })
+        .finally(() => decodeInFlight.delete(cacheKey));
+
+      decodeInFlight.set(cacheKey, promise);
+    }
+
+    promise.then((p) => {
+      if (!cancelled) setPeaks(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [audioUrl, waveformUrl, cacheKey, peaks]);
 
   // Draw bars into the container using innerHTML (fast, zoom-resilient)
   const draw = useCallback(() => {

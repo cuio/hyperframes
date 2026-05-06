@@ -7,10 +7,17 @@
 | Skill                      | Command                   | When to use                                                                                       |
 | -------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------- |
 | **hyperframes**            | `/hyperframes`            | Creating or editing HTML compositions, captions, TTS, audio-reactive animation, marker highlights |
-| **hyperframes-cli**        | `/hyperframes-cli`        | CLI commands: init, lint, preview, render, transcribe, tts                                        |
+| **hyperframes-cli**        | `/hyperframes-cli`        | Dev-loop CLI: init, lint, inspect, preview, render, doctor                                        |
+| **hyperframes-media**      | `/hyperframes-media`      | Asset preprocessing: tts (Kokoro), transcribe (Whisper), remove-background (u2net)                |
 | **hyperframes-registry**   | `/hyperframes-registry`   | Installing blocks and components via `hyperframes add`                                            |
 | **website-to-hyperframes** | `/website-to-hyperframes` | Capturing a URL and turning it into a video — full website-to-video pipeline                      |
+| **tailwind**               | `/tailwind`               | Tailwind v4 browser-runtime styles for projects created with `hyperframes init --tailwind`        |
 | **gsap**                   | `/gsap`                   | GSAP animations for HyperFrames — tweens, timelines, easing, performance                          |
+| **animejs**                | `/animejs`                | Anime.js animations registered on `window.__hfAnime`                                              |
+| **css-animations**         | `/css-animations`         | CSS keyframes that HyperFrames can pause and seek                                                 |
+| **lottie**                 | `/lottie`                 | `lottie-web` and dotLottie players registered on `window.__hfLottie`                              |
+| **three**                  | `/three`                  | Three.js scenes rendered from HyperFrames `hf-seek` events                                        |
+| **waapi**                  | `/waapi`                  | Web Animations API motion driven through `document.getAnimations()`                               |
 
 > **Skills not available?** Ask the user to run `npx hyperframes skills` and restart their
 > agent session, or install manually: `npx skills add heygen-com/hyperframes`.
@@ -18,9 +25,10 @@
 ## Commands
 
 ```bash
-npx hyperframes preview          # preview in browser (studio editor)
-npx hyperframes render       # render to MP4
-npx hyperframes lint         # validate compositions (errors + warnings)
+npm run dev          # preview in browser (studio editor)
+npm run check        # lint + validate + inspect
+npm run render       # render to MP4
+npm run publish      # publish and get a shareable link
 npx hyperframes lint --verbose  # include info-level findings
 npx hyperframes lint --json     # machine-readable output for CI
 npx hyperframes docs <topic> # reference docs in terminal
@@ -51,13 +59,13 @@ https://hyperframes.heygen.com/llms.txt
 
 ## Linting — ALWAYS RUN AFTER CHANGES
 
-After creating or editing any `.html` composition, **always** run the linter before considering the task complete:
+After creating or editing any `.html` composition, **always** run the full check before considering the task complete:
 
 ```bash
-npx hyperframes lint
+npm run check
 ```
 
-Fix all errors before presenting the result. Warnings are informational and usually safe to ignore.
+Fix all errors before presenting the result. Inspect warnings should be reviewed before rendering.
 
 ## Key Rules
 

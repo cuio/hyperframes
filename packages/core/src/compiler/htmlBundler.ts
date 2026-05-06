@@ -1,23 +1,16 @@
 import { readFileSync, existsSync } from "fs";
 import { join, resolve, isAbsolute, sep } from "path";
-import { parseHTML } from "linkedom";
 import { transformSync } from "esbuild";
 import { compileHtml, type MediaDurationProber } from "./htmlCompiler";
+import {
+  RUNTIME_BOOTSTRAP_ATTR,
+  parseHTMLContent,
+  stripEmbeddedRuntimeScripts,
+} from "./htmlDocument";
 import { rewriteAssetPaths, rewriteCssAssetUrls } from "./rewriteSubCompPaths";
+import { scopeCssToComposition, wrapScopedCompositionScript } from "./compositionScoping";
 import { validateHyperframeHtmlContract } from "./staticGuard";
-
-/**
- * Parse an HTML string into a document. Fragments (without a full document
- * structure) are wrapped in `<!DOCTYPE html><html><head></head><body>…</body></html>`
- * so that linkedom places the content inside `document.body`.
- */
-function parseHTMLContent(html: string): Document {
-  const trimmed = html.trimStart().toLowerCase();
-  if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html")) {
-    return parseHTML(html).document;
-  }
-  return parseHTML(`<!DOCTYPE html><html><head></head><body>${html}</body></html>`).document;
-}
+import { getHyperframeRuntimeScript } from "../generated/runtime-inline";
 
 /** Resolve a relative path within projectDir, rejecting traversal outside it. */
 function safePath(projectDir: string, relativePath: string): string | null {
@@ -27,53 +20,42 @@ function safePath(projectDir: string, relativePath: string): string | null {
   return resolved;
 }
 
-const RUNTIME_BOOTSTRAP_ATTR = "data-hyperframes-preview-runtime";
 const DEFAULT_RUNTIME_SCRIPT_URL = "";
-
-function stripEmbeddedRuntimeScripts(html: string): string {
-  if (!html) return html;
-  const scriptRe = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
-  const runtimeSrcMarkers = [
-    "hyperframe.runtime.iife.js",
-    "hyperframe-runtime.modular-runtime.inline.js",
-    RUNTIME_BOOTSTRAP_ATTR,
-  ];
-  const runtimeInlineMarkers = [
-    "__hyperframeRuntimeBootstrapped",
-    "__hyperframeRuntime",
-    "__hyperframeRuntimeTeardown",
-    "window.__player =",
-    "window.__playerReady",
-    "window.__renderReady",
-  ];
-
-  const shouldStrip = (block: string): boolean => {
-    const lowered = block.toLowerCase();
-    for (const marker of runtimeSrcMarkers) {
-      if (lowered.includes(marker.toLowerCase())) return true;
-    }
-    for (const marker of runtimeInlineMarkers) {
-      if (block.includes(marker)) return true;
-    }
-    return false;
-  };
-
-  return html.replace(scriptRe, (block) => (shouldStrip(block) ? "" : block));
-}
 
 function getRuntimeScriptUrl(): string {
   const configured = (process.env.HYPERFRAME_RUNTIME_URL || "").trim();
   return configured || DEFAULT_RUNTIME_SCRIPT_URL;
 }
 
-function injectInterceptor(html: string): string {
+function injectInterceptor(html: string, runtimeMode: "inline" | "placeholder" = "inline"): string {
   const sanitized = stripEmbeddedRuntimeScripts(html);
   if (sanitized.includes(RUNTIME_BOOTSTRAP_ATTR)) return sanitized;
 
-  const runtimeScriptUrl = getRuntimeScriptUrl().replace(/"/g, "&quot;");
-  const tag = `<script ${RUNTIME_BOOTSTRAP_ATTR}="1" src="${runtimeScriptUrl}"></script>`;
+  // Three modes for the runtime <script>:
+  //   1. HYPERFRAME_RUNTIME_URL env var set → emit src="<url>" (production CDN deploy).
+  //   2. runtime: "placeholder" passed         → emit src="" for the caller to substitute
+  //                                              (studio + vite preview hot-load a local
+  //                                              runtime endpoint via string replace).
+  //   3. runtime: "inline" (default)           → embed the IIFE body directly so the
+  //                                              bundle is genuinely self-contained.
+  const runtimeScriptUrl = getRuntimeScriptUrl();
+  let tag: string;
+  if (runtimeScriptUrl) {
+    const escaped = runtimeScriptUrl.replace(/"/g, "&quot;");
+    tag = `<script ${RUNTIME_BOOTSTRAP_ATTR}="1" src="${escaped}"></script>`;
+  } else if (runtimeMode === "placeholder") {
+    tag = `<script ${RUNTIME_BOOTSTRAP_ATTR}="1" src=""></script>`;
+  } else {
+    const inlinedRuntime = getHyperframeRuntimeScript();
+    tag = `<script ${RUNTIME_BOOTSTRAP_ATTR}="1">${inlinedRuntime}</script>`;
+  }
   if (sanitized.includes("</head>")) {
     return sanitized.replace("</head>", `${tag}\n</head>`);
+  }
+  const htmlOpenMatch = sanitized.match(/<html\b[^>]*>/i);
+  if (htmlOpenMatch?.index != null) {
+    const insertPos = htmlOpenMatch.index + htmlOpenMatch[0].length;
+    return `${sanitized.slice(0, insertPos)}<head>${tag}</head>${sanitized.slice(insertPos)}`;
   }
   const doctypeIdx = sanitized.toLowerCase().indexOf("<!doctype");
   if (doctypeIdx >= 0) {
@@ -192,6 +174,14 @@ function rewriteCssUrlsWithInlinedAssets(cssText: string, projectDir: string): s
   );
 }
 
+function cssAttributeSelector(attr: string, value: string): string {
+  return `[${attr}="${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+}
+
+function uniqueCompositionId(baseId: string, index: number): string {
+  return `${baseId}__hf${index}`;
+}
+
 function enforceCompositionPixelSizing(document: Document): void {
   const compositionEls = [
     ...document.querySelectorAll("[data-composition-id][data-width][data-height]"),
@@ -290,17 +280,12 @@ function coalesceHeadStylesAndBodyScripts(document: Document): void {
   }
 
   const bodyInlineScripts = [...document.querySelectorAll("body script")].filter((el) => {
-    const src = (el.getAttribute("src") || "").trim();
-    if (src) return false;
+    if (el.hasAttribute(RUNTIME_BOOTSTRAP_ATTR) || el.hasAttribute("src")) return false;
     const type = (el.getAttribute("type") || "").trim().toLowerCase();
     return !type || type === "text/javascript" || type === "application/javascript";
   });
   if (bodyInlineScripts.length > 0) {
-    const mergedJs = bodyInlineScripts
-      .map((el) => (el.textContent || "").trim())
-      .filter(Boolean)
-      .join("\n;\n")
-      .trim();
+    const mergedJs = joinJsChunks(bodyInlineScripts.map((el) => el.textContent || ""));
     for (const el of bodyInlineScripts) el.remove();
     if (mergedJs) {
       const stripped = stripJsCommentsParserSafe(mergedJs);
@@ -309,6 +294,31 @@ function coalesceHeadStylesAndBodyScripts(document: Document): void {
       document.body.appendChild(inlineScript);
     }
   }
+}
+
+/**
+ * Concatenate JS chunks safely. Goals:
+ *   - Each chunk's last statement is terminated, so joining can't introduce ASI
+ *     surprises (e.g. `a()` followed by `(b)()` — the second chunk would parse
+ *     as a call on the first's return value).
+ *   - In the common case (chunk already ends with `;` — typical of esbuild
+ *     output and IIFE-wrapped composition scripts ending in `})();`), the join
+ *     produces clean output: chunks separated by `\n` with no stray bare
+ *     semicolon lines.
+ *   - Defensive against trailing line comments. If a chunk ends with `// ...`
+ *     and we appended `;` on the same line, the appended semicolon would be
+ *     swallowed by the comment, leaving the next chunk's first statement
+ *     attached to the previous chunk's last expression — exactly the ASI
+ *     hazard this helper exists to prevent. So when a chunk doesn't already
+ *     end in `;`, we append `\n;` instead — the newline closes any line
+ *     comment, and the standalone `;` becomes the statement separator.
+ */
+function joinJsChunks(chunks: string[]): string {
+  return chunks
+    .map((chunk) => chunk.trim())
+    .filter((chunk) => chunk.length > 0)
+    .map((chunk) => (chunk.endsWith(";") ? chunk : chunk + "\n;"))
+    .join("\n");
 }
 
 function stripJsCommentsParserSafe(source: string): string {
@@ -324,6 +334,22 @@ function stripJsCommentsParserSafe(source: string): string {
 export interface BundleOptions {
   /** Optional media duration prober (e.g., ffprobe). If omitted, media durations are not resolved. */
   probeMediaDuration?: MediaDurationProber;
+  /**
+   * How to handle the HyperFrames runtime <script> tag. Default: `"inline"`.
+   *
+   * - `"inline"` — embed the runtime IIFE body directly into the bundle. Produces
+   *   genuinely self-contained HTML. Right for CLI render output, validate,
+   *   snapshot, and any "ship a single .html file" use case.
+   * - `"placeholder"` — emit `<script ... src=""></script>` so the caller can
+   *   substitute it with a real URL via string replace. Used by the dev studio
+   *   server and vite preview to point at a local runtime endpoint, which keeps
+   *   the runtime cacheable across hot-reloads instead of re-inlining ~150 KB
+   *   on every change.
+   *
+   * The `HYPERFRAME_RUNTIME_URL` env var, when set, takes precedence over both
+   * modes and emits `<script ... src="<URL>">` directly.
+   */
+  runtime?: "inline" | "placeholder";
 }
 
 /**
@@ -352,8 +378,8 @@ export async function bundleToSingleHtml(
     );
   }
 
-  const withInterceptor = injectInterceptor(compiled);
-  const { document } = parseHTML(withInterceptor);
+  const withInterceptor = injectInterceptor(compiled, options?.runtime ?? "inline");
+  const document = parseHTMLContent(withInterceptor);
 
   // Inline local CSS
   const localCssChunks: string[] = [];
@@ -407,12 +433,13 @@ export async function bundleToSingleHtml(
   }
   if (localJsChunks.length > 0) {
     const anchor = document.querySelector('script[data-hf-bundled-local-js="1"]');
+    const joinedJs = joinJsChunks(localJsChunks);
     if (anchor) {
       anchor.removeAttribute("data-hf-bundled-local-js");
-      anchor.textContent = localJsChunks.join("\n;\n");
+      anchor.textContent = joinedJs;
     } else {
       const script = document.createElement("script");
-      script.textContent = localJsChunks.join("\n;\n");
+      script.textContent = joinedJs;
       document.body.appendChild(script);
     }
   }
@@ -421,7 +448,15 @@ export async function bundleToSingleHtml(
   const compStyleChunks: string[] = [];
   const compScriptChunks: string[] = [];
   const compExternalScriptSrcs: string[] = [];
-  for (const hostEl of [...document.querySelectorAll("[data-composition-src]")]) {
+  const subCompositionHosts = [...document.querySelectorAll("[data-composition-src]")];
+  const hostCountsByCompositionId = new Map<string, number>();
+  for (const hostEl of subCompositionHosts) {
+    const compId = (hostEl.getAttribute("data-composition-id") || "").trim();
+    if (!compId) continue;
+    hostCountsByCompositionId.set(compId, (hostCountsByCompositionId.get(compId) || 0) + 1);
+  }
+  const hostInstanceByCompositionId = new Map<string, number>();
+  for (const hostEl of subCompositionHosts) {
     const src = hostEl.getAttribute("data-composition-src");
     if (!src || !isRelativeUrl(src)) continue;
     const compPath = safePath(projectDir, src);
@@ -439,6 +474,24 @@ export async function bundleToSingleHtml(
     const innerRoot = compId
       ? contentDoc.querySelector(`[data-composition-id="${compId}"]`)
       : contentDoc.querySelector("[data-composition-id]");
+    const inferredCompId = innerRoot?.getAttribute("data-composition-id")?.trim() || "";
+    const scopeCompId = compId || inferredCompId;
+    const duplicateInstance = scopeCompId && (hostCountsByCompositionId.get(scopeCompId) || 0) > 1;
+    const instanceIndex = duplicateInstance
+      ? (hostInstanceByCompositionId.get(scopeCompId) || 0) + 1
+      : 0;
+    if (duplicateInstance) hostInstanceByCompositionId.set(scopeCompId, instanceIndex);
+    const runtimeCompId =
+      duplicateInstance && scopeCompId
+        ? uniqueCompositionId(scopeCompId, instanceIndex)
+        : scopeCompId;
+    const runtimeScope = runtimeCompId
+      ? cssAttributeSelector("data-composition-id", runtimeCompId)
+      : "";
+    if (duplicateInstance && runtimeCompId) {
+      hostEl.setAttribute("data-hf-original-composition-id", scopeCompId);
+      hostEl.setAttribute("data-composition-id", runtimeCompId);
+    }
 
     // When a sub-composition is a full HTML document (no <template>), styles
     // and scripts in <head> are not part of contentDoc (which only has body
@@ -446,7 +499,10 @@ export async function bundleToSingleHtml(
     // scripts (e.g. GSAP CDN) are not silently dropped.
     if (!contentRoot && compDoc.head) {
       for (const s of [...compDoc.head.querySelectorAll("style")]) {
-        compStyleChunks.push(rewriteCssAssetUrls(s.textContent || "", src));
+        const css = rewriteCssAssetUrls(s.textContent || "", src);
+        compStyleChunks.push(
+          scopeCompId ? scopeCssToComposition(css, scopeCompId, runtimeScope) : css,
+        );
       }
       for (const s of [...compDoc.head.querySelectorAll("script")]) {
         const externalSrc = (s.getAttribute("src") || "").trim();
@@ -457,7 +513,10 @@ export async function bundleToSingleHtml(
     }
 
     for (const s of [...contentDoc.querySelectorAll("style")]) {
-      compStyleChunks.push(rewriteCssAssetUrls(s.textContent || "", src));
+      const css = rewriteCssAssetUrls(s.textContent || "", src);
+      compStyleChunks.push(
+        scopeCompId ? scopeCssToComposition(css, scopeCompId, runtimeScope) : css,
+      );
       s.remove();
     }
     for (const s of [...contentDoc.querySelectorAll("script")]) {
@@ -470,7 +529,15 @@ export async function bundleToSingleHtml(
         }
       } else {
         compScriptChunks.push(
-          `(function(){ try { ${s.textContent || ""} } catch (_err) { console.error('[HyperFrames] composition script error:', _err); } })();`,
+          scopeCompId
+            ? wrapScopedCompositionScript(
+                s.textContent || "",
+                scopeCompId,
+                "[HyperFrames] composition script error:",
+                runtimeScope,
+                runtimeCompId || scopeCompId,
+              )
+            : `(function(){ try { ${s.textContent || ""} } catch (_err) { console.error('[HyperFrames] composition script error:', _err); } })();`,
         );
       }
       s.remove();
@@ -491,15 +558,12 @@ export async function bundleToSingleHtml(
     );
 
     if (innerRoot) {
-      const innerCompId = innerRoot.getAttribute("data-composition-id");
       const innerW = innerRoot.getAttribute("data-width");
       const innerH = innerRoot.getAttribute("data-height");
-      if (innerCompId && !hostEl.getAttribute("data-composition-id"))
-        hostEl.setAttribute("data-composition-id", innerCompId);
       if (innerW && !hostEl.getAttribute("data-width")) hostEl.setAttribute("data-width", innerW);
       if (innerH && !hostEl.getAttribute("data-height")) hostEl.setAttribute("data-height", innerH);
       for (const child of [...innerRoot.querySelectorAll("style, script")]) child.remove();
-      hostEl.innerHTML = innerRoot.innerHTML || "";
+      hostEl.innerHTML = compId ? innerRoot.innerHTML || "" : innerRoot.outerHTML || "";
     } else {
       for (const child of [...contentDoc.querySelectorAll("style, script")]) child.remove();
       hostEl.innerHTML = contentDoc.body.innerHTML || "";
@@ -532,7 +596,8 @@ export async function bundleToSingleHtml(
     if (innerRoot) {
       // Hoist styles into the collected style chunks
       for (const styleEl of [...innerRoot.querySelectorAll("style")]) {
-        compStyleChunks.push(styleEl.textContent || "");
+        const css = styleEl.textContent || "";
+        compStyleChunks.push(compId ? scopeCssToComposition(css, compId) : css);
         styleEl.remove();
       }
       // Hoist scripts into the collected script chunks
@@ -544,7 +609,13 @@ export async function bundleToSingleHtml(
           }
         } else {
           compScriptChunks.push(
-            `(function(){ try { ${scriptEl.textContent || ""} } catch (_err) { console.error('[HyperFrames] composition script error:', _err); } })();`,
+            compId
+              ? wrapScopedCompositionScript(
+                  scriptEl.textContent || "",
+                  compId,
+                  "[HyperFrames] composition script error:",
+                )
+              : `(function(){ try { ${scriptEl.textContent || ""} } catch (_err) { console.error('[HyperFrames] composition script error:', _err); } })();`,
           );
         }
         scriptEl.remove();
@@ -556,12 +627,12 @@ export async function bundleToSingleHtml(
       if (innerW && !host.getAttribute("data-width")) host.setAttribute("data-width", innerW);
       if (innerH && !host.getAttribute("data-height")) host.setAttribute("data-height", innerH);
 
-      // Set host content from inner root
       host.innerHTML = innerRoot.innerHTML || "";
     } else {
       // No matching inner root — inject all template content directly
       for (const styleEl of [...innerDoc.querySelectorAll("style")]) {
-        compStyleChunks.push(styleEl.textContent || "");
+        const css = styleEl.textContent || "";
+        compStyleChunks.push(compId ? scopeCssToComposition(css, compId) : css);
         styleEl.remove();
       }
       for (const scriptEl of [...innerDoc.querySelectorAll("script")]) {
@@ -572,7 +643,13 @@ export async function bundleToSingleHtml(
           }
         } else {
           compScriptChunks.push(
-            `(function(){ try { ${scriptEl.textContent || ""} } catch (_err) { console.error('[HyperFrames] composition script error:', _err); } })();`,
+            compId
+              ? wrapScopedCompositionScript(
+                  scriptEl.textContent || "",
+                  compId,
+                  "[HyperFrames] composition script error:",
+                )
+              : `(function(){ try { ${scriptEl.textContent || ""} } catch (_err) { console.error('[HyperFrames] composition script error:', _err); } })();`,
           );
         }
         scriptEl.remove();
@@ -601,7 +678,7 @@ export async function bundleToSingleHtml(
   }
   if (compScriptChunks.length) {
     const compScript = document.createElement("script");
-    compScript.textContent = compScriptChunks.join("\n;\n");
+    compScript.textContent = joinJsChunks(compScriptChunks);
     document.body.appendChild(compScript);
   }
 

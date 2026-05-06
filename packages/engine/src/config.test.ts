@@ -29,6 +29,9 @@ describe("resolveConfig", () => {
     expect(config.quality).toBe("standard");
     expect(config.format).toBe("jpeg");
     expect(config.jpegQuality).toBe(80);
+    expect(config.browserGpuMode).toBe("software");
+    expect(config.enableStreamingEncode).toBe(true);
+    expect(config.streamingEncodeMaxDurationSeconds).toBe(240);
     expect(config.audioGain).toBe(1);
     expect(config.debug).toBe(false);
   });
@@ -59,11 +62,46 @@ describe("resolveConfig", () => {
     expect(config.enableBrowserPool).toBe(true);
   });
 
+  it("lets env vars opt out of default streaming encode", () => {
+    setEnv("PRODUCER_ENABLE_STREAMING_ENCODE", "false");
+
+    const config = resolveConfig();
+    expect(config.enableStreamingEncode).toBe(false);
+  });
+
+  it("reads the streaming encode duration cutoff from env", () => {
+    setEnv("PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS", "120");
+
+    const config = resolveConfig();
+    expect(config.streamingEncodeMaxDurationSeconds).toBe(120);
+  });
+
+  it("clamps negative streaming encode duration cutoff env values to zero", () => {
+    setEnv("PRODUCER_STREAMING_ENCODE_MAX_DURATION_SECONDS", "-1");
+
+    const config = resolveConfig();
+    expect(config.streamingEncodeMaxDurationSeconds).toBe(0);
+  });
+
   it("treats non-'true' boolean env vars as false", () => {
     setEnv("PRODUCER_DISABLE_GPU", "yes");
 
     const config = resolveConfig();
     expect(config.disableGpu).toBe(false);
+  });
+
+  it("reads browser GPU mode from env", () => {
+    setEnv("PRODUCER_BROWSER_GPU_MODE", "hardware");
+
+    const config = resolveConfig();
+    expect(config.browserGpuMode).toBe("hardware");
+  });
+
+  it("falls back to software browser GPU mode for invalid env values", () => {
+    setEnv("PRODUCER_BROWSER_GPU_MODE", "native");
+
+    const config = resolveConfig();
+    expect(config.browserGpuMode).toBe("software");
   });
 
   it("explicit overrides take precedence over env vars", () => {

@@ -1,4 +1,5 @@
 import type { RuntimeDeterministicAdapter } from "../types";
+export { isLottieAnimationLoaded } from "./lottieReadiness";
 
 /**
  * Lottie adapter for HyperFrames
@@ -186,25 +187,4 @@ interface LottieWindow extends Window {
   lottie?: LottieWebGlobal;
   /** Compositions register their Lottie animation instances here for the adapter to seek. */
   __hfLottie?: Array<LottieWebAnimation | DotLottiePlayer>;
-}
-
-/**
- * Whether a registered Lottie animation has finished loading its JSON source.
- *
- * Handles both supported player shapes:
- * - `lottie-web` exposes a boolean `isLoaded` property on `AnimationItem`.
- * - `@dotlottie/player-component` doesn't have `isLoaded`; we infer readiness
- *   from `totalFrames > 0` since that value is only populated once the
- *   manifest/animation JSON has been parsed.
- *
- * Exported so consumers (e.g. the studio "Loading assets…" overlay) share a
- * single source of truth instead of re-implementing the duck-typing per call
- * site.
- */
-export function isLottieAnimationLoaded(anim: unknown): boolean {
-  if (typeof anim !== "object" || anim === null) return true; // unknown shape — don't block
-  const maybe = anim as { isLoaded?: boolean; totalFrames?: number };
-  if (maybe.isLoaded === true) return true;
-  if (typeof maybe.totalFrames === "number" && maybe.totalFrames > 0) return true;
-  return false;
 }

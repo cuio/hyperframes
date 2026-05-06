@@ -58,9 +58,14 @@ function readCache<T>(path: string): T | undefined {
 }
 
 function writeCache<T>(path: string, data: T): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const entry: CacheEntry<T> = { fetchedAt: Date.now(), data };
-  writeFileSync(path, JSON.stringify(entry), "utf-8");
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const entry: CacheEntry<T> = { fetchedAt: Date.now(), data };
+    writeFileSync(path, JSON.stringify(entry), "utf-8");
+  } catch {
+    // Cache writes are opportunistic. A read-only home directory or sandboxed
+    // environment should not make the registry appear unreachable.
+  }
 }
 
 // ── Fetchers ────────────────────────────────────────────────────────────────

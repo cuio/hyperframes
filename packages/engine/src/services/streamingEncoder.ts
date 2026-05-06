@@ -221,11 +221,32 @@ export function buildStreamingArgs(
           else args.push("-global_quality", String(quality));
           break;
       }
+
+      // Mirror SW branch: GPU h264 paths emit B-frames by default (nvenc, qsv,
+      // vaapi) and produce the same negative-DTS freeze for downstream players.
+      // See chunkEncoder.buildEncoderArgs for the full explanation.
+      if (
+        codec === "h264" &&
+        (gpuEncoder === "nvenc" || gpuEncoder === "qsv" || gpuEncoder === "vaapi")
+      ) {
+        args.push("-bf", "0");
+        if (gpuEncoder === "qsv") {
+          args.push("-b_strategy", "0");
+        }
+      }
     } else {
       const encoderName = codec === "h264" ? "libx264" : "libx265";
       args.push("-c:v", encoderName, "-preset", preset);
       if (bitrate) args.push("-b:v", bitrate);
       else args.push("-crf", String(quality));
+
+      // Mirrors chunkEncoder: disable B-frames for h264 so PTS == DTS, no
+      // negative DTS at stream start. Without this, files freeze on the
+      // first frame in VS Code preview, several browsers, and some HW
+      // decoders. See chunkEncoder.buildEncoderArgs for the full reasoning.
+      if (codec === "h264") {
+        args.push("-bf", "0");
+      }
 
       // Encoder-specific params: anti-banding + color space tagging.
       // For HDR, getHdrEncoderColorParams also emits the SMPTE ST 2086
@@ -312,6 +333,10 @@ export function buildStreamingArgs(
   if (gpuEncoder !== "vaapi") {
     args.push("-pix_fmt", pixelFormat);
   }
+
+  // Belt-and-suspenders against negative DTS at stream start. See chunkEncoder
+  // for the full explanation; same playback compatibility class.
+  args.push("-avoid_negative_ts", "make_zero");
 
   args.push("-y", outputPath);
   return args;

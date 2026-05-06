@@ -1,3 +1,6 @@
+import { scopeCssToComposition, wrapScopedCompositionScript } from "../compiler/compositionScoping";
+import { readDeclaredDefaults } from "./getVariables";
+
 type LoadExternalCompositionsParams = {
   injectedStyles: HTMLStyleElement[];
   injectedScripts: HTMLScriptElement[];
@@ -13,6 +16,7 @@ type PendingScript =
       kind: "inline";
       content: string;
       type: string;
+      scopeCompositionId: string | null;
     }
   | {
       kind: "external";
@@ -70,6 +74,19 @@ function resolveScriptSourceUrl(scriptSrc: string, compositionUrl: URL | null): 
   }
 }
 
+function parseHostVariableValues(host: Element): Record<string, unknown> {
+  const raw = host.getAttribute("data-variable-values");
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  return parsed as Record<string, unknown>;
+}
+
 async function mountCompositionContent(params: {
   host: Element;
   hostCompositionId: string | null;
@@ -85,6 +102,15 @@ async function mountCompositionContent(params: {
   headStyles?: HTMLStyleElement[];
   /** Extra <script> elements from the parsed document <head> (non-template sub-compositions). */
   headScripts?: HTMLScriptElement[];
+  /**
+   * Defaults extracted from the sub-composition's own
+   * `<html data-composition-variables="...">` attribute. Layered under the
+   * host element's `data-variable-values` to produce the per-instance
+   * variables visible inside the sub-comp's scoped `getVariables()`.
+   * Populated only by `loadExternalCompositions`; inline templates have no
+   * separate document root so no declared defaults are passed.
+   */
+  declaredVariableDefaults?: Record<string, unknown>;
   onDiagnostic?: (payload: {
     code: string;
     details: Record<string, string | number | boolean | null | string[]>;
@@ -101,6 +127,8 @@ async function mountCompositionContent(params: {
       ) ?? null;
   }
   const contentNode = innerRoot ?? params.sourceNode;
+  const scopeCompositionId =
+    innerRoot?.getAttribute("data-composition-id")?.trim() || params.hostCompositionId || null;
 
   // Inject <head> styles from non-template sub-compositions first (they define
   // element styles like backgrounds and positioning that the composition needs).
@@ -108,6 +136,12 @@ async function mountCompositionContent(params: {
     for (const style of params.headStyles) {
       const clonedStyle = style.cloneNode(true);
       if (!(clonedStyle instanceof HTMLStyleElement)) continue;
+      if (scopeCompositionId) {
+        clonedStyle.textContent = scopeCssToComposition(
+          clonedStyle.textContent || "",
+          scopeCompositionId,
+        );
+      }
       document.head.appendChild(clonedStyle);
       params.injectedStyles.push(clonedStyle);
     }
@@ -117,6 +151,12 @@ async function mountCompositionContent(params: {
   for (const style of styles) {
     const clonedStyle = style.cloneNode(true);
     if (!(clonedStyle instanceof HTMLStyleElement)) continue;
+    if (scopeCompositionId) {
+      clonedStyle.textContent = scopeCssToComposition(
+        clonedStyle.textContent || "",
+        scopeCompositionId,
+      );
+    }
     document.head.appendChild(clonedStyle);
     params.injectedStyles.push(clonedStyle);
   }
@@ -134,7 +174,12 @@ async function mountCompositionContent(params: {
       } else {
         const scriptText = script.textContent?.trim() ?? "";
         if (scriptText) {
-          headScriptPayloads.push({ kind: "inline", content: scriptText, type: scriptType });
+          headScriptPayloads.push({
+            kind: "inline",
+            content: scriptText,
+            type: scriptType,
+            scopeCompositionId,
+          });
         }
       }
     }
@@ -159,6 +204,7 @@ async function mountCompositionContent(params: {
           kind: "inline",
           content: scriptText,
           type: scriptType,
+          scopeCompositionId,
         });
       }
     }
@@ -175,20 +221,32 @@ async function mountCompositionContent(params: {
     const heightRaw = innerRoot.getAttribute("data-height");
     const widthPx = params.parseDimensionPx(widthRaw);
     const heightPx = params.parseDimensionPx(heightRaw);
-    imported.style.position = "relative";
-    imported.style.width = widthPx || "100%";
-    imported.style.height = heightPx || "100%";
-    if (widthPx) imported.style.setProperty("--comp-width", widthPx);
-    if (heightPx) imported.style.setProperty("--comp-height", heightPx);
     if (widthRaw) params.host.setAttribute("data-width", widthRaw);
     if (heightRaw) params.host.setAttribute("data-height", heightRaw);
     if (widthPx && params.host instanceof HTMLElement) params.host.style.width = widthPx;
     if (heightPx && params.host instanceof HTMLElement) params.host.style.height = heightPx;
-    params.host.appendChild(imported);
+    while (imported.firstChild) {
+      params.host.appendChild(imported.firstChild);
+    }
   } else if (params.hasTemplate) {
     params.host.appendChild(document.importNode(contentNode, true));
   } else {
     params.host.innerHTML = params.fallbackBodyInnerHtml;
+  }
+
+  // Stash the per-instance variables BEFORE running scripts. The scoped
+  // `getVariables()` injected by `compositionScoping.ts` reads from
+  // `window.__hfVariablesByComp[compId]`, so this table must be populated
+  // before the wrapped IIFE evaluates.
+  if (scopeCompositionId) {
+    const merged = {
+      ...(params.declaredVariableDefaults ?? {}),
+      ...parseHostVariableValues(params.host),
+    };
+    if (Object.keys(merged).length > 0) {
+      if (!window.__hfVariablesByComp) window.__hfVariablesByComp = {};
+      window.__hfVariablesByComp[scopeCompositionId] = merged;
+    }
   }
 
   for (const scriptPayload of scriptPayloads) {
@@ -202,6 +260,11 @@ async function mountCompositionContent(params: {
       injectedScript.src = scriptPayload.src;
     } else if (scriptPayload.type.toLowerCase() === "module") {
       injectedScript.textContent = scriptPayload.content;
+    } else if (scriptPayload.scopeCompositionId) {
+      injectedScript.textContent = wrapScopedCompositionScript(
+        scriptPayload.content,
+        scriptPayload.scopeCompositionId,
+      );
     } else {
       injectedScript.textContent = `(function(){${scriptPayload.content}})();`;
     }
@@ -346,6 +409,7 @@ export async function loadExternalCompositions(
           parseDimensionPx: params.parseDimensionPx,
           headStyles,
           headScripts,
+          declaredVariableDefaults: readDeclaredDefaults(doc.documentElement),
           onDiagnostic: params.onDiagnostic,
         });
       } catch (error) {

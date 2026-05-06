@@ -48,6 +48,20 @@ export interface ParallelProgress {
   workerProgress: Map<number, number>;
 }
 
+export interface WorkerSizingConfig extends Partial<
+  Pick<
+    EngineConfig,
+    "concurrency" | "coresPerWorker" | "minParallelFrames" | "largeRenderThreshold"
+  >
+> {
+  /**
+   * Relative per-frame capture cost for auto worker sizing. Values above 1
+   * represent compositions that put more CPU pressure on each Chrome worker
+   * than a plain DOM screenshot. Explicit --workers requests ignore this hint.
+   */
+  captureCostMultiplier?: number;
+}
+
 const MEMORY_PER_WORKER_MB = 256;
 const MIN_WORKERS = 1;
 const ABSOLUTE_MAX_WORKERS = 10;
@@ -57,12 +71,7 @@ const MIN_FRAMES_PER_WORKER = 30;
 export function calculateOptimalWorkers(
   totalFrames: number,
   requested?: number,
-  config?: Partial<
-    Pick<
-      EngineConfig,
-      "concurrency" | "coresPerWorker" | "minParallelFrames" | "largeRenderThreshold"
-    >
-  >,
+  config?: WorkerSizingConfig,
 ): number {
   // Resolve effective values: config overrides → DEFAULT_CONFIG fallback.
   const effectiveMaxWorkers = (() => {
@@ -76,6 +85,7 @@ export function calculateOptimalWorkers(
   const effectiveMinParallelFrames = config?.minParallelFrames ?? DEFAULT_CONFIG.minParallelFrames;
   const effectiveLargeRenderThreshold =
     config?.largeRenderThreshold ?? DEFAULT_CONFIG.largeRenderThreshold;
+  const captureCostMultiplier = Math.max(1, config?.captureCostMultiplier ?? 1);
 
   if (requested !== undefined) {
     return Math.max(MIN_WORKERS, Math.min(effectiveMaxWorkers, requested));
@@ -98,13 +108,19 @@ export function calculateOptimalWorkers(
   const minWorkersForJob = totalFrames >= effectiveMinParallelFrames ? 2 : MIN_WORKERS;
   let finalWorkers = Math.max(minWorkersForJob, Math.min(effectiveMaxWorkers, optimal));
 
-  // Adaptive scaling: cap workers for large renders to prevent CPU contention.
-  // Each Chrome process (with SwiftShader) is CPU-heavy; too many on a long
-  // render causes protocol timeouts from compositor starvation.
-  // Scale proportionally to CPU count: ~3 cores per worker (benchmarked).
+  // Adaptive scaling: cap workers for large or expensive renders to prevent
+  // CPU contention. Each Chrome process (with SwiftShader) is CPU-heavy; too
+  // many concurrent captures can starve the compositor and surface as CDP
+  // protocol timeouts. Scale proportionally to CPU count and composition cost:
   // 8 cores → 2 workers, 16 cores → 5 workers, 32 cores → 10 workers.
-  if (totalFrames >= effectiveLargeRenderThreshold) {
-    const cpuScaledMax = Math.max(2, Math.floor(cpuCount / effectiveCoresPerWorker));
+  const weightedFrames = totalFrames * captureCostMultiplier;
+  const contentionThreshold = Math.max(
+    effectiveMinParallelFrames,
+    Math.floor(effectiveLargeRenderThreshold / 3),
+  );
+  if (totalFrames >= effectiveLargeRenderThreshold || weightedFrames >= contentionThreshold) {
+    const weightedCoresPerWorker = effectiveCoresPerWorker * captureCostMultiplier;
+    const cpuScaledMax = Math.max(MIN_WORKERS, Math.floor(cpuCount / weightedCoresPerWorker));
     if (finalWorkers > cpuScaledMax) {
       finalWorkers = cpuScaledMax;
     }

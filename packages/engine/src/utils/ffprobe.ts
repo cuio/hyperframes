@@ -203,6 +203,21 @@ function extractStillImageMetadata(filePath: string): StillImageMetadata | null 
   }
 }
 
+/**
+ * Read an ffprobe tag case-insensitively. ffmpeg/libavformat versions disagree
+ * on tag casing — VP9 alpha is `alpha_mode` in older builds and `ALPHA_MODE`
+ * in newer ones; HDR tags vary similarly. Use this for any sidecar tag where
+ * you want to be resilient across muxer versions.
+ */
+function readTagCI(tags: Record<string, string | undefined> | undefined, name: string): string {
+  if (!tags) return "";
+  const target = name.toLowerCase();
+  for (const [key, value] of Object.entries(tags)) {
+    if (key.toLowerCase() === target && typeof value === "string") return value;
+  }
+  return "";
+}
+
 function parseFrameRate(frameRateStr: string | undefined): number {
   if (!frameRateStr) return 0;
   const parts = frameRateStr.split("/");
@@ -277,7 +292,7 @@ export async function extractMediaMetadata(filePath: string): Promise<VideoMetad
         : null;
     const colorSpace = ffprobeColorSpace ?? stillImageMeta?.colorSpace ?? null;
     const pixelFormat = videoStream.pix_fmt || "";
-    const alphaMode = videoStream.tags?.alpha_mode || "";
+    const alphaMode = readTagCI(videoStream.tags, "alpha_mode");
     const hasAlpha =
       /(^|[^a-z])yuva|rgba|argb|bgra|gbrap|gray[a-z0-9]*a/i.test(pixelFormat) || alphaMode === "1";
 

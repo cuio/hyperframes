@@ -53,4 +53,23 @@ describe("getRenderedTimelineElement", () => {
       }),
     ).toEqual({ ...element, start: 2.4, track: 3 });
   });
+
+  it("uses key before id when matching the dragged clip", () => {
+    const element = {
+      id: "Card",
+      key: "index.html:.card:1",
+      tag: "div",
+      start: 1,
+      duration: 2,
+      track: 0,
+    };
+    expect(
+      getRenderedTimelineElement({
+        element,
+        draggedElementId: "index.html:.card:1",
+        previewStart: 2.4,
+        previewTrack: 3,
+      }),
+    ).toEqual({ ...element, start: 2.4, track: 3 });
+  });
 });

@@ -130,6 +130,18 @@ const meta: CompositionMetadata = extractCompositionMetadata(htmlString);
 //   data-composition-variables='[{"id":"title","label":"Title","type":"string","default":"Hello"}]'
 // >
 
+// Read resolved variables inside a composition (declared defaults +
+// CLI overrides + per-instance host data-variable-values):
+import { getVariables } from '@hyperframes/core';
+const { title } = getVariables<{ title: string }>();
+
+// Validate CLI / host overrides against the declared schema:
+import { validateVariables, formatVariableValidationIssue } from '@hyperframes/core';
+const issues = validateVariables({ title: 'Hello', count: 'three' }, meta.variables);
+for (const issue of issues) {
+  console.warn(formatVariableValidationIssue(issue));
+}
+
 // Generate HTML from structured data
 const html = generateHyperframesHtml(elements, {
   animations,

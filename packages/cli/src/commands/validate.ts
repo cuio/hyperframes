@@ -1,8 +1,9 @@
 import { defineCommand } from "citty";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveProject } from "../utils/project.js";
+import { resolveCompositionViewportFromHtml } from "../utils/compositionViewport.js";
 import { c } from "../ui/colors.js";
 import { withMeta } from "../utils/updateCheck.js";
 
@@ -27,12 +28,18 @@ interface ContrastEntry {
   bg: string;
 }
 
-// esbuild's text loader inlines this at build time — no runtime file read.
-// @ts-expect-error — .browser.js files use esbuild text loader, not TS module resolution
-import CONTRAST_AUDIT_SCRIPT from "./contrast-audit.browser.js";
-
 const CONTRAST_SAMPLES = 5;
 const SEEK_SETTLE_MS = 150;
+const MEDIA_EXTENSIONS = /\.(aac|flac|m4a|mov|mp3|mp4|oga|ogg|wav|webm)$/i;
+
+export function shouldIgnoreRequestFailure(url: string, errorText: string | undefined): boolean {
+  if (errorText !== "net::ERR_ABORTED") return false;
+  try {
+    return MEDIA_EXTENSIONS.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
 
 async function getCompositionDuration(page: import("puppeteer-core").Page): Promise<number> {
   return page.evaluate(() => {
@@ -64,7 +71,7 @@ async function runContrastAudit(page: import("puppeteer-core").Page): Promise<Co
   const duration = await getCompositionDuration(page);
   if (duration <= 0) return [];
 
-  await page.addScriptTag({ content: CONTRAST_AUDIT_SCRIPT });
+  await page.addScriptTag({ content: loadContrastAuditScript() });
 
   const results: ContrastEntry[] = [];
   for (let i = 0; i < CONTRAST_SAMPLES; i++) {
@@ -86,6 +93,19 @@ async function runContrastAudit(page: import("puppeteer-core").Page): Promise<Co
   return results;
 }
 
+function loadContrastAuditScript(): string {
+  const candidates = [
+    join(__dirname, "contrast-audit.browser.js"),
+    join(__dirname, "commands", "contrast-audit.browser.js"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return readFileSync(candidate, "utf-8");
+  }
+
+  throw new Error("Missing contrast audit browser script");
+}
+
 async function validateInBrowser(
   projectDir: string,
   opts: { timeout?: number; contrast?: boolean },
@@ -93,24 +113,10 @@ async function validateInBrowser(
   const { bundleToSingleHtml } = await import("@hyperframes/core/compiler");
   const { ensureBrowser } = await import("../browser/manager.js");
 
-  let html = await bundleToSingleHtml(projectDir);
-
-  const runtimePath = resolve(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "core",
-    "dist",
-    "hyperframe.runtime.iife.js",
-  );
-  if (existsSync(runtimePath)) {
-    const runtimeSource = readFileSync(runtimePath, "utf-8");
-    html = html.replace(
-      /<script[^>]*data-hyperframes-preview-runtime[^>]*src="[^"]*"[^>]*><\/script>/,
-      () => `<script data-hyperframes-preview-runtime="1">${runtimeSource}</script>`,
-    );
-  }
+  // `bundleToSingleHtml` now inlines the runtime IIFE by default, so the
+  // previous post-bundle regex substitution (which matched `src="..."` on the
+  // runtime tag) is no longer needed — there's no `src` attribute to match.
+  const html = await bundleToSingleHtml(projectDir);
 
   const { createServer } = await import("node:http");
   const { getMimeType } = await import("@hyperframes/core/studio-api");
@@ -153,7 +159,7 @@ async function validateInBrowser(
     });
 
     const page = await chromeBrowser.newPage();
-    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setViewport(resolveCompositionViewportFromHtml(html));
 
     page.on("console", (msg) => {
       const type = msg.type();
@@ -174,10 +180,12 @@ async function validateInBrowser(
     page.on("requestfailed", (req) => {
       const url = req.url();
       if (url.includes("favicon") || url.startsWith("data:")) return;
+      const failureText = req.failure()?.errorText;
+      if (shouldIgnoreRequestFailure(url, failureText)) return;
       const path = decodeURIComponent(new URL(url).pathname).replace(/^\//, "");
       errors.push({
         level: "error",
-        text: `Failed to load ${path}: ${req.failure()?.errorText ?? "net::ERR_FAILED"}`,
+        text: `Failed to load ${path}: ${failureText ?? "net::ERR_FAILED"}`,
         url,
       });
     });

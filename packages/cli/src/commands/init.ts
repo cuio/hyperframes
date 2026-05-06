@@ -6,6 +6,7 @@ export const examples: Example[] = [
   ["Pick a starter example", "hyperframes init my-video --example warm-grain"],
   ["Start from an existing video file", "hyperframes init my-video --video clip.mp4"],
   ["Start from an audio file", "hyperframes init my-video --audio track.mp3"],
+  ["Scaffold with Tailwind CSS", "hyperframes init my-video --example blank --tailwind"],
   ["Non-interactive mode (for CI or AI agents)", "hyperframes init my-video --non-interactive"],
   ["Skip AI coding skills installation", "hyperframes init my-video --skip-skills"],
 ];
@@ -32,6 +33,7 @@ import {
 import { fetchRemoteTemplate } from "../templates/remote.js";
 import { trackInitTemplate } from "../telemetry/events.js";
 import { hasFFmpeg } from "../whisper/manager.js";
+import { VERSION } from "../version.js";
 
 interface VideoMeta {
   durationSeconds: number;
@@ -52,6 +54,13 @@ const DEFAULT_META: VideoMeta = {
   hasAudio: false,
   videoCodec: "h264",
 };
+
+// Pin the browser runtime exactly so repeated renders do not drift as Tailwind
+// ships JIT/preflight changes on the CDN.
+const TAILWIND_BROWSER_VERSION = "4.2.4";
+const TAILWIND_BROWSER_SRC = `https://cdn.jsdelivr.net/npm/@tailwindcss/browser@${TAILWIND_BROWSER_VERSION}/dist/index.global.js`;
+const TAILWIND_BROWSER_INTEGRITY =
+  "sha384-v5YF9xS+gLRWdvrQ0u/WRbCkjSIH0NjHIPe8tBL1ZRrmI7PiSH6LLdzs0aAIMCuh";
 
 // ---------------------------------------------------------------------------
 // ffprobe helper — shells out to ffprobe to avoid engine dependency
@@ -166,6 +175,111 @@ function getStaticTemplateDir(templateId: string): string {
 
 function getSharedTemplateDir(): string {
   return resolveAssetDir(["..", "templates", "_shared"], ["templates", "_shared"]);
+}
+
+function toPackageName(projectName: string): string {
+  const normalized = basename(projectName)
+    .trim()
+    .toLowerCase()
+    .replace(/^[._]+/, "")
+    .replace(/[^a-z0-9._~-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "");
+
+  return normalized || "hyperframes-project";
+}
+
+function getHyperframesPackageSpecifier(): string {
+  return VERSION === "0.0.0-dev" ? "hyperframes" : `hyperframes@${VERSION}`;
+}
+
+function hyperframesScript(command: string): string {
+  return `npx --yes ${getHyperframesPackageSpecifier()} ${command}`;
+}
+
+function buildPackageScripts(): Record<string, string> {
+  return {
+    dev: hyperframesScript("preview"),
+    check:
+      `${hyperframesScript("lint")} && ${hyperframesScript("validate")} && ` +
+      `${hyperframesScript("inspect")}`,
+    render: hyperframesScript("render"),
+    publish: hyperframesScript("publish"),
+  };
+}
+
+function writeDefaultPackageJson(destDir: string, projectName: string): void {
+  const packageJsonPath = resolve(destDir, "package.json");
+  if (existsSync(packageJsonPath)) return;
+
+  writeFileSync(
+    packageJsonPath,
+    `${JSON.stringify(
+      {
+        name: toPackageName(projectName),
+        private: true,
+        type: "module",
+        scripts: buildPackageScripts(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf-8",
+  );
+}
+
+function listHtmlFiles(dir: string): string[] {
+  const files: string[] = [];
+  const ignoredDirs = new Set([".git", "dist", "node_modules"]);
+
+  function walk(currentDir: string): void {
+    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+      const entryPath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.has(entry.name)) walk(entryPath);
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".html")) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  walk(dir);
+  return files;
+}
+
+export function injectTailwindBrowserScript(html: string): string {
+  if (html.includes(TAILWIND_BROWSER_SRC)) return html;
+
+  const script = [
+    `<script>`,
+    `window.__tailwindReady=new Promise(function(resolve){`,
+    `var loaded=document.readyState==="complete";`,
+    `var resolved=false;`,
+    `var observer;`,
+    `function readTailwindCss(){var styles=document.querySelectorAll("style");for(var i=styles.length-1;i>=0;i--){var text=styles[i].textContent||"";if(text.indexOf("tailwindcss v")!==-1)return text;}return "";}`,
+    `function finish(){if(resolved||!loaded||!readTailwindCss())return;resolved=true;if(observer)observer.disconnect();resolve(true);}`,
+    `observer=new MutationObserver(finish);`,
+    `observer.observe(document.documentElement,{childList:true,subtree:true,characterData:true});`,
+    `if(loaded){finish();}else{window.addEventListener("load",function(){loaded=true;finish();},{once:true});}`,
+    `});`,
+    `</script>`,
+    `<script src="${TAILWIND_BROWSER_SRC}" integrity="${TAILWIND_BROWSER_INTEGRITY}" crossorigin="anonymous"></script>`,
+  ].join("\n");
+
+  if (/<\/head>/i.test(html)) {
+    return html.replace(/<\/head>/i, (closingHead) => `\n${script}\n${closingHead}`);
+  }
+
+  return `${script}\n${html}`;
+}
+
+function writeTailwindSupport(destDir: string): void {
+  for (const file of listHtmlFiles(destDir)) {
+    const html = readFileSync(file, "utf-8");
+    writeFileSync(file, injectTailwindBrowserScript(html), "utf-8");
+  }
 }
 
 function patchVideoSrc(
@@ -312,6 +426,7 @@ async function scaffoldProject(
   templateId: string,
   localVideoName: string | undefined,
   durationSeconds?: number,
+  tailwind = false,
 ): Promise<void> {
   mkdirSync(destDir, { recursive: true });
 
@@ -323,6 +438,7 @@ async function scaffoldProject(
     await fetchRemoteTemplate(templateId, destDir);
   }
   patchVideoSrc(destDir, localVideoName, durationSeconds);
+  if (tailwind) writeTailwindSupport(destDir);
 
   writeFileSync(
     resolve(destDir, "meta.json"),
@@ -345,6 +461,8 @@ async function scaffoldProject(
       await import("../utils/projectConfig.js");
     writeProjectConfig(destDir, DEFAULT_PROJECT_CONFIG);
   }
+
+  writeDefaultPackageJson(destDir, name);
 
   // Copy shared files (CLAUDE.md, AGENTS.md) for AI agent context
   const sharedDir = getSharedTemplateDir();
@@ -418,6 +536,10 @@ export default defineCommand({
       type: "boolean",
       description: "Skip AI coding skills installation",
     },
+    tailwind: {
+      type: "boolean",
+      description: "Add Tailwind CSS browser-runtime support",
+    },
   },
   async run({ args }) {
     if (args.template !== undefined) {
@@ -435,6 +557,7 @@ export default defineCommand({
     const audioFlag = args.audio;
     const skipTranscribe = args["skip-transcribe"] === true;
     const skipSkills = args["skip-skills"] === true;
+    const tailwind = args.tailwind === true;
     const nonInteractive = args["non-interactive"] === true;
     const modelFlag = args.model;
     const languageFlag = args.language;
@@ -521,6 +644,7 @@ export default defineCommand({
           templateId,
           localVideoName,
           videoDuration,
+          tailwind,
         );
       } catch (err) {
         console.error(
@@ -531,7 +655,7 @@ export default defineCommand({
         console.error(c.dim("Use --example blank for offline use."));
         process.exit(1);
       }
-      trackInitTemplate(templateId);
+      trackInitTemplate(templateId, { tailwind });
       const transcriptFile = resolve(destDir, "transcript.json");
       if (existsSync(transcriptFile)) {
         await patchTranscript(destDir, transcriptFile);
@@ -559,10 +683,13 @@ export default defineCommand({
       console.log(`     ${c.dim("More patterns: hyperframes.heygen.com/guides/prompting")}`);
       console.log();
       console.log(`  ${c.accent("4.")} Preview in the browser:`);
-      console.log(`     ${c.accent(`cd ${name}`)} && ${c.accent("npx hyperframes preview")}`);
+      console.log(`     ${c.accent(`cd ${name}`)} && ${c.accent("npm run dev")}`);
       console.log();
-      console.log(`  ${c.accent("5.")} Render to MP4 when ready:`);
-      console.log(`     ${c.accent(`cd ${name}`)} && ${c.accent("npx hyperframes render")}`);
+      console.log(`  ${c.accent("5.")} Check the composition:`);
+      console.log(`     ${c.accent(`cd ${name}`)} && ${c.accent("npm run check")}`);
+      console.log();
+      console.log(`  ${c.accent("6.")} Render to MP4 when ready:`);
+      console.log(`     ${c.accent(`cd ${name}`)} && ${c.accent("npm run render")}`);
       console.log();
       console.log(`  ${c.dim("Full docs: hyperframes.heygen.com")}`);
       return;
@@ -713,7 +840,7 @@ export default defineCommand({
       spin.start(`Downloading example ${c.accent(templateId)}...`);
     }
     try {
-      await scaffoldProject(destDir, name, templateId, localVideoName, videoDuration);
+      await scaffoldProject(destDir, name, templateId, localVideoName, videoDuration, tailwind);
       if (!isBundled) {
         spin.stop(c.success(`Downloaded ${templateId}`));
       }
@@ -726,7 +853,7 @@ export default defineCommand({
       );
       process.exit(1);
     }
-    trackInitTemplate(templateId);
+    trackInitTemplate(templateId, { tailwind });
 
     // 4b. Patch captions with transcript if available
     const transcriptFile = resolve(destDir, "transcript.json");

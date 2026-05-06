@@ -61,6 +61,7 @@ export const TimelineClip = memo(function TimelineClip({
         ? theme.clipShadowHover
         : theme.clipShadow;
   const capabilities = getTimelineEditCapabilities(el);
+  const displayLabel = el.label || el.id || el.tag;
   const showHandles = handleOpacity > 0.01;
 
   return (
@@ -93,7 +94,7 @@ export const TimelineClip = memo(function TimelineClip({
       title={
         isComposition
           ? `${el.compositionSrc} \u2022 Double-click to open`
-          : `${el.id || el.tag} \u2022 ${el.start.toFixed(1)}s \u2013 ${(el.start + el.duration).toFixed(1)}s`
+          : `${displayLabel} \u2022 ${el.start.toFixed(1)}s \u2013 ${(el.start + el.duration).toFixed(1)}s`
       }
       onPointerEnter={onHoverStart}
       onPointerLeave={onHoverEnd}

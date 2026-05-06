@@ -83,9 +83,12 @@ Build each composition following the storyboard. After each one: self-review for
 
 **Read:** [references/step-7-validate.md](references/step-7-validate.md)
 
-Lint, validate, snapshot, preview. Deliver the preview to the user first — only render to MP4 on explicit request.
+Lint, validate, snapshot, preview. Deliver the localhost Studio project URL
+(`http://localhost:<port>/#project/<project-name>`) to the user first — only
+render to MP4 on explicit request. Do not treat `index.html` as the project
+handoff link; it is source-code context only.
 
-**Gate:** `npx hyperframes lint` and `npx hyperframes validate` pass with zero errors.
+**Gate:** `npx hyperframes lint` and `npx hyperframes validate` pass with zero errors, and the final response includes the active Studio project URL.
 
 ---
 
@@ -109,13 +112,13 @@ Lint, validate, snapshot, preview. Deliver the preview to the user first — onl
 
 ### Reference Files
 
-| File                                                    | When to read                                                                                                                                                   |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [step-1-capture.md](references/step-1-capture.md)       | Step 1 — reading captured data                                                                                                                                 |
-| [step-2-design.md](references/step-2-design.md)         | Step 2 — writing DESIGN.md                                                                                                                                     |
-| [step-3-script.md](references/step-3-script.md)         | Step 3 — writing the narration script                                                                                                                          |
-| [step-4-storyboard.md](references/step-4-storyboard.md) | Step 4 — per-beat creative direction                                                                                                                           |
-| [step-5-vo.md](references/step-5-vo.md)                 | Step 5 — TTS, transcription, timing                                                                                                                            |
-| [step-6-build.md](references/step-6-build.md)           | Step 6 — building compositions with self-review                                                                                                                |
-| [step-7-validate.md](references/step-7-validate.md)     | Step 7 — lint, validate, snapshot, preview                                                                                                                     |
-| [techniques.md](references/techniques.md)               | Steps 4 & 6 — 10 visual techniques with code patterns (SVG drawing, Canvas 2D, 3D, typography, Lottie, video, typing, variable fonts, MotionPath, transitions) |
+| File                                                     | When to read                                                                                                                                                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [step-1-capture.md](references/step-1-capture.md)        | Step 1 — reading captured data                                                                                                                                                 |
+| [step-2-design.md](references/step-2-design.md)          | Step 2 — writing DESIGN.md                                                                                                                                                     |
+| [step-3-script.md](references/step-3-script.md)          | Step 3 — writing the narration script                                                                                                                                          |
+| [step-4-storyboard.md](references/step-4-storyboard.md)  | Step 4 — per-beat creative direction                                                                                                                                           |
+| [step-5-vo.md](references/step-5-vo.md)                  | Step 5 — TTS, transcription, timing                                                                                                                                            |
+| [step-6-build.md](references/step-6-build.md)            | Step 6 — building compositions with self-review                                                                                                                                |
+| [step-7-validate.md](references/step-7-validate.md)      | Step 7 — lint, validate, snapshot, preview                                                                                                                                     |
+| [techniques.md](../hyperframes/references/techniques.md) | Steps 4 & 6 — 11 visual techniques with code patterns (SVG drawing, Canvas 2D, 3D, typography, Lottie, video, typing, variable fonts, MotionPath, transitions, audio-reactive) |

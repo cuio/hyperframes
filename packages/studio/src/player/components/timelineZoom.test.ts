@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   clampTimelineZoomPercent,
   getNextTimelineZoomPercent,
+  getPinchTimelineZoomPercent,
   getTimelinePixelsPerSecond,
   getTimelineZoomPercent,
   MAX_TIMELINE_ZOOM_PERCENT,
@@ -58,5 +59,25 @@ describe("getNextTimelineZoomPercent", () => {
     expect(getNextTimelineZoomPercent("in", "manual", MAX_TIMELINE_ZOOM_PERCENT)).toBe(
       MAX_TIMELINE_ZOOM_PERCENT,
     );
+  });
+});
+
+describe("getPinchTimelineZoomPercent", () => {
+  it("zooms in for upward pinch wheel deltas", () => {
+    expect(getPinchTimelineZoomPercent(-80, "fit", 100)).toBeGreaterThan(100);
+  });
+
+  it("zooms out for downward pinch wheel deltas", () => {
+    expect(getPinchTimelineZoomPercent(80, "manual", 200)).toBeLessThan(200);
+  });
+
+  it("keeps the current zoom for zero or invalid deltas", () => {
+    expect(getPinchTimelineZoomPercent(0, "manual", 180)).toBe(180);
+    expect(getPinchTimelineZoomPercent(Number.NaN, "manual", 180)).toBe(180);
+  });
+
+  it("clamps pinch zoom to the supported range", () => {
+    expect(getPinchTimelineZoomPercent(10000, "manual", 100)).toBe(MIN_TIMELINE_ZOOM_PERCENT);
+    expect(getPinchTimelineZoomPercent(-10000, "manual", 100)).toBe(MAX_TIMELINE_ZOOM_PERCENT);
   });
 });

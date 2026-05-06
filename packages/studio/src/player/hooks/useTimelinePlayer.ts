@@ -1,6 +1,8 @@
 import { useRef, useCallback } from "react";
 import { usePlayerStore, liveTime, type TimelineElement } from "../store/playerStore";
 import { useMountEffect } from "../../hooks/useMountEffect";
+import { stepFrameTime, STUDIO_PREVIEW_FPS } from "../lib/time";
+import { useCaptionStore } from "../../captions/store";
 
 interface PlaybackAdapter {
   play: () => void;
@@ -63,9 +65,12 @@ function wrapTimeline(tl: TimelineLike): PlaybackAdapter {
 }
 
 function resolveMediaElement(el: Element): HTMLMediaElement | HTMLImageElement | null {
-  if (el instanceof HTMLMediaElement || el instanceof HTMLImageElement) return el;
+  const win = el.ownerDocument.defaultView ?? window;
+  const MediaElementCtor = win.HTMLMediaElement ?? globalThis.HTMLMediaElement;
+  const ImageElementCtor = win.HTMLImageElement ?? globalThis.HTMLImageElement;
+  if (el instanceof MediaElementCtor || el instanceof ImageElementCtor) return el;
   const candidate = el.querySelector("video, audio, img");
-  return candidate instanceof HTMLMediaElement || candidate instanceof HTMLImageElement
+  return candidate instanceof MediaElementCtor || candidate instanceof ImageElementCtor
     ? candidate
     : null;
 }
@@ -91,7 +96,9 @@ function applyMediaMetadataFromElement(entry: TimelineElement, el: Element): voi
   const src = mediaEl.getAttribute("src");
   if (src) entry.src = src;
 
-  if (!(mediaEl instanceof HTMLMediaElement)) return;
+  const win = mediaEl.ownerDocument.defaultView ?? window;
+  const MediaElementCtor = win.HTMLMediaElement ?? globalThis.HTMLMediaElement;
+  if (typeof MediaElementCtor === "undefined" || !(mediaEl instanceof MediaElementCtor)) return;
 
   const sourceDurationAttr =
     el.getAttribute("data-source-duration") ?? mediaEl.getAttribute("data-source-duration");
@@ -106,11 +113,82 @@ function applyMediaMetadataFromElement(entry: TimelineElement, el: Element): voi
   }
 }
 
+const SHUTTLE_SPEEDS = [1, 2, 4] as const;
+const PLAYBACK_FRAME_STEP_CODES = new Set(["ArrowLeft", "ArrowRight"]);
+const PLAYBACK_SHORTCUT_IGNORED_SELECTOR = [
+  "input",
+  "textarea",
+  "select",
+  "button",
+  "a[href]",
+  "[contenteditable='true']",
+  "[role='button']",
+  "[role='checkbox']",
+  "[role='combobox']",
+  "[role='menuitem']",
+  "[role='radio']",
+  "[role='slider']",
+  "[role='spinbutton']",
+  "[role='switch']",
+  "[role='textbox']",
+].join(",");
+
+export function shouldIgnorePlaybackShortcutTarget(target: EventTarget | null): boolean {
+  if (!target || typeof target !== "object") return false;
+  const candidate = target as { closest?: unknown };
+  if (typeof candidate.closest !== "function") return false;
+  return (
+    (candidate.closest as (selector: string) => Element | null).call(
+      target,
+      PLAYBACK_SHORTCUT_IGNORED_SELECTOR,
+    ) !== null
+  );
+}
+
+interface PlaybackShortcutCaptionState {
+  isCaptionEditMode: boolean;
+  selectedCaptionSegmentCount: number;
+}
+
+type PlaybackShortcutEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "ctrlKey" | "metaKey" | "code" | "target"
+>;
+
+export function shouldIgnorePlaybackShortcutEvent(
+  event: PlaybackShortcutEvent,
+  captionState: PlaybackShortcutCaptionState = {
+    isCaptionEditMode: false,
+    selectedCaptionSegmentCount: 0,
+  },
+): boolean {
+  if (event.metaKey || event.ctrlKey || event.altKey) return true;
+  if (shouldIgnorePlaybackShortcutTarget(event.target)) return true;
+  return (
+    PLAYBACK_FRAME_STEP_CODES.has(event.code) &&
+    captionState.isCaptionEditMode &&
+    captionState.selectedCaptionSegmentCount > 0
+  );
+}
+
+function getTimelineElementDisplayLabel(input: {
+  id?: string | null;
+  label?: string | null;
+  tag?: string | null;
+}): string {
+  const label = input.label?.trim();
+  if (label) return label;
+  const id = input.id?.trim();
+  if (id) return id;
+  const tag = input.tag?.trim().toLowerCase();
+  return tag ? `${tag} clip` : "Timeline clip";
+}
+
 /**
  * Parse [data-start] elements from a Document into TimelineElement[].
  * Shared helper — used by onIframeLoad fallback, handleMessage, and enrichMissingCompositions.
  */
-function parseTimelineFromDOM(doc: Document, rootDuration: number): TimelineElement[] {
+export function parseTimelineFromDOM(doc: Document, rootDuration: number): TimelineElement[] {
   const rootComp = doc.querySelector("[data-composition-id]");
   const nodes = doc.querySelectorAll("[data-start]");
   const els: TimelineElement[] = [];
@@ -141,17 +219,24 @@ function parseTimelineFromDOM(doc: Document, rootDuration: number): TimelineElem
     const selector = getTimelineElementSelector(el);
     const sourceFile = getTimelineElementSourceFile(el);
     const selectorIndex = getTimelineElementSelectorIndex(doc, el, selector);
-    const id = el.id || compId || el.className?.split(" ")[0] || tagLower;
+    const label = getTimelineElementDisplayLabel({
+      id: el.id || compId || null,
+      label: el.getAttribute("data-timeline-label") ?? el.getAttribute("data-label"),
+      tag: tagLower,
+    });
+    const identity = buildTimelineElementIdentity({
+      preferredId: el.id || compId || null,
+      label,
+      fallbackIndex: els.length,
+      domId: el.id || undefined,
+      selector,
+      selectorIndex,
+      sourceFile,
+    });
     const entry: TimelineElement = {
-      id,
-      key: buildTimelineElementKey({
-        id,
-        fallbackIndex: els.length,
-        domId: el.id || undefined,
-        selector,
-        selectorIndex,
-        sourceFile,
-      }),
+      id: identity.id,
+      label,
+      key: identity.key,
       tag: tagLower,
       start,
       duration: dur,
@@ -194,12 +279,18 @@ function parseTimelineFromDOM(doc: Document, rootDuration: number): TimelineElem
   return els;
 }
 
-function getTimelineElementSelector(el: Element): string | undefined {
-  if (el instanceof HTMLElement && el.id) return `#${el.id}`;
+function isHtmlElement(el: Element): el is HTMLElement {
+  const HtmlElementCtor = el.ownerDocument.defaultView?.HTMLElement ?? globalThis.HTMLElement;
+  return typeof HtmlElementCtor !== "undefined" && el instanceof HtmlElementCtor;
+}
+
+export function getTimelineElementSelector(el: Element): string | undefined {
+  if (isHtmlElement(el) && el.id) return `#${el.id}`;
   const compId = el.getAttribute("data-composition-id");
   if (compId) return `[data-composition-id="${compId}"]`;
-  if (el instanceof HTMLElement) {
-    const firstClass = el.className.split(/\s+/).find(Boolean);
+  if (isHtmlElement(el)) {
+    const classes = el.className.split(/\s+/).filter(Boolean);
+    const firstClass = classes.find((className) => className !== "clip") ?? classes[0];
     if (firstClass) return `.${firstClass}`;
   }
   return undefined;
@@ -246,6 +337,178 @@ function buildTimelineElementKey(params: {
   return `${scope}:${params.id}:${params.fallbackIndex}`;
 }
 
+function buildTimelineElementIdentity(params: {
+  preferredId?: string | null;
+  label: string;
+  fallbackIndex: number;
+  domId?: string;
+  selector?: string;
+  selectorIndex?: number;
+  sourceFile?: string;
+}): { id: string; key: string } {
+  const id =
+    params.preferredId?.trim() ||
+    buildTimelineElementKey({
+      id: params.label,
+      fallbackIndex: params.fallbackIndex,
+      domId: params.domId,
+      selector: params.selector,
+      selectorIndex: params.selectorIndex,
+      sourceFile: params.sourceFile,
+    });
+  const key = buildTimelineElementKey({
+    id,
+    fallbackIndex: params.fallbackIndex,
+    domId: params.domId,
+    selector: params.selector,
+    selectorIndex: params.selectorIndex,
+    sourceFile: params.sourceFile,
+  });
+  return { id, key };
+}
+
+function getTimelineElementIdentity(element: TimelineElement): string {
+  return element.key ?? element.id;
+}
+
+function getTimelineDomNodes(doc: Document): Element[] {
+  const rootComp = doc.querySelector("[data-composition-id]");
+  return Array.from(doc.querySelectorAll("[data-start]")).filter((node) => node !== rootComp);
+}
+
+function numbersNearlyEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) < 0.001;
+}
+
+function nodeMatchesManifestClip(node: Element, clip: ClipManifestClip): boolean {
+  const tagName = clip.tagName?.toLowerCase();
+  if (tagName && node.tagName.toLowerCase() !== tagName) return false;
+
+  const start = Number.parseFloat(node.getAttribute("data-start") ?? "");
+  if (Number.isFinite(start) && !numbersNearlyEqual(start, clip.start)) return false;
+
+  const duration = Number.parseFloat(node.getAttribute("data-duration") ?? "");
+  if (Number.isFinite(duration) && !numbersNearlyEqual(duration, clip.duration)) return false;
+
+  const track = Number.parseInt(node.getAttribute("data-track-index") ?? "", 10);
+  if (Number.isFinite(track) && track !== clip.track) return false;
+
+  return true;
+}
+
+export function findTimelineDomNodeForClip(
+  doc: Document,
+  clip: ClipManifestClip,
+  fallbackIndex: number,
+  usedNodes = new Set<Element>(),
+): Element | null {
+  const byIdentity = clip.id ? findTimelineDomNode(doc, clip.id) : null;
+  if (byIdentity && !usedNodes.has(byIdentity)) return byIdentity;
+
+  const candidates = getTimelineDomNodes(doc).filter((node) => !usedNodes.has(node));
+  const exact = candidates.find((node) => nodeMatchesManifestClip(node, clip));
+  if (exact) return exact;
+
+  return candidates[fallbackIndex] ?? null;
+}
+
+export function createTimelineElementFromManifestClip(params: {
+  clip: ClipManifestClip;
+  fallbackIndex: number;
+  doc?: Document | null;
+  hostEl?: Element | null;
+}): TimelineElement {
+  const { clip, fallbackIndex, doc } = params;
+  let hostEl = params.hostEl ?? null;
+  const label = getTimelineElementDisplayLabel({
+    id: clip.id,
+    label: clip.label,
+    tag: clip.tagName || clip.kind,
+  });
+
+  let domId: string | undefined;
+  let selector: string | undefined;
+  let selectorIndex: number | undefined;
+  let sourceFile: string | undefined;
+
+  if (hostEl) {
+    domId = hostEl.id || undefined;
+    selector = getTimelineElementSelector(hostEl);
+    selectorIndex =
+      doc && selector ? getTimelineElementSelectorIndex(doc, hostEl, selector) : undefined;
+    sourceFile = getTimelineElementSourceFile(hostEl);
+  }
+
+  const identity = buildTimelineElementIdentity({
+    preferredId: clip.id,
+    label,
+    fallbackIndex,
+    domId,
+    selector,
+    selectorIndex,
+    sourceFile,
+  });
+  const entry: TimelineElement = {
+    id: identity.id,
+    label,
+    key: identity.key,
+    tag: clip.tagName || clip.kind,
+    start: clip.start,
+    duration: clip.duration,
+    track: clip.track,
+    domId,
+    selector,
+    selectorIndex,
+    sourceFile,
+  };
+
+  if (hostEl) {
+    applyMediaMetadataFromElement(entry, hostEl);
+  }
+  if (clip.assetUrl) entry.src = clip.assetUrl;
+  if (clip.kind === "composition" && clip.compositionId) {
+    let resolvedSrc = clip.compositionSrc;
+    if (!resolvedSrc) {
+      hostEl = doc?.querySelector(`[data-composition-id="${clip.compositionId}"]`) ?? hostEl;
+      resolvedSrc =
+        hostEl?.getAttribute("data-composition-src") ??
+        hostEl?.getAttribute("data-composition-file") ??
+        null;
+    }
+    if (resolvedSrc) {
+      entry.compositionSrc = resolvedSrc;
+    } else if (hostEl) {
+      const innerVideo = hostEl.querySelector("video[src]");
+      if (innerVideo) {
+        entry.src = innerVideo.getAttribute("src") || undefined;
+        entry.tag = "video";
+      }
+    }
+    if (hostEl) {
+      entry.domId = hostEl.id || undefined;
+      entry.selector = getTimelineElementSelector(hostEl);
+      entry.selectorIndex =
+        doc && entry.selector
+          ? getTimelineElementSelectorIndex(doc, hostEl, entry.selector)
+          : undefined;
+      entry.sourceFile = getTimelineElementSourceFile(hostEl);
+      const nextIdentity = buildTimelineElementIdentity({
+        preferredId: clip.id,
+        label,
+        fallbackIndex,
+        domId: entry.domId,
+        selector: entry.selector,
+        selectorIndex: entry.selectorIndex,
+        sourceFile: entry.sourceFile,
+      });
+      entry.id = nextIdentity.id;
+      entry.key = nextIdentity.key;
+    }
+  }
+
+  return entry;
+}
+
 function findTimelineDomNode(doc: Document, id: string): Element | null {
   return (
     doc.getElementById(id) ??
@@ -274,6 +537,10 @@ export function buildStandaloneRootTimelineElement(params: {
 
   return {
     id: params.compositionId,
+    label: getTimelineElementDisplayLabel({
+      id: params.compositionId,
+      tag: params.tagName,
+    }),
     key: buildTimelineElementKey({
       id: params.compositionId,
       fallbackIndex: 0,
@@ -395,8 +662,10 @@ export function mergeTimelineElementsPreservingDowngrades(
     return nextElements;
   }
 
-  const nextIds = new Set(nextElements.map((element) => element.id));
-  const preserved = currentElements.filter((element) => !nextIds.has(element.id));
+  const nextIdentities = new Set(nextElements.map(getTimelineElementIdentity));
+  const preserved = currentElements.filter(
+    (element) => !nextIdentities.has(getTimelineElementIdentity(element)),
+  );
   if (preserved.length === 0) return nextElements;
   return [...nextElements, ...preserved];
 }
@@ -407,6 +676,13 @@ export function useTimelinePlayer() {
   const probeIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const pendingSeekRef = useRef<number | null>(null);
   const isRefreshingRef = useRef(false);
+  const reverseRafRef = useRef<number>(0);
+  const shuttleDirectionRef = useRef<"forward" | "backward" | null>(null);
+  const shuttleSpeedIndexRef = useRef(0);
+  const pressedCodesRef = useRef(new Set<string>());
+  const iframeShortcutCleanupRef = useRef<(() => void) | null>(null);
+  const playbackKeyDownRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  const playbackKeyUpRef = useRef<(e: KeyboardEvent) => void>(() => {});
 
   // ZERO store subscriptions — this hook never causes re-renders.
   // All reads use getState() (point-in-time), all writes use the stable setters.
@@ -465,6 +741,10 @@ export function useTimelinePlayer() {
     }
   }, []);
 
+  const stopReverseLoop = useCallback(() => {
+    cancelAnimationFrame(reverseRafRef.current);
+  }, []);
+
   const startRAFLoop = useCallback(() => {
     const tick = () => {
       const adapter = getAdapter();
@@ -473,6 +753,14 @@ export function useTimelinePlayer() {
         const dur = adapter.getDuration();
         liveTime.notify(time); // direct DOM updates, no React re-render
         if (time >= dur && !adapter.isPlaying()) {
+          if (usePlayerStore.getState().loopEnabled && dur > 0) {
+            adapter.seek(0);
+            liveTime.notify(0);
+            adapter.play();
+            setIsPlaying(true);
+            rafRef.current = requestAnimationFrame(tick);
+            return;
+          }
           setCurrentTime(time); // sync Zustand once at end
           setIsPlaying(false);
           cancelAnimationFrame(rafRef.current);
@@ -515,6 +803,8 @@ export function useTimelinePlayer() {
   }, []);
 
   const play = useCallback(() => {
+    stopRAFLoop();
+    stopReverseLoop();
     const adapter = getAdapter();
     if (!adapter) return;
     if (adapter.getTime() >= adapter.getDuration()) {
@@ -523,18 +813,68 @@ export function useTimelinePlayer() {
     unmutePreviewMedia(iframeRef.current);
     applyPlaybackRate(usePlayerStore.getState().playbackRate);
     adapter.play();
+    shuttleDirectionRef.current = "forward";
     setIsPlaying(true);
     startRAFLoop();
-  }, [getAdapter, setIsPlaying, startRAFLoop, applyPlaybackRate]);
+  }, [getAdapter, setIsPlaying, startRAFLoop, applyPlaybackRate, stopRAFLoop, stopReverseLoop]);
+
+  const playBackward = useCallback(
+    (rate: number) => {
+      stopRAFLoop();
+      stopReverseLoop();
+      const adapter = getAdapter();
+      if (!adapter) return;
+      const duration = Math.max(0, adapter.getDuration());
+      const initialTime = adapter.getTime() <= 0 && duration > 0 ? duration : adapter.getTime();
+      adapter.pause();
+      if (initialTime !== adapter.getTime()) adapter.seek(initialTime);
+      unmutePreviewMedia(iframeRef.current);
+      const speed = Math.max(0.1, Math.min(4, rate));
+      let startTime = initialTime;
+      let startedAt = performance.now();
+
+      const tick = (now: number) => {
+        const elapsed = ((now - startedAt) / 1000) * speed;
+        let nextTime = startTime - elapsed;
+        if (nextTime <= 0) {
+          if (usePlayerStore.getState().loopEnabled && duration > 0) {
+            startTime = duration;
+            startedAt = now;
+            nextTime = duration;
+          } else {
+            adapter.seek(0);
+            liveTime.notify(0);
+            setCurrentTime(0);
+            setIsPlaying(false);
+            shuttleDirectionRef.current = null;
+            reverseRafRef.current = 0;
+            return;
+          }
+        }
+        adapter.seek(Math.max(0, nextTime));
+        liveTime.notify(Math.max(0, nextTime));
+        setIsPlaying(true);
+        reverseRafRef.current = requestAnimationFrame(tick);
+      };
+
+      setIsPlaying(true);
+      shuttleDirectionRef.current = "backward";
+      reverseRafRef.current = requestAnimationFrame(tick);
+    },
+    [getAdapter, setCurrentTime, setIsPlaying, stopRAFLoop, stopReverseLoop],
+  );
 
   const pause = useCallback(() => {
+    stopReverseLoop();
     const adapter = getAdapter();
     if (!adapter) return;
     adapter.pause();
     setCurrentTime(adapter.getTime()); // sync store so Split/Delete have accurate time
     setIsPlaying(false);
+    shuttleDirectionRef.current = null;
+    shuttleSpeedIndexRef.current = 0;
     stopRAFLoop();
-  }, [getAdapter, setCurrentTime, setIsPlaying, stopRAFLoop]);
+  }, [getAdapter, setCurrentTime, setIsPlaying, stopRAFLoop, stopReverseLoop]);
 
   const togglePlay = useCallback(() => {
     if (usePlayerStore.getState().isPlaying) {
@@ -546,17 +886,135 @@ export function useTimelinePlayer() {
 
   const seek = useCallback(
     (time: number) => {
+      stopReverseLoop();
       const adapter = getAdapter();
       if (!adapter) return;
-      adapter.seek(time);
-      liveTime.notify(time); // Direct DOM updates (playhead, timecode, progress) — no re-render
-      setCurrentTime(time); // sync store so Split/Delete have accurate time
+      const duration = Math.max(0, adapter.getDuration());
+      const nextTime = Math.max(0, duration > 0 ? Math.min(duration, time) : time);
+      adapter.seek(nextTime);
+      liveTime.notify(nextTime); // Direct DOM updates (playhead, timecode, progress) — no re-render
+      setCurrentTime(nextTime); // sync store so Split/Delete have accurate time
       stopRAFLoop();
       // Only update store if state actually changes (avoids unnecessary re-renders)
       if (usePlayerStore.getState().isPlaying) setIsPlaying(false);
+      shuttleDirectionRef.current = null;
+      shuttleSpeedIndexRef.current = 0;
     },
-    [getAdapter, setCurrentTime, setIsPlaying, stopRAFLoop],
+    [getAdapter, setCurrentTime, setIsPlaying, stopRAFLoop, stopReverseLoop],
   );
+
+  const stepFrames = useCallback(
+    (deltaFrames: number) => {
+      const adapter = getAdapter();
+      const currentTime = adapter?.getTime() ?? usePlayerStore.getState().currentTime;
+      seek(stepFrameTime(currentTime, deltaFrames, STUDIO_PREVIEW_FPS));
+    },
+    [getAdapter, seek],
+  );
+
+  const shuttle = useCallback(
+    (direction: "forward" | "backward") => {
+      if (shuttleDirectionRef.current === direction) {
+        shuttleSpeedIndexRef.current = Math.min(
+          shuttleSpeedIndexRef.current + 1,
+          SHUTTLE_SPEEDS.length - 1,
+        );
+      } else {
+        shuttleSpeedIndexRef.current = 0;
+      }
+      const speed = SHUTTLE_SPEEDS[shuttleSpeedIndexRef.current];
+      usePlayerStore.getState().setPlaybackRate(speed);
+      if (direction === "forward") {
+        play();
+      } else {
+        playBackward(speed);
+      }
+    },
+    [play, playBackward],
+  );
+
+  const handlePlaybackKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (e.defaultPrevented) return;
+      const captionState = useCaptionStore.getState();
+      if (
+        shouldIgnorePlaybackShortcutEvent(e, {
+          isCaptionEditMode: captionState.isEditMode,
+          selectedCaptionSegmentCount: captionState.selectedSegmentIds.size,
+        })
+      ) {
+        return;
+      }
+      pressedCodesRef.current.add(e.code);
+      if (e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+        return;
+      }
+      if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        stepFrames(e.shiftKey ? -10 : -1);
+        return;
+      }
+      if (e.code === "ArrowRight") {
+        e.preventDefault();
+        stepFrames(e.shiftKey ? 10 : 1);
+        return;
+      }
+      if (e.repeat) return;
+      if (e.code === "KeyK") {
+        e.preventDefault();
+        pause();
+        return;
+      }
+      if (e.code === "KeyJ") {
+        e.preventDefault();
+        if (pressedCodesRef.current.has("KeyK")) {
+          stepFrames(-1);
+          return;
+        }
+        shuttle("backward");
+        return;
+      }
+      if (e.code === "KeyL") {
+        e.preventDefault();
+        if (pressedCodesRef.current.has("KeyK")) {
+          stepFrames(1);
+          return;
+        }
+        shuttle("forward");
+      }
+    },
+    [pause, shuttle, stepFrames, togglePlay],
+  );
+
+  const handlePlaybackKeyUp = useCallback((e: KeyboardEvent) => {
+    pressedCodesRef.current.delete(e.code);
+  }, []);
+  playbackKeyDownRef.current = handlePlaybackKeyDown;
+  playbackKeyUpRef.current = handlePlaybackKeyUp;
+
+  const attachIframeShortcutListeners = useCallback(() => {
+    iframeShortcutCleanupRef.current?.();
+    iframeShortcutCleanupRef.current = null;
+
+    const iframeWin = iframeRef.current?.contentWindow;
+    const iframeDoc = iframeRef.current?.contentDocument;
+    if (!iframeWin && !iframeDoc) return;
+
+    const handleIframeKeyDown = (e: KeyboardEvent) => playbackKeyDownRef.current(e);
+    const handleIframeKeyUp = (e: KeyboardEvent) => playbackKeyUpRef.current(e);
+    iframeWin?.addEventListener("keydown", handleIframeKeyDown, true);
+    iframeWin?.addEventListener("keyup", handleIframeKeyUp, true);
+    iframeDoc?.addEventListener("keydown", handleIframeKeyDown, true);
+    iframeDoc?.addEventListener("keyup", handleIframeKeyUp, true);
+    iframeShortcutCleanupRef.current = () => {
+      iframeWin?.removeEventListener("keydown", handleIframeKeyDown, true);
+      iframeWin?.removeEventListener("keyup", handleIframeKeyUp, true);
+      iframeDoc?.removeEventListener("keydown", handleIframeKeyDown, true);
+      iframeDoc?.removeEventListener("keyup", handleIframeKeyUp, true);
+    };
+  }, []);
 
   // Convert a runtime timeline message (from iframe postMessage) into TimelineElements
   const processTimelineMessage = useCallback(
@@ -574,96 +1032,29 @@ export function useTimelinePlayer() {
       const filtered = data.clips.filter(
         (clip) => !clip.parentCompositionId || !clipCompositionIds.has(clip.parentCompositionId),
       );
+      let iframeDoc: Document | null = null;
+      try {
+        iframeDoc = iframeRef.current?.contentDocument ?? null;
+      } catch {
+        iframeDoc = null;
+      }
+      const usedHostEls = new Set<Element>();
       const els: TimelineElement[] = filtered.map((clip, index) => {
-        let hostEl: Element | null = null;
-        const id = clip.id || clip.label || clip.tagName || "element";
-        const entry: TimelineElement = {
-          id,
-          tag: clip.tagName || clip.kind,
-          start: clip.start,
-          duration: clip.duration,
-          track: clip.track,
-        };
-        // Surface a human label when the runtime supplied one and it differs
-        // from the auto-derived id/tag fallbacks. This is what makes persistent
-        // lanes (Music, SFX, Voiceover) read as their friendly name on the clip
-        // face rather than as the raw HTML tag (DIV / AUDIO).
-        if (clip.label && clip.label !== id && clip.label !== entry.tag) {
-          entry.label = clip.label;
-        }
+        const hostEl = iframeDoc
+          ? findTimelineDomNodeForClip(iframeDoc, clip, index, usedHostEls)
+          : null;
+        if (hostEl) usedHostEls.add(hostEl);
+        const entry = createTimelineElementFromManifestClip({
+          clip,
+          fallbackIndex: index,
+          doc: iframeDoc,
+          hostEl,
+        });
         // Pass through the data-timeline-group so the timeline can derive a
         // per-lane label (Voiceover / Music / SFX / Video) in the left gutter.
         if (clip.timelineGroup) {
           entry.timelineGroup = clip.timelineGroup;
         }
-        try {
-          const iframeDoc = iframeRef.current?.contentDocument;
-          if (iframeDoc && entry.id) {
-            hostEl = findTimelineDomNode(iframeDoc, entry.id);
-          }
-        } catch {
-          /* cross-origin */
-        }
-        if (hostEl) {
-          const iframeDoc = iframeRef.current?.contentDocument;
-          entry.domId = hostEl.id || undefined;
-          entry.selector = getTimelineElementSelector(hostEl);
-          entry.selectorIndex =
-            iframeDoc && entry.selector
-              ? getTimelineElementSelectorIndex(iframeDoc, hostEl, entry.selector)
-              : undefined;
-          entry.sourceFile = getTimelineElementSourceFile(hostEl);
-          applyMediaMetadataFromElement(entry, hostEl);
-        }
-        if (clip.assetUrl) entry.src = clip.assetUrl;
-        if (clip.kind === "composition" && clip.compositionId) {
-          // The bundler renames data-composition-src to data-composition-file
-          // after inlining, so the clip manifest may not have compositionSrc.
-          // Fall back to reading data-composition-file from the DOM.
-          let resolvedSrc = clip.compositionSrc;
-          let hostEl: Element | null = null;
-          if (!resolvedSrc) {
-            try {
-              const iframeDoc = iframeRef.current?.contentDocument;
-              hostEl =
-                iframeDoc?.querySelector(`[data-composition-id="${clip.compositionId}"]`) ?? hostEl;
-              resolvedSrc =
-                hostEl?.getAttribute("data-composition-src") ??
-                hostEl?.getAttribute("data-composition-file") ??
-                null;
-            } catch {
-              /* cross-origin */
-            }
-          }
-          if (resolvedSrc) {
-            entry.compositionSrc = resolvedSrc;
-          } else if (hostEl) {
-            // Inline composition (no external file) — expose inner video for thumbnails
-            const innerVideo = hostEl.querySelector("video[src]");
-            if (innerVideo) {
-              entry.src = innerVideo.getAttribute("src") || undefined;
-              entry.tag = "video";
-            }
-          }
-          if (hostEl) {
-            const iframeDoc = iframeRef.current?.contentDocument;
-            entry.domId = hostEl.id || undefined;
-            entry.selector = getTimelineElementSelector(hostEl);
-            entry.selectorIndex =
-              iframeDoc && entry.selector
-                ? getTimelineElementSelectorIndex(iframeDoc, hostEl, entry.selector)
-                : undefined;
-            entry.sourceFile = getTimelineElementSourceFile(hostEl);
-          }
-        }
-        entry.key = buildTimelineElementKey({
-          id,
-          fallbackIndex: index,
-          domId: entry.domId,
-          selector: entry.selector,
-          selectorIndex: entry.selectorIndex,
-          sourceFile: entry.sourceFile,
-        });
         return entry;
       });
       const rawDuration = data.durationInFrames / 30;
@@ -778,17 +1169,24 @@ export function useTimelinePlayer() {
         const selector = getTimelineElementSelector(el);
         const sourceFile = getTimelineElementSourceFile(el);
         const selectorIndex = getTimelineElementSelectorIndex(doc, el, selector);
-        const id = el.id || compId;
+        const label = getTimelineElementDisplayLabel({
+          id: el.id || compId || null,
+          label: el.getAttribute("data-timeline-label") ?? el.getAttribute("data-label"),
+          tag: el.tagName,
+        });
+        const identity = buildTimelineElementIdentity({
+          preferredId: el.id || compId || null,
+          label,
+          fallbackIndex: missing.length,
+          domId: el.id || undefined,
+          selector,
+          selectorIndex,
+          sourceFile,
+        });
         const entry: TimelineElement = {
-          id,
-          key: buildTimelineElementKey({
-            id,
-            fallbackIndex: missing.length,
-            domId: el.id || undefined,
-            selector,
-            selectorIndex,
-            sourceFile,
-          }),
+          id: identity.id,
+          label,
+          key: identity.key,
           tag: el.tagName.toLowerCase(),
           start,
           duration: dur,
@@ -878,6 +1276,7 @@ export function useTimelinePlayer() {
           if (doc && iframeWin) {
             normalizePreviewViewport(doc, iframeWin);
             autoHealMissingCompositionIds(doc);
+            attachIframeShortcutListeners();
           }
 
           // Try reading __clipManifest if already available (fast path)
@@ -944,6 +1343,7 @@ export function useTimelinePlayer() {
     processTimelineMessage,
     enrichMissingCompositions,
     syncTimelineElements,
+    attachIframeShortcutListeners,
   ]);
 
   /** Save the current playback time so the next onIframeLoad restores it. */
@@ -954,8 +1354,9 @@ export function useTimelinePlayer() {
       : (usePlayerStore.getState().currentTime ?? 0);
     isRefreshingRef.current = true;
     stopRAFLoop();
+    stopReverseLoop();
     setIsPlaying(false);
-  }, [getAdapter, stopRAFLoop, setIsPlaying]);
+  }, [getAdapter, stopRAFLoop, setIsPlaying, stopReverseLoop]);
 
   const refreshPlayer = useCallback(() => {
     const iframe = iframeRef.current;
@@ -969,8 +1370,6 @@ export function useTimelinePlayer() {
     iframe.src = url.toString();
   }, [saveSeekPosition]);
 
-  const togglePlayRef = useRef(togglePlay);
-  togglePlayRef.current = togglePlay;
   const getAdapterRef = useRef(getAdapter);
   getAdapterRef.current = getAdapter;
   const processTimelineMessageRef = useRef(processTimelineMessage);
@@ -979,12 +1378,8 @@ export function useTimelinePlayer() {
   enrichMissingCompositionsRef.current = enrichMissingCompositions;
 
   useMountEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === "Space" && e.target === document.body) {
-        e.preventDefault();
-        togglePlayRef.current();
-      }
-    };
+    const handleWindowKeyDown = (e: KeyboardEvent) => playbackKeyDownRef.current(e);
+    const handleWindowKeyUp = (e: KeyboardEvent) => playbackKeyUpRef.current(e);
 
     // Listen for timeline messages from the iframe runtime.
     // The runtime sends this AFTER all external compositions load,
@@ -1057,14 +1452,19 @@ export function useTimelinePlayer() {
       }
     };
 
-    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    window.addEventListener("keyup", handleWindowKeyUp, true);
     window.addEventListener("message", handleMessage);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+      window.removeEventListener("keyup", handleWindowKeyUp, true);
+      iframeShortcutCleanupRef.current?.();
+      iframeShortcutCleanupRef.current = null;
       window.removeEventListener("message", handleMessage);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       stopRAFLoop();
+      stopReverseLoop();
       if (probeIntervalRef.current) clearInterval(probeIntervalRef.current);
       // Don't reset() on cleanup — preserve timeline elements across iframe refreshes
       // to prevent blink. New data will replace old when the iframe reloads.
@@ -1074,9 +1474,10 @@ export function useTimelinePlayer() {
   /** Reset the player store (elements, duration, etc.) — call when switching sessions. */
   const resetPlayer = useCallback(() => {
     stopRAFLoop();
+    stopReverseLoop();
     if (probeIntervalRef.current) clearInterval(probeIntervalRef.current);
     usePlayerStore.getState().reset();
-  }, [stopRAFLoop]);
+  }, [stopRAFLoop, stopReverseLoop]);
 
   return {
     iframeRef,

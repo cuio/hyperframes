@@ -523,6 +523,66 @@ const GLITCH_DECAY: AtmospherePreset = {
   },
 };
 
+/*
+ * Vision-Pro / Apple-keynote spotlight glow. A single intense color halo at
+ * the focal point with a soft chromatic-aberration ring. Pure ambient
+ * lighting — designed to sit BEHIND a card / headline so the foreground feels
+ * lifted. Uses the active theme's accent color so each design.md gets its
+ * own ambient hue; intensity scales gently for hooks. Foundation for the
+ * cinematic-card upgrade — opt-in for now (not wired into
+ * defaultAtmosphereForTemplate yet) so existing renders are unchanged.
+ */
+const CHROMATIC_GLOW: AtmospherePreset = {
+  id: "chromatic-glow",
+  description:
+    "Single Vision-Pro / Apple-keynote spotlight halo at the focal point, with a soft chromatic-aberration ring around it. Designed to sit BEHIND cards or headlines as ambient lighting — minimal motion, maximum negative space. Uses the active theme's accent color, so each design.md gets its own ambient hue.",
+  render(ctx) {
+    const id = ctx.sceneId;
+    const t = ctx.tokens;
+    const isDark = isDarkColor(t.colors.bg);
+    const blend = isDark ? "screen" : "multiply";
+    // Hooks get a 20% denser halo so the opener carries more visual weight
+    // without requiring the template to know about atmosphere intensity.
+    const coreOpacity = ctx.isHook ? "cc" : "a6";
+    const ringOpacity = ctx.isHook ? "66" : "40";
+    return `
+<style>
+  #${id} .hf-atmo-chromatic-glow {
+    position: absolute; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
+  }
+  /* Core halo — single intense radial gradient at the focal point. */
+  #${id} .hf-atmo-chromatic-glow::before {
+    content: ""; position: absolute; inset: -10%;
+    background: radial-gradient(circle at 50% 55%, ${t.colors.accent}${coreOpacity} 0%, ${t.colors.accent}66 22%, transparent 55%);
+    filter: blur(60px);
+    mix-blend-mode: ${blend};
+    will-change: transform, opacity;
+    animation: hf-chromatic-glow-breathe-${id} 9s ease-in-out infinite;
+  }
+  /* Chromatic-aberration ring — subtle accent2 offset that gives the halo */
+  /* its lens-like fringe. Anchored slightly off-center to avoid a perfectly */
+  /* concentric (and visually flat) double-glow read. */
+  #${id} .hf-atmo-chromatic-glow::after {
+    content: ""; position: absolute; inset: -10%;
+    background: radial-gradient(circle at 52% 53%, ${t.colors.accent2}${ringOpacity} 0%, transparent 38%);
+    filter: blur(80px);
+    mix-blend-mode: ${blend};
+    will-change: opacity;
+    animation: hf-chromatic-glow-shimmer-${id} 13s ease-in-out infinite;
+  }
+  @keyframes hf-chromatic-glow-breathe-${id} {
+    0%, 100% { transform: scale(1); opacity: 0.92; }
+    50%      { transform: scale(1.04); opacity: 1; }
+  }
+  @keyframes hf-chromatic-glow-shimmer-${id} {
+    0%, 100% { opacity: 0.7; }
+    50%      { opacity: 1; }
+  }
+</style>
+<div class="hf-atmo hf-atmo-chromatic-glow"></div>`.trim();
+  },
+};
+
 export const BUILTIN_ATMOSPHERES: readonly AtmospherePreset[] = [
   STUDIO_FLAT,
   AURORA,
@@ -534,6 +594,7 @@ export const BUILTIN_ATMOSPHERES: readonly AtmospherePreset[] = [
   GEOMETRIC_GRID,
   FLOW_LINES,
   GLITCH_DECAY,
+  CHROMATIC_GLOW,
 ];
 
 export const ATMOSPHERE_IDS = BUILTIN_ATMOSPHERES.map((a) => a.id);

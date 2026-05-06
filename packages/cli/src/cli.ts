@@ -38,6 +38,7 @@ const subCommands = {
   compositions: () => import("./commands/compositions.js").then((m) => m.default),
   benchmark: () => import("./commands/benchmark.js").then((m) => m.default),
   browser: () => import("./commands/browser.js").then((m) => m.default),
+  "remove-background": () => import("./commands/remove-background.js").then((m) => m.default),
   transcribe: () => import("./commands/transcribe.js").then((m) => m.default),
   tts: () => import("./commands/tts.js").then((m) => m.default),
   "el-tts": () => import("./commands/el-tts.js").then((m) => m.default),

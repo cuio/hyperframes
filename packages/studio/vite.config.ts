@@ -8,14 +8,16 @@ import {
   lstatSync,
   realpathSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
   StudioApiAdapter,
   ResolvedProject,
   RenderJobState,
 } from "@hyperframes/core/studio-api";
+import { createProjectSignature } from "../core/src/studio-api/helpers/projectSignature";
 import { createRetryingModuleLoader, ensureProducerDist } from "./vite.producer";
 import { readNodeRequestBody } from "./vite.request-body.js";
+import { seekThumbnailPreview } from "./vite.thumbnail";
 
 // ── Shared Puppeteer browser ─────────────────────────────────────────────────
 
@@ -46,13 +48,30 @@ async function getSharedBrowser(): Promise<import("puppeteer-core").Browser | nu
 
 // In-flight thumbnail dedup
 const _thumbnailInflight = new Map<string, Promise<Buffer>>();
-const THUMBNAIL_CACHE_VERSION = "v2";
+const THUMBNAIL_CACHE_VERSION = "v3";
+
+interface ScreenshotClip {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+function isPathWithin(parentDir: string, childPath: string): boolean {
+  const childRelativePath = relative(resolve(parentDir), resolve(childPath));
+  return (
+    childRelativePath === "" ||
+    (!childRelativePath.startsWith("..") && !isAbsolute(childRelativePath))
+  );
+}
 
 // ── Vite adapter for the shared studio API ───────────────────────────────────
 
 function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAdapter {
   // Lazy-load the bundler via Vite's SSR module loader
-  let _bundler: ((dir: string) => Promise<string>) | null = null;
+  let _bundler:
+    | ((dir: string, options?: { runtime?: "inline" | "placeholder" }) => Promise<string>)
+    | null = null;
   let _producerModulePromise: Promise<{
     createRenderJob: (config: {
       fps: 24 | 30 | 60;
@@ -66,11 +85,17 @@ function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAda
       onProgress?: (job: { progress: number; currentStage?: string }) => void,
     ) => Promise<void>;
   }> | null = null;
+  const projectSignatureCache = new Map<string, string>();
+  server.watcher.on("all", (_event, file) => {
+    for (const projectDir of projectSignatureCache.keys()) {
+      if (isPathWithin(projectDir, file)) projectSignatureCache.delete(projectDir);
+    }
+  });
   const getBundler = async () => {
     if (!_bundler) {
       try {
         const mod = await server.ssrLoadModule("@hyperframes/core/compiler");
-        _bundler = (dir: string) => mod.bundleToSingleHtml(dir);
+        _bundler = (dir, options) => mod.bundleToSingleHtml(dir, options);
       } catch (err) {
         console.warn("[Studio] Failed to load compiler, previews will use raw HTML:", err);
         _bundler = null as never;
@@ -163,13 +188,25 @@ function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAda
     async bundle(dir: string) {
       const bundler = await getBundler();
       if (!bundler) return null;
-      let html = await bundler(dir);
-      // Fix empty runtime src from bundler — point to the CDN runtime
+      // Studio vite preview: bundler emits an empty `src=""` placeholder so we
+      // can point it at the local /api/runtime.js endpoint. Cached by the browser
+      // across composition hot-reloads instead of being inlined fresh each time.
+      let html = await bundler(dir, { runtime: "placeholder" });
       html = html.replace(
         'data-hyperframes-preview-runtime="1" src=""',
         `data-hyperframes-preview-runtime="1" src="${this.runtimeUrl}"`,
       );
       return html;
+    },
+
+    getProjectSignature(projectDir: string): string {
+      const cacheKey = resolve(projectDir);
+      const cached = projectSignatureCache.get(cacheKey);
+      if (cached) return cached;
+
+      const signature = createProjectSignature(cacheKey);
+      projectSignatureCache.set(cacheKey, signature);
+      return signature;
     },
 
     async lint(html: string, opts?: { filePath?: string }) {
@@ -250,7 +287,7 @@ function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAda
           await page.setViewport({
             width: opts.width,
             height: opts.height,
-            deviceScaleFactor: 0.5,
+            deviceScaleFactor: opts.format === "png" ? 1 : 0.5,
           });
           await page.goto(opts.previewUrl, { waitUntil: "domcontentloaded", timeout: 10000 });
           await page.evaluate(() => {
@@ -265,29 +302,10 @@ function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAda
               { timeout: 5000 },
             )
             .catch(() => {});
-          await page.evaluate((t: number) => {
-            const w = window as Window & {
-              __timelines?: Record<
-                string,
-                { seek: (t: number) => void; pause: (t?: number) => void }
-              >;
-              gsap?: { ticker: { tick: () => void } };
-            };
-            if (w.__timelines) {
-              // Seek ALL timelines (compositions may register multiple)
-              for (const tl of Object.values(w.__timelines)) {
-                if (tl) {
-                  // pause(t) both seeks AND forces GSAP to render the frame
-                  tl.pause(t);
-                }
-              }
-              // Force GSAP to flush any pending renders
-              if (w.gsap?.ticker) w.gsap.ticker.tick();
-            }
-          }, opts.seekTime);
+          await seekThumbnailPreview(page, opts.seekTime);
           await page.evaluate("document.fonts?.ready");
           await new Promise((r) => setTimeout(r, 200));
-          let clip: { x: number; y: number; width: number; height: number } | undefined;
+          let clip: ScreenshotClip | undefined;
           if (opts.selector) {
             clip = await page.evaluate((selector: string) => {
               const el = document.querySelector(selector);
@@ -307,11 +325,18 @@ function createViteAdapter(dataDir: string, server: ViteDevServer): StudioApiAda
               };
             }, opts.selector);
           }
-          const buf = await page.screenshot({
-            type: "jpeg",
-            quality: 75,
-            ...(clip ? { clip } : {}),
-          });
+          const buf = await page.screenshot(
+            opts.format === "png"
+              ? {
+                  type: "png",
+                  ...(clip ? { clip } : {}),
+                }
+              : {
+                  type: "jpeg",
+                  quality: 75,
+                  ...(clip ? { clip } : {}),
+                },
+          );
           await page.close();
           return buf as Buffer;
         })();

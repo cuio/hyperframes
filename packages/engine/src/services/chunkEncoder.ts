@@ -139,11 +139,42 @@ export function buildEncoderArgs(
           else args.push("-global_quality", String(quality));
           break;
       }
+
+      // Same B-frame story as the SW branch below — nvenc emits B-frames
+      // by default (qsv via b_strategy, vaapi too), and the negative-DTS
+      // freeze hits the same downstream players. The unconditional
+      // `-avoid_negative_ts make_zero` near the bottom of this function
+      // covers the mux level, but we belt-and-suspenders the encoder too
+      // so even tools that consume the chunk file directly (without going
+      // through our mux step) play correctly. videotoolbox doesn't accept
+      // `-bf` so it's skipped — videotoolbox h264 also doesn't emit
+      // negative DTS in practice on macOS Sonoma+.
+      if (
+        codec === "h264" &&
+        (gpuEncoder === "nvenc" || gpuEncoder === "qsv" || gpuEncoder === "vaapi")
+      ) {
+        args.push("-bf", "0");
+        if (gpuEncoder === "qsv") {
+          args.push("-b_strategy", "0");
+        }
+      }
     } else {
       const encoderName = codec === "h264" ? "libx264" : "libx265";
       args.push("-c:v", encoderName, "-preset", preset);
       if (bitrate) args.push("-b:v", bitrate);
       else args.push("-crf", String(quality));
+
+      // Disable B-frames. Standard h264 with B-frames produces negative DTS
+      // at the start of the stream (the first B-frame's decode order is
+      // "before" the first I-frame's presentation time). VS Code's video
+      // preview, several browser <video> pipelines, and some HW decoders
+      // freeze on the first frame when DTS is negative, so audio plays alone.
+      // -bf 0 makes PTS == DTS at every frame, eliminating the issue at the
+      // source. Quality cost is ~5–10% larger files at the same CRF — a
+      // worthwhile trade for "the file plays everywhere".
+      if (codec === "h264") {
+        args.push("-bf", "0");
+      }
 
       // Encoder-specific params: anti-banding + color space tagging.
       // aq-mode=3 redistributes bits to dark flat areas (gradients).
@@ -238,6 +269,8 @@ export function buildEncoderArgs(
   if (gpuEncoder !== "vaapi") {
     args.push("-pix_fmt", pixelFormat);
   }
+
+  args.push("-avoid_negative_ts", "make_zero");
 
   args.push("-y", outputPath);
   return args;
@@ -510,6 +543,9 @@ export async function muxVideoWithAudio(
   } else {
     args.push("-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart");
   }
+  // PTS bases can diverge during mux and reintroduce negative DTS. See
+  // buildEncoderArgs for the full reasoning on why that breaks playback.
+  args.push("-avoid_negative_ts", "make_zero");
   args.push("-shortest", "-y", outputPath);
 
   const processTimeout = config?.ffmpegProcessTimeout ?? DEFAULT_CONFIG.ffmpegProcessTimeout;

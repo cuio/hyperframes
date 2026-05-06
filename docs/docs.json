@@ -71,13 +71,16 @@
             "pages": [
               "guides/website-to-video",
               "guides/claude-design",
+              "guides/open-design",
               "guides/prompting",
               "guides/hyperframes-vs-remotion",
               "guides/gsap-animation",
               "guides/rendering",
+              "guides/remove-background",
               "guides/hdr",
               "guides/performance",
               "guides/timeline-editing",
+              "guides/video-editor-cheatsheet",
               "guides/common-mistakes",
               "guides/troubleshooting"
             ]
@@ -140,7 +143,12 @@
             "group": "Showcases",
             "pages": [
               "catalog/blocks/app-showcase",
-              "catalog/blocks/ui-3d-reveal"
+              "catalog/blocks/apple-money-count",
+              "catalog/blocks/blue-sweater-intro-video",
+              "catalog/blocks/north-korea-locked-down",
+              "catalog/blocks/nyc-paris-flight",
+              "catalog/blocks/ui-3d-reveal",
+              "catalog/blocks/vpn-youtube-spot"
             ]
           },
           {
@@ -197,6 +205,12 @@
               "contributing",
               "contributing/release-channels",
               "contributing/testing-local-changes"
+            ]
+          },
+          {
+            "group": "Community",
+            "pages": [
+              "community/adopters"
             ]
           }
         ]

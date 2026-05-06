@@ -27,10 +27,10 @@ jobs:
       # Force git-based change detection instead of the pull_request REST API.
       # The API path can fail the whole workflow on transient listFiles
       # timeouts before any real CI work starts.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
         id: filter
         with:
           token: ""
@@ -51,11 +51,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -68,11 +68,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -83,11 +83,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -100,11 +100,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -118,11 +118,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -136,11 +136,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -153,11 +153,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           lfs: true
-      - uses: oven-sh/setup-bun@v2
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - run: bun install --frozen-lockfile
@@ -217,13 +217,110 @@ jobs:
 
           echo "PASS: global install smoke test succeeded"
 
+  cli-smoke-required:
+    name: "CLI smoke (required)"
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build monorepo
+        run: bun run build
+
+      - name: Create smoke input video
+        run: |
+          set -euo pipefail
+          ffmpeg -hide_banner -loglevel error \
+            -f lavfi -i testsrc2=size=640x360:rate=30 \
+            -f lavfi -i sine=frequency=880:sample_rate=48000 \
+            -t 3 \
+            -c:v libx264 \
+            -pix_fmt yuv420p \
+            -c:a aac \
+            -shortest \
+            -y /tmp/hf-cli-input.mp4
+          test -s /tmp/hf-cli-input.mp4
+
+      - name: Smoke-test CLI from monorepo source
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/hf-cli-inside
+
+          bun run --filter @hyperframes/cli dev -- init /tmp/hf-cli-inside \
+            --example warm-grain \
+            --video /tmp/hf-cli-input.mp4 \
+            --skip-transcribe \
+            --non-interactive \
+            --skip-skills
+
+          bun run --filter @hyperframes/cli dev -- lint /tmp/hf-cli-inside
+          bun run --filter @hyperframes/cli dev -- validate /tmp/hf-cli-inside --timeout 3000
+          bun run --filter @hyperframes/cli dev -- render /tmp/hf-cli-inside \
+            --quality standard \
+            --workers auto \
+            --strict \
+            --output /tmp/hf-cli-inside/renders/inside.mp4
+
+          test -s /tmp/hf-cli-inside/renders/inside.mp4
+
+      - name: Pack CLI tarball
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/hf-cli-pack
+          cd packages/cli
+          PACKED_TARBALL="$(npm pack --pack-destination /tmp/hf-cli-pack | tail -n 1)"
+          test -n "$PACKED_TARBALL"
+          test -f "/tmp/hf-cli-pack/$PACKED_TARBALL"
+          echo "HF_CLI_TARBALL=/tmp/hf-cli-pack/$PACKED_TARBALL" >> "$GITHUB_ENV"
+
+      - name: Install packed CLI outside monorepo
+        run: |
+          set -euo pipefail
+          npm install -g --prefix /tmp/hf-cli-global "$HF_CLI_TARBALL"
+
+      - name: Smoke-test packed CLI outside monorepo
+        run: |
+          set -euo pipefail
+          export PATH="/tmp/hf-cli-global/bin:$PATH"
+          rm -rf /tmp/hf-cli-outside
+
+          hyperframes init /tmp/hf-cli-outside \
+            --example warm-grain \
+            --video /tmp/hf-cli-input.mp4 \
+            --skip-transcribe \
+            --non-interactive \
+            --skip-skills
+
+          hyperframes lint /tmp/hf-cli-outside
+          hyperframes validate /tmp/hf-cli-outside --timeout 3000
+          hyperframes render /tmp/hf-cli-outside \
+            --quality standard \
+            --workers auto \
+            --strict \
+            --output /tmp/hf-cli-outside/renders/outside.mp4
+
+          test -s /tmp/hf-cli-outside/renders/outside.mp4
+
   semantic-pr-title:
     name: Semantic PR title
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: amannn/action-semantic-pull-request@v5
+      - uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

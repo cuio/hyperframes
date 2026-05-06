@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { StudioApiAdapter } from "../types.js";
 
-const THUMBNAIL_CACHE_VERSION = "v2";
+const THUMBNAIL_CACHE_VERSION = "v3";
 
 export function registerThumbnailRoutes(api: Hono, adapter: StudioApiAdapter): void {
   api.get("/projects/:id/thumbnail/*", async (c) => {
@@ -19,10 +19,14 @@ export function registerThumbnailRoutes(api: Hono, adapter: StudioApiAdapter): v
     if (compPath && !compPath.includes(".")) compPath += ".html";
 
     const url = new URL(c.req.url, `http://${c.req.header("host") || "localhost"}`);
-    const seekTime = parseFloat(url.searchParams.get("t") || "0.5") || 0.5;
+    const rawSeekTime = url.searchParams.get("t");
+    const parsedSeekTime = rawSeekTime == null ? Number.NaN : parseFloat(rawSeekTime);
+    const seekTime = Number.isFinite(parsedSeekTime) ? parsedSeekTime : 0.5;
     const vpWidth = parseInt(url.searchParams.get("w") || "0") || 0;
     const vpHeight = parseInt(url.searchParams.get("h") || "0") || 0;
     const selector = url.searchParams.get("selector") || undefined;
+    const format = url.searchParams.get("format") === "png" ? "png" : "jpeg";
+    const contentType = format === "png" ? "image/png" : "image/jpeg";
 
     // Determine composition dimensions from HTML
     let compW = vpWidth || 1920;
@@ -48,11 +52,11 @@ export function registerThumbnailRoutes(api: Hono, adapter: StudioApiAdapter): v
     const selectorKey = selector
       ? `_${selector.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80)}`
       : "";
-    const cacheKey = `${THUMBNAIL_CACHE_VERSION}_${compPath.replace(/\//g, "_")}_${seekTime.toFixed(2)}${selectorKey}.jpg`;
+    const cacheKey = `${THUMBNAIL_CACHE_VERSION}_${format}_${compPath.replace(/\//g, "_")}_${seekTime.toFixed(2)}${selectorKey}.${format === "png" ? "png" : "jpg"}`;
     const cachePath = join(cacheDir, cacheKey);
     if (existsSync(cachePath)) {
       return new Response(new Uint8Array(readFileSync(cachePath)), {
-        headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=60" },
+        headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=60" },
       });
     }
 
@@ -65,6 +69,7 @@ export function registerThumbnailRoutes(api: Hono, adapter: StudioApiAdapter): v
         height: compH,
         previewUrl,
         selector,
+        format,
       });
       if (!buffer) {
         return c.json({ error: "Thumbnail generation returned null" }, 500);
@@ -72,7 +77,7 @@ export function registerThumbnailRoutes(api: Hono, adapter: StudioApiAdapter): v
       if (!existsSync(cacheDir)) mkdirSync(cacheDir, { recursive: true });
       writeFileSync(cachePath, buffer);
       return new Response(new Uint8Array(buffer), {
-        headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=60" },
+        headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=60" },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

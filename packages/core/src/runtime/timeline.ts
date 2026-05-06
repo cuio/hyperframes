@@ -110,6 +110,69 @@ function resolveNodeAssetUrl(node: Element): string | null {
   return toAbsoluteAssetUrl(mediaDescendant.getAttribute("src"));
 }
 
+function getFirstClassToken(node: Element): string | null {
+  const className = (node as HTMLElement).className;
+  if (typeof className !== "string") return null;
+  return (
+    className
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .find((value) => value && value !== "clip" && !value.startsWith("__hf-")) ?? null
+  );
+}
+
+function filenameFromAssetUrl(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url, document.baseURI);
+    return parsed.pathname.split("/").filter(Boolean).at(-1) ?? null;
+  } catch {
+    return url.split(/[\\/]/).filter(Boolean).at(-1) ?? null;
+  }
+}
+
+function textPreview(node: Element): string | null {
+  const text = node.textContent?.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  return text.length > 32 ? `${text.slice(0, 31)}...` : text;
+}
+
+function humanizeTimelineToken(value: string): string {
+  const normalized = value
+    .replace(/\.[^.]+$/i, "")
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return value;
+  return normalized.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function buildTimelineClipLabel(node: Element, kind: RuntimeTimelineClip["kind"], ordinal: number) {
+  const explicit =
+    node.getAttribute("data-timeline-label") ??
+    node.getAttribute("data-label") ??
+    node.getAttribute("aria-label") ??
+    null;
+  if (explicit?.trim()) return explicit.trim();
+
+  const compositionId = node.getAttribute("data-composition-id");
+  if (compositionId) return humanizeTimelineToken(compositionId);
+
+  const id = (node as HTMLElement).id;
+  if (id) return humanizeTimelineToken(id);
+
+  const classToken = getFirstClassToken(node);
+  if (classToken) return humanizeTimelineToken(classToken);
+
+  const assetName = filenameFromAssetUrl(resolveNodeAssetUrl(node));
+  if (assetName) return humanizeTimelineToken(assetName);
+
+  const text = textPreview(node);
+  if (text) return text;
+
+  return `${humanizeTimelineToken(kind)} ${ordinal + 1}`;
+}
+
 export function collectRuntimeTimelinePayload(params: {
   canonicalFps: number;
   maxTimelineDurationSeconds: number;
@@ -367,15 +430,8 @@ export function collectRuntimeTimelinePayload(params: {
               ? "image"
               : "element";
     clips.push({
-      id: (node as HTMLElement).id || nodeCompositionId || `__node__index_${i}`,
-      label:
-        node.getAttribute("data-timeline-label") ??
-        node.getAttribute("data-label") ??
-        node.getAttribute("aria-label") ??
-        nodeCompositionId ??
-        (node as HTMLElement).id ??
-        (node as HTMLElement).className?.split(" ")[0] ??
-        kind,
+      id: (node as HTMLElement).id || nodeCompositionId || null,
+      label: buildTimelineClipLabel(node, kind, clips.length),
       start,
       duration,
       // Default to track 0 when no explicit track is set. Without this, every
@@ -422,7 +478,7 @@ export function collectRuntimeTimelinePayload(params: {
       targets?: () => Element[];
       startTime?: () => number;
       duration?: () => number;
-      parent?: { startTime?: () => number };
+      parent?: GsapTween;
     };
     const tlWithChildren = masterTimeline as typeof masterTimeline & {
       getChildren?: (nested: boolean, tweens: boolean, timelines: boolean) => GsapTween[];
@@ -458,9 +514,9 @@ export function collectRuntimeTimelinePayload(params: {
             continue;
           let tweenStart = tween.startTime();
           let parent = tween.parent;
-          while (parent && typeof parent.startTime === "function") {
+          while (parent && parent !== masterTimeline && typeof parent.startTime === "function") {
             tweenStart += parent.startTime();
-            parent = (parent as GsapTween).parent;
+            parent = parent.parent;
           }
           const tweenEnd = tweenStart + tween.duration();
           if (!Number.isFinite(tweenStart) || !Number.isFinite(tweenEnd)) continue;

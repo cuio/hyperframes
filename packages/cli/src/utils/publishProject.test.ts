@@ -7,6 +7,7 @@ import {
   createPublishArchive,
   getPublishApiBaseUrl,
   publishProjectArchive,
+  uploadTimeoutMs,
 } from "./publishProject.js";
 
 function makeProjectDir(): string {
@@ -32,6 +33,22 @@ describe("createPublishArchive", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("uploadTimeoutMs", () => {
+  it("returns the minimum timeout for small files", () => {
+    expect(uploadTimeoutMs(0)).toBe(120_000);
+    expect(uploadTimeoutMs(50 * 1024 * 1024)).toBe(120_000);
+  });
+
+  it("scales above the floor for large files", () => {
+    expect(uploadTimeoutMs(64 * 1024 * 1024)).toBeGreaterThan(120_000);
+    expect(uploadTimeoutMs(500 * 1024 * 1024)).toBeGreaterThan(900_000);
+  });
+
+  it("returns an integer", () => {
+    expect(Number.isInteger(uploadTimeoutMs(123_456))).toBe(true);
   });
 });
 

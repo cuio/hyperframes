@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
+import { injectScriptsIntoHtml } from "@hyperframes/core/compiler";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -33,74 +34,6 @@ const MIME_TYPES: Record<string, string> = {
   ".ttf": "font/ttf",
   ".otf": "font/otf",
 };
-
-function stripEmbeddedRuntimeScripts(html: string): string {
-  if (!html) return html;
-  const scriptRe = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
-  const runtimeSrcMarkers = [
-    "hyperframe.runtime.iife.js",
-    "hyperframes-runtime.modular.inline.js",
-    "data-hyperframes-preview-runtime",
-  ];
-  const runtimeInlineMarkers = [
-    "__hyperframeRuntimeBootstrapped",
-    "__hyperframeRuntime",
-    "__hyperframeRuntimeTeardown",
-    "window.__player =",
-    "window.__playerReady",
-    "window.__renderReady",
-  ];
-
-  const shouldStrip = (block: string): boolean => {
-    const lowered = block.toLowerCase();
-    for (const marker of runtimeSrcMarkers) {
-      if (lowered.includes(marker.toLowerCase())) {
-        return true;
-      }
-    }
-    for (const marker of runtimeInlineMarkers) {
-      if (block.includes(marker)) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  return html.replace(scriptRe, (block) => (shouldStrip(block) ? "" : block));
-}
-
-function injectScriptsIntoHtml(
-  html: string,
-  headScripts: string[],
-  bodyScripts: string[],
-  stripEmbedded: boolean,
-): string {
-  if (stripEmbedded) {
-    html = stripEmbeddedRuntimeScripts(html);
-  }
-
-  if (headScripts.length > 0) {
-    const headTags = headScripts.map((src) => `<script>${src}</script>`).join("\n");
-    if (html.includes("</head>")) {
-      html = html.replace("</head>", () => `${headTags}\n</head>`);
-    } else if (html.includes("<body")) {
-      html = html.replace("<body", () => `${headTags}\n<body`);
-    } else {
-      html = headTags + "\n" + html;
-    }
-  }
-
-  if (bodyScripts.length > 0) {
-    const bodyTags = bodyScripts.map((src) => `<script>${src}</script>`).join("\n");
-    if (html.includes("</body>")) {
-      html = html.replace("</body>", () => `${bodyTags}\n</body>`);
-    } else {
-      html = html + "\n" + bodyTags;
-    }
-  }
-
-  return html;
-}
 
 export interface FileServerOptions {
   projectDir: string;

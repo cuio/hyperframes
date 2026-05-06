@@ -72,6 +72,8 @@ interface LeftSidebarProps {
   /** External tab forcing — App.tsx uses this to keep the sidebar's tab
    *  in sync with App-level state when the user expands/restores. */
   forceTab?: SidebarTab;
+  /** Hide the entire sidebar (separate from expand-to-fullscreen). */
+  onToggleCollapse?: () => void;
 }
 
 const TAB_LABELS: Record<SidebarTab, string> = {
@@ -108,6 +110,7 @@ export const LeftSidebar = memo(function LeftSidebar({
   expanded = false,
   onToggleExpand,
   forceTab,
+  onToggleCollapse,
 }: LeftSidebarProps) {
   const visibleTabs = TABS_BY_MODE[mode];
   const [tab, setTab] = useState<SidebarTab>(() => getPersistedTab(mode));
@@ -184,6 +187,30 @@ export const LeftSidebar = memo(function LeftSidebar({
             {TAB_LABELS[t]}
           </button>
         ))}
+        {onToggleCollapse && (
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            className="mx-1 my-1 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md border border-transparent text-neutral-500 transition-colors hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-300"
+            title="Hide sidebar"
+            aria-label="Hide sidebar"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="m14 7-5 5 5 5" />
+              <path d="M19 4v16" />
+            </svg>
+          </button>
+        )}
         {onToggleExpand && (
           <button
             type="button"

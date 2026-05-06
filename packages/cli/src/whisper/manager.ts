@@ -205,8 +205,16 @@ export async function ensureModel(
 }
 
 export function hasFFmpeg(): boolean {
+  return hasBinary("ffmpeg");
+}
+
+export function hasFFprobe(): boolean {
+  return hasBinary("ffprobe");
+}
+
+function hasBinary(name: string): boolean {
   try {
-    execFileSync("ffmpeg", ["-version"], { stdio: "ignore", timeout: 5000 });
+    execFileSync(name, ["-version"], { stdio: "ignore", timeout: 5000 });
     return true;
   } catch {
     return false;

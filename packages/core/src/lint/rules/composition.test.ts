@@ -2,6 +2,174 @@ import { describe, it, expect } from "vitest";
 import { lintHyperframeHtml } from "../hyperframeLinter.js";
 
 describe("composition rules", () => {
+  describe("subcomposition guidance", () => {
+    it("warns when any HTML composition file is over 300 lines", () => {
+      const html = Array.from({ length: 301 }, (_, i) =>
+        i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+      ).join("\n");
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/compositions/scene.html" });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe("warning");
+    });
+
+    it("does not warn when an HTML composition file is exactly 300 lines", () => {
+      const html = Array.from({ length: 300 }, (_, i) =>
+        i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+      ).join("\n");
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/index.html" });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not count a final trailing newline as an extra physical line", () => {
+      const html =
+        Array.from({ length: 300 }, (_, i) =>
+          i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+        ).join("\n") + "\n";
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/index.html" });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not warn for large registry source block files", () => {
+      const html = Array.from({ length: 301 }, (_, i) =>
+        i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+      ).join("\n");
+
+      const result = lintHyperframeHtml(html, {
+        filePath: "/project/registry/blocks/data-chart/data-chart.html",
+      });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding).toBeUndefined();
+    });
+
+    it("warns for large installed block composition files", () => {
+      const html = Array.from({ length: 301 }, (_, i) =>
+        i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+      ).join("\n");
+
+      const result = lintHyperframeHtml(html, {
+        filePath: "/project/compositions/data-chart.html",
+      });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe("warning");
+    });
+
+    it("does not warn for large registry-installed block composition files", () => {
+      const html =
+        "<!-- hyperframes-registry-item: data-chart -->\n" +
+        Array.from({ length: 300 }, (_, i) =>
+          i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+        ).join("\n");
+
+      const result = lintHyperframeHtml(html, {
+        filePath: "/project/compositions/data-chart.html",
+      });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding).toBeUndefined();
+    });
+
+    it("uses nested split copy for large sub-composition files", () => {
+      const html = Array.from({ length: 301 }, (_, i) =>
+        i === 0 ? "<html><body>" : `<!-- filler ${i} -->`,
+      ).join("\n");
+
+      const result = lintHyperframeHtml(html, {
+        filePath: "/project/compositions/scene.html",
+        isSubComposition: true,
+      });
+      const finding = result.findings.find((f) => f.code === "composition_file_too_large");
+      expect(finding?.fixHint).toContain("Split this sub-composition further");
+    });
+
+    it("warns when more than 3 timed elements share the same track", () => {
+      const html = `<!DOCTYPE html>
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080" data-start="0">
+    <div class="clip" data-start="0" data-duration="1" data-track-index="0">A</div>
+    <div class="clip" data-start="1" data-duration="1" data-track-index="0">B</div>
+    <div class="clip" data-start="2" data-duration="1" data-track-index="0">C</div>
+    <div class="clip" data-start="3" data-duration="1" data-track-index="0">D</div>
+  </div>
+</body></html>`;
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/compositions/scene.html" });
+      const finding = result.findings.find((f) => f.code === "timeline_track_too_dense");
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe("warning");
+      expect(finding?.message).toContain("Track 0 has 4 timed elements");
+    });
+
+    it("does not warn when 3 timed elements share the same track", () => {
+      const html = `<!DOCTYPE html>
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080" data-start="0">
+    <div class="clip" data-start="0" data-duration="1" data-track-index="0">A</div>
+    <div class="clip" data-start="1" data-duration="1" data-track-index="0">B</div>
+    <div class="clip" data-start="2" data-duration="1" data-track-index="0">C</div>
+  </div>
+</body></html>`;
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/index.html" });
+      const finding = result.findings.find((f) => f.code === "timeline_track_too_dense");
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not warn when timed elements are split across tracks", () => {
+      const html = `<!DOCTYPE html>
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080" data-start="0">
+    <div class="clip" data-start="0" data-duration="1" data-track-index="0">A</div>
+    <div class="clip" data-start="1" data-duration="1" data-track-index="0">B</div>
+    <div class="clip" data-start="2" data-duration="1" data-track-index="1">C</div>
+    <div class="clip" data-start="3" data-duration="1" data-track-index="1">D</div>
+  </div>
+</body></html>`;
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/index.html" });
+      const finding = result.findings.find((f) => f.code === "timeline_track_too_dense");
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not count timed media or script/style tags as dense track elements", () => {
+      const html = `<!DOCTYPE html>
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080" data-start="0">
+    <audio data-start="0" data-duration="1" data-track-index="0"></audio>
+    <audio data-start="1" data-duration="1" data-track-index="0"></audio>
+    <video muted data-start="2" data-duration="1" data-track-index="0"></video>
+    <script data-start="3" data-duration="1" data-track-index="0"></script>
+    <style data-start="4" data-duration="1" data-track-index="0"></style>
+  </div>
+</body></html>`;
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/index.html" });
+      const finding = result.findings.find((f) => f.code === "timeline_track_too_dense");
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not count root composition or mounted sub-compositions as dense elements", () => {
+      const html = `<!DOCTYPE html>
+<html><body>
+  <div data-composition-id="main" data-width="1920" data-height="1080" data-start="0" data-track-index="0">
+    <div data-composition-id="a" data-composition-src="compositions/a.html" data-start="0" data-duration="1" data-track-index="0"></div>
+    <div data-composition-id="b" data-composition-src="compositions/b.html" data-start="1" data-duration="1" data-track-index="0"></div>
+    <div data-composition-id="c" data-composition-src="compositions/c.html" data-start="2" data-duration="1" data-track-index="0"></div>
+    <div data-composition-id="d" data-composition-src="compositions/d.html" data-start="3" data-duration="1" data-track-index="0"></div>
+  </div>
+</body></html>`;
+
+      const result = lintHyperframeHtml(html, { filePath: "/project/index.html" });
+      const finding = result.findings.find((f) => f.code === "timeline_track_too_dense");
+      expect(finding).toBeUndefined();
+    });
+  });
+
   it("reports info for composition with external CDN script dependency", () => {
     const html = `<template id="rockets-template">
   <div data-composition-id="rockets" data-width="1920" data-height="1080">
@@ -93,6 +261,29 @@ describe("composition rules", () => {
     const result = lintHyperframeHtml(html);
     const finding = result.findings.find((f) => f.code === "template_literal_selector");
     expect(finding).toBeUndefined();
+  });
+
+  it("reports error when a selector combines data attributes in one bracket", () => {
+    const html = `
+<template id="scene-template">
+  <div data-composition-id="scene" data-start="0" data-width="1920" data-height="1080">
+    <style>
+      [data-composition-id="scene" data-start="0"] .title { opacity: 0; }
+    </style>
+    <script>
+      window.__timelines = window.__timelines || {};
+      const title = document.querySelector('[data-composition-id="scene" data-start="0"] .title');
+      const tl = gsap.timeline({ paused: true });
+      tl.to('[data-composition-id="scene" data-start="0"]', { opacity: 0, duration: 0.5 }, 4);
+      window.__timelines["scene"] = tl;
+    </script>
+  </div>
+</template>`;
+    const result = lintHyperframeHtml(html, { filePath: "compositions/scene.html" });
+    const findings = result.findings.filter((f) => f.code === "split_data_attribute_selector");
+    expect(findings.length).toBe(1);
+    expect(findings[0]?.severity).toBe("error");
+    expect(findings[0]?.fixHint).toContain('[data-composition-id="scene"][data-start="0"]');
   });
 
   describe("timed_element_missing_clip_class", () => {
@@ -437,6 +628,133 @@ describe("composition rules", () => {
       // mistake.
       const gsapFinding = result.findings.find((f) => f.code === "gsap_infinite_repeat");
       expect(gsapFinding).toBeDefined();
+    });
+  });
+
+  describe("root_composition_missing_data_start", () => {
+    it("does not warn for template-wrapped sub-composition files", () => {
+      const html = `
+<template id="foo-template">
+  <div data-composition-id="foo" data-width="1920" data-height="1080">
+    <div class="clip" data-start="0" data-duration="1"></div>
+  </div>
+</template>`;
+      const result = lintHyperframeHtml(html, { isSubComposition: true });
+      const finding = result.findings.find((f) => f.code === "root_composition_missing_data_start");
+      expect(finding).toBeUndefined();
+    });
+  });
+
+  describe("invalid_variable_values_json", () => {
+    it("warns when data-variable-values is unparseable JSON", () => {
+      const html = `<html><body>
+<div data-composition-id="card-1" data-composition-src="card.html" data-variable-values='{not json'></div>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find((f) => f.code === "invalid_variable_values_json");
+      expect(finding).toBeDefined();
+      expect(finding?.severity).toBe("warning");
+    });
+
+    it("warns when data-variable-values is a JSON array (must be an object)", () => {
+      const html = `<html><body>
+<div data-composition-src="card.html" data-variable-values='[1,2,3]'></div>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find((f) => f.code === "invalid_variable_values_json");
+      expect(finding).toBeDefined();
+      expect(finding?.message).toMatch(/must be a JSON object/);
+    });
+
+    it("warns when data-variable-values is a JSON string (must be an object)", () => {
+      const html = `<html><body>
+<div data-composition-src="card.html" data-variable-values='"hello"'></div>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find((f) => f.code === "invalid_variable_values_json");
+      expect(finding).toBeDefined();
+    });
+
+    it("does not warn for a valid JSON object", () => {
+      const html = `<html><body>
+<div data-composition-src="card.html" data-variable-values='{"title":"Hello","count":3}'></div>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find((f) => f.code === "invalid_variable_values_json");
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not warn when data-variable-values is absent", () => {
+      const html = `<html><body>
+<div data-composition-src="card.html"></div>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find((f) => f.code === "invalid_variable_values_json");
+      expect(finding).toBeUndefined();
+    });
+  });
+
+  describe("invalid_composition_variables_declaration", () => {
+    it("warns when data-composition-variables is unparseable JSON", () => {
+      const html = `<html data-composition-variables='[{not json'><body><div data-composition-id="x"></div></body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find(
+        (f) => f.code === "invalid_composition_variables_declaration",
+      );
+      expect(finding).toBeDefined();
+    });
+
+    it("warns when data-composition-variables is not an array", () => {
+      const html = `<html data-composition-variables='{"title":"Hello"}'><body><div data-composition-id="x"></div></body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find(
+        (f) => f.code === "invalid_composition_variables_declaration",
+      );
+      expect(finding).toBeDefined();
+      expect(finding?.message).toMatch(/array of variable declarations/);
+    });
+
+    it("warns per-entry when an entry is missing required fields", () => {
+      const html = `<html data-composition-variables='[{"id":"ok","type":"string","label":"Ok","default":"x"},{"id":"bad"}]'><body><div data-composition-id="x"></div></body></html>`;
+      const result = lintHyperframeHtml(html);
+      const findings = result.findings.filter(
+        (f) => f.code === "invalid_composition_variables_declaration",
+      );
+      expect(findings.length).toBe(1);
+      expect(findings[0]?.message).toMatch(/\[1\]/);
+      expect(findings[0]?.message).toMatch(/type|label|default/);
+    });
+
+    it("warns when a declaration uses an unknown type", () => {
+      const html = `<html data-composition-variables='[{"id":"x","type":"date","label":"X","default":"y"}]'><body><div data-composition-id="x"></div></body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find(
+        (f) => f.code === "invalid_composition_variables_declaration",
+      );
+      expect(finding).toBeDefined();
+      expect(finding?.message).toMatch(/type/);
+    });
+
+    it("does not warn for a fully valid declarations array", () => {
+      const html = `<html data-composition-variables='[
+        {"id":"title","type":"string","label":"Title","default":"Hello"},
+        {"id":"count","type":"number","label":"Count","default":3},
+        {"id":"theme","type":"enum","label":"Theme","default":"light","options":[{"value":"light","label":"Light"}]}
+      ]'><body><div data-composition-id="x"></div></body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find(
+        (f) => f.code === "invalid_composition_variables_declaration",
+      );
+      expect(finding).toBeUndefined();
+    });
+
+    it("does not warn when data-composition-variables is absent", () => {
+      const html = `<html><body><div data-composition-id="x"></div></body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find(
+        (f) => f.code === "invalid_composition_variables_declaration",
+      );
+      expect(finding).toBeUndefined();
     });
   });
 });

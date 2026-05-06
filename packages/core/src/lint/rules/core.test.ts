@@ -92,6 +92,35 @@ describe("core rules", () => {
     expect(finding).toBeUndefined();
   });
 
+  it("warns when a timeline-visible element has no stable id for Studio editing", () => {
+    const html = `
+<html><body>
+  <div id="root" data-composition-id="c1" data-width="1920" data-height="1080">
+    <section class="clip hero-card" data-start="0" data-duration="3"></section>
+  </div>
+  <script>window.__timelines = {};</script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "studio_missing_editable_id");
+    expect(finding).toBeDefined();
+    expect(finding?.severity).toBe("warning");
+    expect(finding?.message).toContain('<section class="hero-card" data-start="0">');
+    expect(finding?.fixHint).toContain("stable, human-readable id");
+  });
+
+  it("does not warn about the composition root or timeline elements with ids", () => {
+    const html = `
+<html><body>
+  <div data-composition-id="c1" data-width="1920" data-height="1080" data-start="0">
+    <section id="hero-card" class="clip hero-card" data-start="0" data-duration="3"></section>
+  </div>
+  <script>window.__timelines = {};</script>
+</body></html>`;
+    const result = lintHyperframeHtml(html);
+    const finding = result.findings.find((f) => f.code === "studio_missing_editable_id");
+    expect(finding).toBeUndefined();
+  });
+
   describe("non_deterministic_code", () => {
     it("detects Math.random() in script content", () => {
       const html = `
@@ -140,6 +169,66 @@ describe("core rules", () => {
 </body></html>`;
       const result = lintHyperframeHtml(html);
       const finding = result.findings.find((f) => f.code === "non_deterministic_code");
+      expect(finding).toBeUndefined();
+    });
+  });
+
+  describe("composition_self_attribute_selector", () => {
+    it("warns when inline CSS targets the root composition id", () => {
+      const html = `
+<html><body>
+  <div id="scene" data-composition-id="scene" data-width="1920" data-height="1080">
+    <style>
+      [data-composition-id="scene"] .title { opacity: 0; }
+      [data-composition-id="other"] .title { color: red; }
+    </style>
+    <h1 class="title">Hello</h1>
+  </div>
+  <script>window.__timelines = {};</script>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const findings = result.findings.filter(
+        (f) => f.code === "composition_self_attribute_selector",
+      );
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0]?.severity).toBe("warning");
+      expect(findings[0]?.selector).toBe('[data-composition-id="scene"] .title');
+      expect(findings[0]?.fixHint).toContain("#scene");
+      expect(findings[0]?.fixHint).not.toContain("#556");
+    });
+
+    it("warns when external CSS targets the root composition id", () => {
+      const html = `
+<html><body>
+  <div id="scene" data-composition-id="scene" data-width="1920" data-height="1080"></div>
+  <script>window.__timelines = {};</script>
+</body></html>`;
+      const result = lintHyperframeHtml(html, {
+        externalStyles: [
+          {
+            href: "scene.css",
+            content: '[data-composition-id="scene"] .title { opacity: 0; }',
+          },
+        ],
+      });
+      const finding = result.findings.find((f) => f.code === "composition_self_attribute_selector");
+
+      expect(finding).toBeDefined();
+      expect(finding?.selector).toBe('[data-composition-id="scene"] .title');
+    });
+
+    it("does not warn when CSS targets a different composition id", () => {
+      const html = `
+<html><body>
+  <div id="scene" data-composition-id="scene" data-width="1920" data-height="1080">
+    <style>[data-composition-id="other"] .title { opacity: 0; }</style>
+  </div>
+  <script>window.__timelines = {};</script>
+</body></html>`;
+      const result = lintHyperframeHtml(html);
+      const finding = result.findings.find((f) => f.code === "composition_self_attribute_selector");
+
       expect(finding).toBeUndefined();
     });
   });

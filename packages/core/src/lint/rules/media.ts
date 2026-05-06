@@ -5,16 +5,41 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function selectorTargetsManagedMedia(selector: string, mediaIds: Set<string>): boolean {
+function hasAttrName(tagSource: string, attr: string): boolean {
+  const escaped = escapeRegExp(attr);
+  const attrs = tagSource.replace(/^<\s*[a-z][\w:-]*/i, "");
+  return new RegExp(`(?:^|\\s)${escaped}(?:\\s*=|\\s|/?>)`, "i").test(attrs);
+}
+
+function classNamesFromAttr(classAttr: string | null): string[] {
+  if (!classAttr) return [];
+  return classAttr.split(/\s+/).filter(Boolean);
+}
+
+type MediaSelectorIndex = {
+  ids: Set<string>;
+  classes: Set<string>;
+  hasVideo: boolean;
+  hasAudio: boolean;
+};
+
+function selectorTargetsManagedMedia(selector: string, mediaIndex: MediaSelectorIndex): boolean {
   const normalized = selector.trim();
   if (!normalized) return false;
-  if (/\b(video|audio)\b/i.test(normalized)) return true;
-  for (const mediaId of mediaIds) {
+  if (mediaIndex.hasVideo && /\bvideo\b/i.test(normalized)) return true;
+  if (mediaIndex.hasAudio && /\baudio\b/i.test(normalized)) return true;
+  for (const mediaId of mediaIndex.ids) {
+    const escapedId = escapeRegExp(mediaId);
     if (
-      normalized.includes(`#${mediaId}`) ||
+      new RegExp(`#${escapedId}(?![\\w-])`).test(normalized) ||
       normalized.includes(`[id="${mediaId}"]`) ||
       normalized.includes(`[id='${mediaId}']`)
     ) {
+      return true;
+    }
+  }
+  for (const className of mediaIndex.classes) {
+    if (new RegExp(`\\.${escapeRegExp(className)}(?![\\w-])`).test(normalized)) {
       return true;
     }
   }
@@ -23,30 +48,43 @@ function selectorTargetsManagedMedia(selector: string, mediaIds: Set<string>): b
 
 function findImperativeMediaControlFindings(ctx: LintContext): HyperframeLintFinding[] {
   const findings: HyperframeLintFinding[] = [];
-  const managedMediaIds = new Set(
-    ctx.tags
-      .filter((tag) => tag.name === "video" || tag.name === "audio")
-      .map((tag) => readAttr(tag.raw, "id"))
-      .filter((id): id is string => Boolean(id)),
-  );
+  const mediaTags = ctx.tags.filter((tag) => tag.name === "video" || tag.name === "audio");
+  const mediaIndex: MediaSelectorIndex = {
+    ids: new Set(
+      mediaTags.map((tag) => readAttr(tag.raw, "id")).filter((id): id is string => Boolean(id)),
+    ),
+    classes: new Set(mediaTags.flatMap((tag) => classNamesFromAttr(readAttr(tag.raw, "class")))),
+    hasVideo: mediaTags.some((tag) => tag.name === "video"),
+    hasAudio: mediaTags.some((tag) => tag.name === "audio"),
+  };
 
-  if (managedMediaIds.size === 0 || ctx.scripts.length === 0) return findings;
+  if (mediaTags.length === 0 || ctx.scripts.length === 0) return findings;
 
   for (const script of ctx.scripts) {
     const mediaVars = new Map<string, string | undefined>();
     const assignmentPatterns = [
-      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:document|window\.document)\.getElementById\(\s*["']([^"']+)["']\s*\)/g,
-      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:document|window\.document)\.querySelector\(\s*["']([^"']+)["']\s*\)/g,
+      {
+        pattern:
+          /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:document|window\.document)\.getElementById\(\s*["']([^"']+)["']\s*\)/g,
+        variableIndex: 1,
+        targetIndex: 2,
+      },
+      {
+        pattern:
+          /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:document|window\.document)\.querySelector\(\s*(["'])([\s\S]*?)\2\s*\)/g,
+        variableIndex: 1,
+        targetIndex: 3,
+      },
     ];
 
-    for (const pattern of assignmentPatterns) {
+    for (const { pattern, variableIndex, targetIndex } of assignmentPatterns) {
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(script.content)) !== null) {
-        const variableName = match[1];
-        const target = match[2];
+        const variableName = match[variableIndex];
+        const target = match[targetIndex];
         if (!variableName || !target) continue;
-        if (managedMediaIds.has(target) || selectorTargetsManagedMedia(target, managedMediaIds)) {
-          mediaVars.set(variableName, managedMediaIds.has(target) ? target : undefined);
+        if (mediaIndex.ids.has(target) || selectorTargetsManagedMedia(target, mediaIndex)) {
+          mediaVars.set(variableName, mediaIndex.ids.has(target) ? target : undefined);
         }
       }
     }
@@ -56,42 +94,60 @@ function findImperativeMediaControlFindings(ctx: LintContext): HyperframeLintFin
         pattern:
           /\b(?:document|window\.document)\.getElementById\(\s*["']([^"']+)["']\s*\)\.play\s*\(/g,
         kind: "play()",
+        targetIndex: 1,
       },
       {
         pattern:
           /\b(?:document|window\.document)\.getElementById\(\s*["']([^"']+)["']\s*\)\.pause\s*\(/g,
         kind: "pause()",
+        targetIndex: 1,
       },
       {
         pattern:
           /\b(?:document|window\.document)\.getElementById\(\s*["']([^"']+)["']\s*\)\.currentTime\s*=/g,
         kind: "currentTime",
+        targetIndex: 1,
       },
       {
         pattern:
-          /\b(?:document|window\.document)\.querySelector\(\s*["']([^"']+)["']\s*\)\.play\s*\(/g,
+          /\b(?:document|window\.document)\.getElementById\(\s*["']([^"']+)["']\s*\)\.muted\s*=/g,
+        kind: "muted assignment",
+        targetIndex: 1,
+      },
+      {
+        pattern:
+          /\b(?:document|window\.document)\.querySelector\(\s*(["'])([\s\S]*?)\1\s*\)\.play\s*\(/g,
         kind: "play()",
+        targetIndex: 2,
       },
       {
         pattern:
-          /\b(?:document|window\.document)\.querySelector\(\s*["']([^"']+)["']\s*\)\.pause\s*\(/g,
+          /\b(?:document|window\.document)\.querySelector\(\s*(["'])([\s\S]*?)\1\s*\)\.pause\s*\(/g,
         kind: "pause()",
+        targetIndex: 2,
       },
       {
         pattern:
-          /\b(?:document|window\.document)\.querySelector\(\s*["']([^"']+)["']\s*\)\.currentTime\s*=/g,
+          /\b(?:document|window\.document)\.querySelector\(\s*(["'])([\s\S]*?)\1\s*\)\.currentTime\s*=/g,
         kind: "currentTime",
+        targetIndex: 2,
+      },
+      {
+        pattern:
+          /\b(?:document|window\.document)\.querySelector\(\s*(["'])([\s\S]*?)\1\s*\)\.muted\s*=/g,
+        kind: "muted assignment",
+        targetIndex: 2,
       },
     ];
 
-    for (const { pattern, kind } of directIdPatterns) {
+    for (const { pattern, kind, targetIndex } of directIdPatterns) {
       let match: RegExpExecArray | null;
       while ((match = pattern.exec(script.content)) !== null) {
-        const target = match[1];
+        const target = match[targetIndex];
         if (!target) continue;
-        const elementId = managedMediaIds.has(target)
+        const elementId = mediaIndex.ids.has(target)
           ? target
-          : selectorTargetsManagedMedia(target, managedMediaIds)
+          : selectorTargetsManagedMedia(target, mediaIndex)
             ? undefined
             : null;
         if (elementId === null) continue;
@@ -101,7 +157,7 @@ function findImperativeMediaControlFindings(ctx: LintContext): HyperframeLintFin
           message: `Inline <script> imperatively controls managed media via ${kind}. HyperFrames must own media play/pause/seek to keep preview, timeline, and renders deterministic.`,
           elementId: elementId || undefined,
           fixHint:
-            "Remove imperative media play/pause/currentTime control. Express timing with data-start/data-duration and media offsets like data-media-start or data-playback-start instead.",
+            "Remove imperative media play/pause/currentTime/muted control. Express timing with data-start/data-duration and media offsets like data-media-start or data-playback-start instead.",
           snippet: truncateSnippet(match[0]),
         });
       }
@@ -113,6 +169,10 @@ function findImperativeMediaControlFindings(ctx: LintContext): HyperframeLintFin
         { pattern: new RegExp(`\\b${escapedVar}\\.play\\s*\\(`, "g"), kind: "play()" },
         { pattern: new RegExp(`\\b${escapedVar}\\.pause\\s*\\(`, "g"), kind: "pause()" },
         { pattern: new RegExp(`\\b${escapedVar}\\.currentTime\\s*=`, "g"), kind: "currentTime" },
+        {
+          pattern: new RegExp(`\\b${escapedVar}\\.muted\\s*=`, "g"),
+          kind: "muted assignment",
+        },
       ];
       for (const { pattern, kind } of variablePatterns) {
         let match: RegExpExecArray | null;
@@ -123,7 +183,7 @@ function findImperativeMediaControlFindings(ctx: LintContext): HyperframeLintFin
             message: `Inline <script> imperatively controls managed media via ${kind}. HyperFrames must own media play/pause/seek to keep preview, timeline, and renders deterministic.`,
             elementId,
             fixHint:
-              "Remove imperative media play/pause/currentTime control. Express timing with data-start/data-duration and media offsets like data-media-start or data-playback-start instead.",
+              "Remove imperative media play/pause/currentTime/muted control. Express timing with data-start/data-duration and media offsets like data-media-start or data-playback-start instead.",
             snippet: truncateSnippet(match[0]),
           });
         }
@@ -192,16 +252,29 @@ export const mediaRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = 
     const findings: HyperframeLintFinding[] = [];
     for (const tag of tags) {
       if (tag.name !== "video") continue;
-      const hasMuted = /\bmuted\b/i.test(tag.raw);
-      if (!hasMuted && readAttr(tag.raw, "data-start")) {
+      const hasMuted = hasAttrName(tag.raw, "muted");
+      const hasDeclaredAudio = readAttr(tag.raw, "data-has-audio") === "true";
+      if (!hasMuted && !hasDeclaredAudio && readAttr(tag.raw, "data-start")) {
         const elementId = readAttr(tag.raw, "id") || undefined;
         findings.push({
           code: "video_missing_muted",
           severity: "error",
-          message: `<video${elementId ? ` id="${elementId}"` : ""}> has data-start but is not muted. The framework expects video to be muted with a separate <audio> element for sound.`,
+          message: `<video${elementId ? ` id="${elementId}"` : ""}> has data-start but is not muted. Mark audible videos with data-has-audio="true"; otherwise keep video muted and use a separate <audio> element for sound.`,
           elementId,
           fixHint:
-            "Add the `muted` attribute to the <video> tag and use a separate <audio> element with the same src for audio playback.",
+            'Add the `muted` attribute for silent video, or add data-has-audio="true" when the video track should contribute audio.',
+          snippet: truncateSnippet(tag.raw),
+        });
+      }
+      if (hasMuted && hasDeclaredAudio) {
+        const elementId = readAttr(tag.raw, "id") || undefined;
+        findings.push({
+          code: "video_muted_with_declared_audio",
+          severity: "error",
+          message: `<video${elementId ? ` id="${elementId}"` : ""}> declares data-has-audio="true" but also has muted. Studio preview will silence the video audio.`,
+          elementId,
+          fixHint:
+            'Remove the `muted` attribute if this video should be audible, or remove data-has-audio="true" and use data-volume="0" for silent visual video.',
           snippet: truncateSnippet(tag.raw),
         });
       }
@@ -336,7 +409,7 @@ export const mediaRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = 
     return findings;
   },
 
-  // media_missing_id + media_missing_src + media_preload_none
+  // media_missing_data_start + media_missing_id + media_missing_src + media_preload_none
   ({ tags }) => {
     const findings: HyperframeLintFinding[] = [];
     for (const tag of tags) {
@@ -344,6 +417,16 @@ export const mediaRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = 
       const hasDataStart = readAttr(tag.raw, "data-start");
       const hasId = readAttr(tag.raw, "id");
       const hasSrc = readAttr(tag.raw, "src");
+      if (hasSrc && !hasDataStart) {
+        findings.push({
+          code: "media_missing_data_start",
+          severity: "error",
+          message: `<${tag.name}${hasId ? ` id="${hasId}"` : ""}> has src but no data-start. HyperFrames cannot own playback for untimed media, so preview and render behavior can diverge.`,
+          elementId: hasId || undefined,
+          fixHint: `Add data-start="0" (or the intended start time) and data-duration if the clip should stop before the source ends.`,
+          snippet: truncateSnippet(tag.raw),
+        });
+      }
       if (hasDataStart && !hasId) {
         findings.push({
           code: "media_missing_id",
@@ -373,6 +456,44 @@ export const mediaRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = 
           snippet: truncateSnippet(tag.raw),
         });
       }
+    }
+    return findings;
+  },
+
+  // video_audio_double_source — catches audible <video> paired with a separate
+  // <audio> pointing to the same file, which causes double playback at runtime
+  ({ tags }) => {
+    const findings: HyperframeLintFinding[] = [];
+    const videoSources = new Map<string, { id?: string; raw: string }>();
+    const audioSources = new Map<string, { id?: string; raw: string }>();
+
+    for (const tag of tags) {
+      if (!readAttr(tag.raw, "data-start")) continue;
+      const src = readAttr(tag.raw, "src");
+      if (!src) continue;
+      const elementId = readAttr(tag.raw, "id") || undefined;
+      if (tag.name === "video") {
+        const isMuted = hasAttrName(tag.raw, "muted");
+        if (!isMuted) {
+          videoSources.set(src, { id: elementId, raw: tag.raw });
+        }
+      } else if (tag.name === "audio") {
+        audioSources.set(src, { id: elementId, raw: tag.raw });
+      }
+    }
+
+    for (const [src, audioInfo] of audioSources) {
+      const videoInfo = videoSources.get(src);
+      if (!videoInfo) continue;
+      findings.push({
+        code: "video_audio_double_source",
+        severity: "error",
+        message: `<audio${audioInfo.id ? ` id="${audioInfo.id}"` : ""}> and <video${videoInfo.id ? ` id="${videoInfo.id}"` : ""}> both point to the same source. The unmuted video already provides audio — the duplicate <audio> will cause double playback and echo.`,
+        elementId: audioInfo.id,
+        fixHint:
+          "Either mute the video (add `muted` attribute) and keep the separate <audio>, or remove the <audio> element and let the video provide its own audio track.",
+        snippet: truncateSnippet(audioInfo.raw),
+      });
     }
     return findings;
   },

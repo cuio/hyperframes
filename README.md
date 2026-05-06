@@ -11,6 +11,7 @@
   <a href="https://www.npmjs.com/package/hyperframes"><img src="https://img.shields.io/npm/dm/hyperframes.svg?style=flat" alt="npm downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen" alt="Node.js"></a>
+  <a href="https://discord.gg/EbK98HBPdk"><img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center"><b>Write HTML. Render video. Built for agents.</b></p>
@@ -31,7 +32,7 @@ Install the HyperFrames skills, then describe the video you want:
 npx skills add heygen-com/hyperframes
 ```
 
-This teaches your agent (Claude Code, Cursor, Gemini CLI, Codex) how to write correct compositions and GSAP animations. In Claude Code, the skills register as slash commands — invoke `/hyperframes` to author compositions, `/hyperframes-cli` for CLI commands, and `/gsap` for animation help.
+This teaches your agent (Claude Code, Cursor, Gemini CLI, Codex) how to write correct compositions, GSAP timelines, Tailwind v4 browser-runtime styles, and first-party adapter animations. In Claude Code, the skills register as slash commands — invoke `/hyperframes` to author compositions, `/hyperframes-cli` for the dev-loop commands (init, lint, preview, render), `/hyperframes-media` for asset preprocessing (TTS, transcription, background removal), `/tailwind` for `init --tailwind` projects, `/gsap` for timeline animation help, or the adapter skills (`/animejs`, `/css-animations`, `/lottie`, `/three`, `/waapi`) when a composition uses those runtimes.
 
 For Claude Design, open [`docs/guides/claude-design-hyperframes.md`](https://github.com/heygen-com/hyperframes/blob/main/docs/guides/claude-design-hyperframes.md) on GitHub and click the download button (↓) to save it, then attach the file to your Claude Design chat. It produces a valid first draft; refine in any AI coding agent. See the [Claude Design guide](https://hyperframes.heygen.com/guides/claude-design).
 
@@ -184,13 +185,20 @@ HyperFrames ships [skills](https://github.com/vercel-labs/skills) that teach AI 
 npx skills add heygen-com/hyperframes
 ```
 
-| Skill                    | What it teaches                                                                              |
-| ------------------------ | -------------------------------------------------------------------------------------------- |
-| `hyperframes`            | HTML composition authoring, captions, TTS, audio-reactive animation, transitions             |
-| `hyperframes-cli`        | CLI commands: init, lint, preview, render, transcribe, tts, doctor                           |
-| `hyperframes-registry`   | Block and component installation via `hyperframes add`                                       |
-| `website-to-hyperframes` | Capture a URL and turn it into a video — full website-to-video pipeline                      |
-| `gsap`                   | GSAP animation API, timelines, easing, ScrollTrigger, plugins, React/Vue/Svelte, performance |
+| Skill                     | What it teaches                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `hyperframes`             | HTML composition authoring, captions, TTS, audio-reactive animation, transitions                                    |
+| `hyperframes-cli`         | Dev-loop CLI: init, lint, inspect, preview, render, doctor                                                          |
+| `hyperframes-media`       | Asset preprocessing: tts (Kokoro), transcribe (Whisper), remove-background (u2net) — voice/model/codec selection    |
+| `hyperframes-registry`    | Block and component installation via `hyperframes add`                                                              |
+| `website-to-hyperframes`  | Capture a URL and turn it into a video — full website-to-video pipeline                                             |
+| `remotion-to-hyperframes` | Translate a Remotion (React) composition into a HyperFrames HTML composition                                        |
+| `gsap`                    | GSAP timelines for HyperFrames: paused registration, deterministic seeking, easing, sequencing, performance         |
+| `animejs`                 | Anime.js animations and timelines registered on `window.__hfAnime` for deterministic HyperFrames seeking            |
+| `css-animations`          | CSS keyframe animation patterns that HyperFrames can discover, pause, and seek                                      |
+| `lottie`                  | `lottie-web` and dotLottie players registered on `window.__hfLottie` with local assets and paused playback          |
+| `three`                   | Three.js scenes that render from HyperFrames `hf-seek` events and `window.__hfThreeTime` instead of wall-clock time |
+| `waapi`                   | Web Animations API `element.animate()` patterns seeked through `document.getAnimations()`                           |
 
 ## Contributing
 

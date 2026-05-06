@@ -1,7 +1,14 @@
-import { useState, useCallback, useRef, useEffect, useMemo, type ReactNode } from "react";
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  useMemo,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { useMountEffect } from "./hooks/useMountEffect";
 import { NLELayout } from "./components/nle/NLELayout";
-import { TimelineEditorNotice } from "./components/nle/TimelineEditorNotice";
 import { SourceEditor } from "./components/editor/SourceEditor";
 import { LeftSidebar } from "./components/sidebar/LeftSidebar";
 import { ProjectSwitcher } from "./components/ProjectSwitcher";
@@ -9,7 +16,7 @@ import { CostBadge } from "./components/CostBadge";
 import { StaleAssemblyBanner } from "./components/StaleAssemblyBanner";
 import { RenderQueue } from "./components/renders/RenderQueue";
 import { useRenderQueue } from "./components/renders/useRenderQueue";
-import { CompositionThumbnail, VideoThumbnail, usePlayerStore } from "./player";
+import { CompositionThumbnail, VideoThumbnail, liveTime, usePlayerStore } from "./player";
 import { AudioWaveform } from "./player/components/AudioWaveform";
 import type { TimelineElement } from "./player";
 import { LintModal } from "./components/LintModal";
@@ -41,11 +48,12 @@ import {
   getTimelineZoomPercent,
 } from "./player/components/timelineZoom";
 import {
-  getTimelineEditorHintDismissed,
   getTimelineToggleTitle,
-  setTimelineEditorHintDismissed,
   shouldHandleTimelineToggleHotkey,
 } from "./utils/timelineDiscovery";
+import { buildFrameCaptureFilename, buildFrameCaptureUrl } from "./utils/frameCapture";
+import { buildProjectHash, parseProjectIdFromHash } from "./utils/projectRouting";
+import { Camera } from "./icons/SystemIcons";
 
 interface EditingFile {
   path: string;
@@ -55,6 +63,10 @@ interface EditingFile {
 interface AppToast {
   message: string;
   tone: "error" | "info";
+}
+
+function getTimelineElementLabel(element: TimelineElement): string {
+  return element.label || element.id || element.tag;
 }
 
 const DEFAULT_TIMELINE_ASSET_DURATION: Record<TimelineAssetKind, number> = {
@@ -114,9 +126,9 @@ export function StudioApp() {
   const [resolving, setResolving] = useState(true);
 
   useMountEffect(() => {
-    const hashMatch = window.location.hash.match(/^#project\/([^/]+)/);
-    if (hashMatch) {
-      setProjectId(hashMatch[1]);
+    const hashProjectId = parseProjectIdFromHash(window.location.hash);
+    if (hashProjectId) {
+      setProjectId(hashProjectId);
       setResolving(false);
       return;
     }
@@ -127,7 +139,7 @@ export function StudioApp() {
         const first = (data.projects ?? [])[0];
         if (first) {
           setProjectId(first.id);
-          window.location.hash = `#project/${first.id}`;
+          window.location.hash = buildProjectHash(first.id);
         }
       })
       .catch(() => {})
@@ -301,9 +313,7 @@ export function StudioApp() {
       /* private mode */
     }
   }, []);
-  const [timelineEditorHintDismissed, setTimelineEditorHintState] = useState(
-    getTimelineEditorHintDismissed,
-  );
+  const [captureFrameTime, setCaptureFrameTime] = useState(0);
   const dragCounterRef = useRef(0);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastBlockedTimelineToastAtRef = useRef(0);
@@ -338,13 +348,29 @@ export function StudioApp() {
   const toggleTimelineVisibility = useCallback(() => {
     setTimelineVisible((visible) => !visible);
   }, []);
+  const toggleLeftSidebar = useCallback(() => {
+    setLeftCollapsed((collapsed) => !collapsed);
+  }, []);
+  const refreshCaptureFrameTime = useCallback(() => {
+    setCaptureFrameTime(usePlayerStore.getState().currentTime);
+  }, []);
+
+  useMountEffect(() => {
+    setCaptureFrameTime(usePlayerStore.getState().currentTime);
+    return liveTime.subscribe(setCaptureFrameTime);
+  });
+
+  const captureFrameHref = projectId
+    ? buildFrameCaptureUrl({
+        projectId,
+        compositionPath: activeCompPath,
+        currentTime: captureFrameTime,
+      })
+    : "#";
+  const captureFrameFilename = buildFrameCaptureFilename(activeCompPath, captureFrameTime);
   useMountEffect(() => () => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   });
-  const dismissTimelineEditorHint = useCallback(() => {
-    setTimelineEditorHintState(true);
-    setTimelineEditorHintDismissed(true);
-  }, []);
   const handleTimelineToggleHotkey = useCallback(
     (event: KeyboardEvent) => {
       if (!shouldHandleTimelineToggleHotkey(event)) return;
@@ -426,7 +452,7 @@ export function StudioApp() {
         return (
           <CompositionThumbnail
             previewUrl={`/api/projects/${pid}/preview/comp/${compSrc}`}
-            label={el.id || el.tag}
+            label={getTimelineElementLabel(el)}
             labelColor={style.label}
             accentColor={style.clip}
             selector={el.selector}
@@ -442,7 +468,7 @@ export function StudioApp() {
         return (
           <CompositionThumbnail
             previewUrl={activePreviewUrl}
-            label={el.id || el.tag}
+            label={getTimelineElementLabel(el)}
             labelColor={style.label}
             accentColor={style.clip}
             selector={el.selector}
@@ -460,13 +486,28 @@ export function StudioApp() {
 
       // Audio clips — waveform visualization
       if (el.tag === "audio") {
-        const audioUrl = el.src
-          ? el.src.startsWith("http")
-            ? el.src
-            : `/api/projects/${pid}/preview/${el.src}`
-          : "";
+        const previewBase = `/api/projects/${pid}/preview/`;
+        const previewIdx = el.src?.startsWith("http") ? el.src.indexOf(previewBase) : -1;
+        const srcRelative = el.src
+          ? previewIdx !== -1
+            ? decodeURIComponent(el.src.slice(previewIdx + previewBase.length))
+            : el.src.startsWith("http")
+              ? null
+              : el.src
+          : null;
+        const audioUrl = srcRelative
+          ? `/api/projects/${pid}/preview/${srcRelative}`
+          : (el.src ?? "");
+        const waveformUrl = srcRelative
+          ? `/api/projects/${pid}/waveform/${srcRelative}`
+          : undefined;
         return (
-          <AudioWaveform audioUrl={audioUrl} label={el.id || el.tag} labelColor={style.label} />
+          <AudioWaveform
+            audioUrl={audioUrl}
+            waveformUrl={waveformUrl}
+            label={getTimelineElementLabel(el)}
+            labelColor={style.label}
+          />
         );
       }
 
@@ -477,7 +518,7 @@ export function StudioApp() {
         return (
           <VideoThumbnail
             videoSrc={mediaSrc}
-            label={el.id || el.tag}
+            label={getTimelineElementLabel(el)}
             labelColor={style.label}
             duration={el.duration}
           />
@@ -488,7 +529,7 @@ export function StudioApp() {
         return (
           <CompositionThumbnail
             previewUrl={`/api/projects/${pid}/preview`}
-            label={el.id || el.tag}
+            label={getTimelineElementLabel(el)}
             labelColor={style.label}
             accentColor={style.clip}
             selector={el.selector}
@@ -545,6 +586,28 @@ export function StudioApp() {
             title="Zoom in"
           >
             +
+          </button>
+          <button
+            type="button"
+            onClick={toggleTimelineVisibility}
+            className="ml-1 flex h-7 w-7 items-center justify-center rounded-md text-neutral-500 transition-colors hover:bg-neutral-900 hover:text-neutral-200"
+            title={getTimelineToggleTitle(true)}
+            aria-label="Hide timeline editor"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M5 7h14" />
+              <path d="m8 11 4 4 4-4" />
+            </svg>
           </button>
         </div>
       </div>
@@ -846,6 +909,42 @@ export function StudioApp() {
     setAppToast({ message, tone });
     toastTimerRef.current = setTimeout(() => setAppToast(null), 4000);
   }, []);
+
+  const handleCaptureFrameClick = useCallback(
+    async (event: MouseEvent<HTMLAnchorElement>) => {
+      if (!projectId) return;
+      event.preventDefault();
+
+      const currentTime = usePlayerStore.getState().currentTime;
+      setCaptureFrameTime(currentTime);
+      const href = buildFrameCaptureUrl({
+        projectId,
+        compositionPath: activeCompPath,
+        currentTime,
+      });
+      const filename = buildFrameCaptureFilename(activeCompPath, currentTime);
+
+      try {
+        const response = await fetch(href, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`Capture failed (${response.status})`);
+        }
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 0);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Capture failed";
+        showToast(message);
+      }
+    },
+    [activeCompPath, projectId, showToast],
+  );
 
   const handleTimelineElementDelete = useCallback(
     async (element: TimelineElement) => {
@@ -1480,6 +1579,19 @@ export function StudioApp() {
               <path d="M9 3v18" />
             </svg>
           </button>
+          <a
+            href={captureFrameHref}
+            download={captureFrameFilename}
+            onClick={handleCaptureFrameClick}
+            onFocus={refreshCaptureFrameTime}
+            onPointerDown={refreshCaptureFrameTime}
+            className="h-7 flex items-center gap-1.5 px-2.5 rounded-md text-[11px] font-medium border border-neutral-700 text-neutral-300 transition-colors hover:border-neutral-500 hover:bg-neutral-800"
+            title="Capture current frame"
+            aria-label="Capture current frame"
+          >
+            <Camera size={14} />
+            <span>Capture</span>
+          </a>
           <button
             type="button"
             onClick={toggleTimelineVisibility}
@@ -1537,7 +1649,32 @@ export function StudioApp() {
           Storyline / Compositions / Script that need horizontal room. */}
       <div className="flex flex-1 min-h-0">
         {/* Left sidebar: Compositions + Assets (resizable, collapsible) */}
-        {!leftCollapsed && (
+        {leftCollapsed ? (
+          <div className="flex w-10 flex-shrink-0 flex-col items-center border-r border-neutral-800/50 bg-neutral-950 pt-1">
+            <button
+              type="button"
+              onClick={toggleLeftSidebar}
+              className="flex h-8 w-8 items-center justify-center rounded-md border border-transparent text-neutral-500 transition-colors hover:border-neutral-800 hover:bg-neutral-900 hover:text-neutral-300"
+              title="Show sidebar"
+              aria-label="Show sidebar"
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M5 4v16" />
+                <path d="m10 7 5 5-5 5" />
+              </svg>
+            </button>
+          </div>
+        ) : (
           <LeftSidebar
             width={sidebarExpanded ? undefined : leftWidth}
             expanded={sidebarExpanded}
@@ -1587,6 +1724,7 @@ export function StudioApp() {
             onLint={handleLint}
             linting={linting}
             mode={studioMode}
+            onToggleCollapse={toggleLeftSidebar}
           />
         )}
 
@@ -1730,12 +1868,6 @@ export function StudioApp() {
           </>
         )}
       </div>
-
-      {timelineElements.length > 0 && !timelineEditorHintDismissed && (
-        <div className="pointer-events-none absolute bottom-5 left-5 z-[140]">
-          <TimelineEditorNotice onDismiss={dismissTimelineEditorHint} />
-        </div>
-      )}
 
       {/* Lint modal */}
       {lintModal !== null && projectId && (

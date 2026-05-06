@@ -47,6 +47,7 @@ interface PlayerState {
   elements: TimelineElement[];
   selectedElementId: string | null;
   playbackRate: number;
+  loopEnabled: boolean;
   /** Timeline zoom: 'fit' auto-scales to viewport, 'manual' uses manualZoomPercent */
   zoomMode: ZoomMode;
   /** Timeline zoom percent relative to the fit width when in manual mode */
@@ -56,6 +57,7 @@ interface PlayerState {
   setCurrentTime: (time: number) => void;
   setDuration: (duration: number) => void;
   setPlaybackRate: (rate: number) => void;
+  setLoopEnabled: (enabled: boolean) => void;
   setTimelineReady: (ready: boolean) => void;
   setElements: (elements: TimelineElement[]) => void;
   setSelectedElementId: (id: string | null) => void;
@@ -89,11 +91,13 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   elements: [],
   selectedElementId: null,
   playbackRate: 1,
+  loopEnabled: false,
   zoomMode: "fit",
   manualZoomPercent: 100,
 
   setIsPlaying: (playing) => set({ isPlaying: playing }),
   setPlaybackRate: (rate) => set({ playbackRate: rate }),
+  setLoopEnabled: (enabled) => set({ loopEnabled: enabled }),
   setZoomMode: (mode) => set({ zoomMode: mode }),
   setManualZoomPercent: (percent) =>
     set({ manualZoomPercent: Math.max(10, Math.min(2000, Math.round(percent))) }),
@@ -109,7 +113,7 @@ export const usePlayerStore = create<PlayerState>((set) => ({
       ),
     })),
   // Resets project-specific state when switching compositions.
-  // playbackRate, zoomMode, and manualZoomPercent are intentionally preserved
+  // playbackRate, loopEnabled, zoomMode, and manualZoomPercent are intentionally preserved
   // because they are user preferences that should survive project switches.
   reset: () =>
     set({

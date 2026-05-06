@@ -2,6 +2,7 @@ import { installRuntimeControlBridge, postRuntimeMessage } from "./bridge";
 import { initRuntimeAnalytics, emitAnalyticsEvent } from "./analytics";
 import { createCssAdapter } from "./adapters/css";
 import { createGsapAdapter } from "./adapters/gsap";
+import { createAnimeJsAdapter } from "./adapters/animejs";
 import { createLottieAdapter } from "./adapters/lottie";
 import { createThreeAdapter } from "./adapters/three";
 import { createWaapiAdapter } from "./adapters/waapi";
@@ -358,12 +359,17 @@ export function initSandboxRuntimeModular(): void {
     }
   };
 
-  const resolveStartForElement = (element: Element, fallback = 0): number => {
+  const resolveStartForElement = (
+    element: Element,
+    fallback = 0,
+    opts?: { includeAuthoredTimingAttrs?: boolean },
+  ): number => {
     const resolver = createRuntimeStartTimeResolver({
       timelineRegistry: (window.__timelines ?? {}) as Record<
         string,
         RuntimeTimelineLike | undefined
       >,
+      includeAuthoredTimingAttrs: opts?.includeAuthoredTimingAttrs ?? true,
     });
     return resolver.resolveStartForElement(element, fallback);
   };
@@ -459,6 +465,30 @@ export function initSandboxRuntimeModular(): void {
     return maxWindowEndSeconds > MIN_VALID_TIMELINE_DURATION_SECONDS ? maxWindowEndSeconds : null;
   };
 
+  const resolveAuthoredCompositionDurationFloorSeconds = (): number | null => {
+    const rootEl = resolveRootCompositionElement();
+    if (!rootEl) return null;
+    const timelines = (window.__timelines ?? {}) as Record<string, RuntimeTimelineLike | undefined>;
+    const startResolver = createRuntimeStartTimeResolver({
+      timelineRegistry: timelines,
+      includeAuthoredTimingAttrs: true,
+    });
+    let maxWindowEndSeconds = 0;
+    const compositionNodes = Array.from(
+      rootEl.querySelectorAll("[data-composition-id][data-start]"),
+    );
+    for (const node of compositionNodes) {
+      if (!(node instanceof Element)) continue;
+      const parentComposition = node.parentElement?.closest("[data-composition-id]");
+      if (parentComposition !== rootEl) continue;
+      const start = startResolver.resolveStartForElement(node, 0);
+      const duration = startResolver.resolveDurationForElement(node);
+      if (!Number.isFinite(start) || duration == null || duration <= 0) continue;
+      maxWindowEndSeconds = Math.max(maxWindowEndSeconds, Math.max(0, start) + duration);
+    }
+    return maxWindowEndSeconds > MIN_VALID_TIMELINE_DURATION_SECONDS ? maxWindowEndSeconds : null;
+  };
+
   const resolveMediaDurationFloorSeconds = (): number | null => {
     const mediaWindowDuration = resolveMediaWindowDurationSeconds();
     if (
@@ -487,14 +517,16 @@ export function initSandboxRuntimeModular(): void {
   ): number => {
     const timelineDuration = getTimelineDurationSeconds(timeline);
     const mediaFloor = resolveMediaDurationFloorSeconds();
+    const authoredCompositionFloor = resolveAuthoredCompositionDurationFloorSeconds();
+    const durationFloor = Math.max(mediaFloor ?? 0, authoredCompositionFloor ?? 0);
     const fallbackDuration =
       Number.isFinite(fallback) && fallback > MIN_VALID_TIMELINE_DURATION_SECONDS ? fallback : 0;
     let safeDuration = 0;
     // Timeline is the source of truth for authored composition duration.
     if (isUsableTimelineDuration(timelineDuration)) {
-      safeDuration = Math.max(timelineDuration, fallbackDuration);
-    } else if (isUsableTimelineDuration(mediaFloor)) {
-      safeDuration = Math.max(mediaFloor, fallbackDuration);
+      safeDuration = Math.max(timelineDuration, durationFloor, fallbackDuration);
+    } else if (isUsableTimelineDuration(durationFloor)) {
+      safeDuration = Math.max(durationFloor, fallbackDuration);
     } else {
       safeDuration = fallbackDuration;
     }
@@ -504,10 +536,17 @@ export function initSandboxRuntimeModular(): void {
 
   const resolveRootTimelineFromDocument = (): TimelineResolution => {
     const timelines = (window.__timelines ?? {}) as Record<string, RuntimeTimelineLike | undefined>;
-    const startResolver = createRuntimeStartTimeResolver({ timelineRegistry: timelines });
+    const startResolver = createRuntimeStartTimeResolver({
+      timelineRegistry: timelines,
+      includeAuthoredTimingAttrs: true,
+    });
     const mediaDurationFloorSeconds = resolveMediaDurationFloorSeconds();
-    const minCandidateDurationSeconds =
-      resolveMinCandidateDurationSeconds(mediaDurationFloorSeconds);
+    const authoredCompositionDurationFloorSeconds =
+      resolveAuthoredCompositionDurationFloorSeconds();
+    const durationFloorSeconds =
+      Math.max(mediaDurationFloorSeconds ?? 0, authoredCompositionDurationFloorSeconds ?? 0) ||
+      null;
+    const minCandidateDurationSeconds = resolveMinCandidateDurationSeconds(durationFloorSeconds);
     const resolveCompositionStartSeconds = (compositionId: string): number => {
       const node = document.querySelector(
         `[data-composition-id="${CSS.escape(compositionId)}"]`,
@@ -701,6 +740,7 @@ export function initSandboxRuntimeModular(): void {
                 minCandidateDurationSeconds,
                 selectedDurationSeconds: compositeDurationSeconds,
                 mediaDurationFloorSeconds,
+                authoredCompositionDurationFloorSeconds,
                 selectedTimelineIds,
                 autoNestedChildren,
               },
@@ -708,15 +748,15 @@ export function initSandboxRuntimeModular(): void {
           };
         }
         const durationFloorTimeline = createDurationFloorTimeline(
-          mediaDurationFloorSeconds ?? 0,
+          durationFloorSeconds ?? 0,
           rootTimeline,
         );
-        const durationFloorSeconds = getTimelineDurationSeconds(durationFloorTimeline);
-        if (durationFloorTimeline && isUsableTimelineDuration(durationFloorSeconds)) {
+        const floorTimelineDurationSeconds = getTimelineDurationSeconds(durationFloorTimeline);
+        if (durationFloorTimeline && isUsableTimelineDuration(floorTimelineDurationSeconds)) {
           return {
             timeline: durationFloorTimeline,
             selectedTimelineIds: [rootCompositionId],
-            selectedDurationSeconds: durationFloorSeconds,
+            selectedDurationSeconds: floorTimelineDurationSeconds,
             mediaDurationFloorSeconds,
             diagnostics: {
               code: "root_timeline_unusable_media_floor_fallback",
@@ -725,7 +765,8 @@ export function initSandboxRuntimeModular(): void {
                 rootDurationSeconds,
                 fallbackKind: "media_duration_floor",
                 mediaDurationFloorSeconds,
-                selectedDurationSeconds: durationFloorSeconds,
+                authoredCompositionDurationFloorSeconds,
+                selectedDurationSeconds: floorTimelineDurationSeconds,
                 selectedTimelineIds: [rootCompositionId],
                 autoNestedChildren,
               },
@@ -735,15 +776,15 @@ export function initSandboxRuntimeModular(): void {
       }
       if (!isUsableTimelineDuration(rootDurationSeconds) && rootChildCandidates.length === 0) {
         const durationFloorTimeline = createDurationFloorTimeline(
-          mediaDurationFloorSeconds ?? 0,
+          durationFloorSeconds ?? 0,
           rootTimeline,
         );
-        const durationFloorSeconds = getTimelineDurationSeconds(durationFloorTimeline);
-        if (durationFloorTimeline && isUsableTimelineDuration(durationFloorSeconds)) {
+        const floorTimelineDurationSeconds = getTimelineDurationSeconds(durationFloorTimeline);
+        if (durationFloorTimeline && isUsableTimelineDuration(floorTimelineDurationSeconds)) {
           return {
             timeline: durationFloorTimeline,
             selectedTimelineIds: [rootCompositionId],
-            selectedDurationSeconds: durationFloorSeconds,
+            selectedDurationSeconds: floorTimelineDurationSeconds,
             mediaDurationFloorSeconds,
             diagnostics: {
               code: "root_timeline_unusable_media_floor_fallback",
@@ -752,37 +793,41 @@ export function initSandboxRuntimeModular(): void {
                 rootDurationSeconds,
                 fallbackKind: "media_duration_floor",
                 mediaDurationFloorSeconds,
-                selectedDurationSeconds: durationFloorSeconds,
+                authoredCompositionDurationFloorSeconds,
+                selectedDurationSeconds: floorTimelineDurationSeconds,
                 selectedTimelineIds: [rootCompositionId],
               },
             },
           };
         }
       }
-      // If the root composition declares an explicit data-duration that meaningfully
-      // exceeds the captured GSAP timeline, extend the timeline in-place by placing
-      // a zero-duration no-op tween at the declared end position. This makes
-      // timeline.duration() report the declared length without creating a composite
-      // (which would double-count the original duration).
+      // If the authored composition schedule meaningfully exceeds the captured
+      // GSAP timeline, extend the timeline in-place with a zero-duration no-op
+      // tween. Studio previews can inline only part of the timeline registry
+      // while preserving the full host schedule in data-hf-authored-duration.
       const rootDeclaredDurAttr = rootCompositionNode?.getAttribute("data-duration");
-      if (rootDeclaredDurAttr) {
-        const rootDeclaredDur = parseFloat(rootDeclaredDurAttr);
+      const rootDeclaredDur = rootDeclaredDurAttr ? parseFloat(rootDeclaredDurAttr) : null;
+      const rootDurationFloorSeconds = Math.max(
+        isUsableTimelineDuration(rootDeclaredDur) ? rootDeclaredDur : 0,
+        authoredCompositionDurationFloorSeconds ?? 0,
+      );
+      if (rootDurationFloorSeconds > 0) {
         if (
-          isUsableTimelineDuration(rootDeclaredDur) &&
+          isUsableTimelineDuration(rootDurationFloorSeconds) &&
           isUsableTimelineDuration(rootDurationSeconds) &&
           // Only pad when the gap is meaningful (>= 0.5s) to avoid floating-point
           // false positives on compositions whose GSAP duration is already close
           // to data-duration.
-          rootDeclaredDur >= rootDurationSeconds + 0.5
+          rootDurationFloorSeconds >= rootDurationSeconds + 0.5
         ) {
           const tlWithTo = rootTimeline as RuntimeTimelineLike & {
             to?: (target: object, vars: { duration: number }, position: number) => unknown;
           };
           if (typeof tlWithTo.to === "function") {
             try {
-              // Placing a zero-duration tween AT rootDeclaredDur extends
-              // timeline.duration() to exactly rootDeclaredDur.
-              tlWithTo.to({}, { duration: 0 }, rootDeclaredDur);
+              // Placing a zero-duration tween at the floor extends
+              // timeline.duration() to exactly that point.
+              tlWithTo.to({}, { duration: 0 }, rootDurationFloorSeconds);
             } catch {
               // keep runtime resilient
             }
@@ -800,6 +845,7 @@ export function initSandboxRuntimeModular(): void {
                   rootCompositionId,
                   rootDurationSeconds,
                   rootDeclaredDur,
+                  authoredCompositionDurationFloorSeconds,
                   newDur,
                 },
               },
@@ -1290,8 +1336,8 @@ export function initSandboxRuntimeModular(): void {
           }
         }
 
-        // Composition hosts must respect both the authored clip window in the parent
-        // composition and the child composition's own live timeline duration.
+        // Composition hosts must respect both the authored parent clip window
+        // and the child composition's own live timeline duration.
         if (duration != null && duration > 0 && liveDuration != null) {
           duration = Math.min(duration, liveDuration);
         } else if ((duration == null || duration <= 0) && liveDuration != null) {
@@ -1550,6 +1596,7 @@ export function initSandboxRuntimeModular(): void {
     createCssAdapter({
       resolveStartSeconds: (element) => resolveStartForElement(element, 0),
     }),
+    createAnimeJsAdapter(),
     createLottieAdapter(),
     createThreeAdapter(),
     createGsapAdapter({ getTimeline: () => state.capturedTimeline }),

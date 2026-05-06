@@ -1,4 +1,5 @@
 import type { LintContext, HyperframeLintFinding } from "../context";
+import postcss from "postcss";
 import {
   readAttr,
   truncateSnippet,
@@ -8,6 +9,51 @@ import {
   TIMELINE_REGISTRY_ASSIGN_PATTERN,
   INVALID_SCRIPT_CLOSE_PATTERN,
 } from "../utils";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function selectorTargetsCompositionId(selector: string, compositionId: string): boolean {
+  const escaped = escapeRegExp(compositionId);
+  return new RegExp(
+    String.raw`\[\s*data-composition-id\s*=\s*(?:"${escaped}"|'${escaped}')\s*\]`,
+  ).test(selector);
+}
+
+function isStudioTimelineElement(tag: { raw: string; name: string }): boolean {
+  if (["script", "style", "link", "meta", "template", "noscript"].includes(tag.name)) {
+    return false;
+  }
+  return Boolean(
+    readAttr(tag.raw, "data-start") ||
+    readAttr(tag.raw, "data-track-index") ||
+    readAttr(tag.raw, "data-track") ||
+    readAttr(tag.raw, "data-composition-src") ||
+    readAttr(tag.raw, "data-composition-file"),
+  );
+}
+
+function describeStudioElement(tag: { raw: string; name: string }): string {
+  const parts = [`<${tag.name}`];
+  const className = readAttr(tag.raw, "class");
+  const compositionId = readAttr(tag.raw, "data-composition-id");
+  const dataStart = readAttr(tag.raw, "data-start");
+  const dataTrack = readAttr(tag.raw, "data-track-index") ?? readAttr(tag.raw, "data-track");
+
+  if (className) {
+    const primaryClass = className
+      .split(/\s+/)
+      .map((value) => value.trim())
+      .find((value) => value && value !== "clip");
+    if (primaryClass) parts.push(` class="${primaryClass}"`);
+  }
+  if (compositionId) parts.push(` data-composition-id="${compositionId}"`);
+  if (dataStart) parts.push(` data-start="${dataStart}"`);
+  if (dataTrack) parts.push(` data-track-index="${dataTrack}"`);
+  parts.push(">");
+  return parts.join("");
+}
 
 export const coreRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = [
   // root_missing_composition_id + root_missing_dimensions
@@ -162,6 +208,64 @@ export const coreRules: Array<(ctx: LintContext) => HyperframeLintFinding[]> = [
         selector: `[data-composition-id="${compId}"]`,
         fixHint:
           "Preserve the matching composition wrapper or align the CSS scope to an existing wrapper.",
+      });
+    }
+    return findings;
+  },
+
+  // composition_self_attribute_selector
+  ({ styles, rootCompositionId, rootTag }) => {
+    const findings: HyperframeLintFinding[] = [];
+    if (!rootCompositionId) return findings;
+    const seenSelectors = new Set<string>();
+    const rootId = readAttr(rootTag?.raw || "", "id");
+    for (const style of styles) {
+      let root: postcss.Root;
+      try {
+        root = postcss.parse(style.content);
+      } catch {
+        continue;
+      }
+      root.walkRules((rule) => {
+        for (const selector of rule.selectors) {
+          if (!selectorTargetsCompositionId(selector, rootCompositionId)) continue;
+          if (seenSelectors.has(selector)) continue;
+          seenSelectors.add(selector);
+          findings.push({
+            code: "composition_self_attribute_selector",
+            severity: "warning",
+            message:
+              "Selector matches the block's own id; will leak to sibling instances when the block is embedded twice.",
+            selector,
+            fixHint: rootId
+              ? `Use #${rootId} for clearer authoring intent and instance-isolated styling.`
+              : "Add a stable id to the composition root and use that id selector for clearer authoring intent and instance-isolated styling.",
+          });
+        }
+      });
+    }
+    return findings;
+  },
+
+  // studio_missing_editable_id
+  ({ tags, rootTag }) => {
+    const findings: HyperframeLintFinding[] = [];
+    for (const tag of tags) {
+      if (rootTag && tag.index === rootTag.index) continue;
+      if (!isStudioTimelineElement(tag)) continue;
+      if (readAttr(tag.raw, "id")) continue;
+
+      const descriptor = describeStudioElement(tag);
+      findings.push({
+        code: "studio_missing_editable_id",
+        severity: "warning",
+        message: `${descriptor} has no id, so Studio cannot use a stable edit target for its timeline and canvas controls.`,
+        selector: readAttr(tag.raw, "data-composition-id")
+          ? `[data-composition-id="${readAttr(tag.raw, "data-composition-id")}"]`
+          : undefined,
+        fixHint:
+          'Add a stable, human-readable id such as id="hero-title" or id="scene-1-card" to every timeline-visible element you want agents or Studio to edit.',
+        snippet: truncateSnippet(tag.raw),
       });
     }
     return findings;

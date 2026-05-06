@@ -1,12 +1,4 @@
-import { parseHTML } from "linkedom";
-
-function parseHTMLContent(html: string): Document {
-  const trimmed = html.trimStart().toLowerCase();
-  if (trimmed.startsWith("<!doctype") || trimmed.startsWith("<html")) {
-    return parseHTML(html).document;
-  }
-  return parseHTML(`<!DOCTYPE html><html><head></head><body>${html}</body></html>`).document;
-}
+import { parseHTMLContent } from "@hyperframes/core/compiler";
 
 function getSingleMeaningfulChild(container: Element): Element | null {
   let child: Element | null = null;

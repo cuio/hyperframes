@@ -175,7 +175,7 @@ await applyFaststart(inputPath, outputPath);
 
 // Detect GPU encoding support
 const gpu = await detectGpuEncoder();
-// gpu: "nvenc" | "videotoolbox" | "vaapi" | null
+// gpu: "nvenc" | "videotoolbox" | "vaapi" | "qsv" | null
 ```
 
 #### WebM with VP9 Alpha
@@ -282,7 +282,7 @@ await server.close();
 
 The engine exports two layers of HDR support: **color-space utilities** that classify sources and configure the FFmpeg encoder, and a **WebGPU readback runtime** for capturing CSS-animated DOM directly into HDR.
 
-For end-to-end HDR rendering (HDR video and image sources composited into an HDR10 MP4) use the [producer](/packages/producer) or the CLI's `--hdr` flag — see [HDR Rendering](/guides/hdr). The APIs below are for custom integrations.
+For end-to-end HDR rendering (HDR video and image sources composited into an HDR10 MP4) use the [producer](/packages/producer) or the CLI render pipeline with HDR auto-detect / `--hdr` / `--sdr` — see [HDR Rendering](/guides/hdr). The APIs below are for custom integrations.
 
 ### Color space utilities
 
@@ -344,7 +344,7 @@ const pqRgb = float16ToPqRgb(rgba16, width, height, bytesPerRow);
 ```
 
 <Warning>
-  This path requires **headed Chrome with `--enable-unsafe-webgpu`** — WebGPU is unavailable in `chrome-headless-shell`. It is *not* used by the default `--hdr` render pipeline (which extracts HDR pixels from sources via FFmpeg and composites in Node). Use it only for advanced custom pipelines that need CSS animations driving HDR pixel output.
+  This path requires **headed Chrome with `--enable-unsafe-webgpu`** — WebGPU is unavailable in `chrome-headless-shell`. It is *not* used by the default HDR-aware render pipeline (which extracts HDR pixels from sources via FFmpeg and composites in Node). Use it only for advanced custom pipelines that need CSS animations driving HDR pixel output.
 </Warning>
 
 ## The `window.__hf` Protocol

@@ -91,10 +91,11 @@ const HOOK_BIGTEXT: Template = {
     #${ctx.sceneId} .hb-title { font-size: 128px; font-weight: 800; line-height: 1.0; max-width: 1500px; font-family: ${t.fonts.display}; position: relative; letter-spacing: -0.025em; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
     #${ctx.sceneId} .hb-word { display: inline-block; white-space: nowrap; }
     #${ctx.sceneId} .hb-word.hb-accent { color: ${t.colors.accent}; font-style: italic; }
-    /* Letters start at opacity 0 + lifted via inline transforms set by gsap.fromTo so the */
-    /* initial state survives any seek order. CSS keyframe is a defense-in-depth safety net: */
-    /* if GSAP fails to register the tween, every letter still reaches its visible final state. */
-    #${ctx.sceneId} .hb-letter { display: inline-block; will-change: transform, opacity; animation: hb-letter-${ctx.sceneId} 0.001s linear ${Math.max(0.01, ctx.durationSeconds - 0.05).toFixed(2)}s forwards; }
+    /* Letters DEFAULT to visible (opacity:1, no transform). The GSAP tween */
+    /* below momentarily sets them to opacity:0 + y:50 at cascadeStart and */
+    /* animates them back. If GSAP fails to register OR a seek lands outside */
+    /* any tween's window, the CSS default keeps every letter visible. */
+    #${ctx.sceneId} .hb-letter { display: inline-block; opacity: 1; will-change: transform, opacity; animation: hb-letter-${ctx.sceneId} 0.001s linear ${Math.max(0.01, ctx.durationSeconds - 0.05).toFixed(2)}s forwards; }
     @keyframes hb-letter-${ctx.sceneId} { to { opacity: 1; transform: translateY(0); } }
     #${ctx.sceneId} .hb-space { display: inline-block; width: 0.32em; }
     #${ctx.sceneId} .hb-subtext { font-size: 26px; font-weight: 400; line-height: 1.32; max-width: 1200px; color: ${t.colors.muted}; opacity: 0; transform: translateY(14px); position: relative; padding-left: 14px; border-left: 3px solid ${t.colors.accent2}; }
@@ -138,6 +139,12 @@ const HOOK_BIGTEXT: Template = {
       var tailGap = 0.25;
       var maxCascadeWindow = Math.max(0.3, sceneDur - cascadeStart - cascadeTail - tailGap);
       var eachStagger = Math.min(0.025, maxCascadeWindow / Math.max(1, letterCount));
+      // Pre-tween: hide letters BEFORE the cascade so the timeline's earliest
+      // state is opacity:0 (not the CSS default of 1). This makes the cascade
+      // visible. Without this, GSAP only records the from-state at cascadeStart,
+      // leaving letters at opacity:1 for t < cascadeStart — viewers see the title
+      // appear instantly at scene start, then re-cascade.
+      tl.set(letters, { opacity: 0, y: 50 }, 0);
       tl.fromTo(letters,
         { opacity: 0, y: 50 },
         {
@@ -148,14 +155,16 @@ const HOOK_BIGTEXT: Template = {
           stagger: { each: eachStagger, from: 'start' },
         },
         cascadeStart);
-      // Defense-in-depth: snap all letters to final state at a time that ALWAYS lands
-      // inside the scene window. If the cascade math drifts under load, the last frame
-      // is still correct.
-      var finalStateAt = Math.min(
-        sceneDur - 0.05,
-        cascadeStart + letterCount * eachStagger + letterDuration
-      );
-      tl.set(letters, { opacity: 1, y: 0, clearProps: 'transform' }, Math.max(cascadeStart, finalStateAt));
+      // Defense-in-depth #1: snap all letters to final state at the cascade's
+      // mathematical end. This catches any edge in the stagger math.
+      var cascadeMathEnd = cascadeStart + Math.max(0, letterCount - 1) * eachStagger + letterDuration;
+      var midSnapAt = Math.min(sceneDur - 0.05, cascadeMathEnd);
+      tl.set(letters, { opacity: 1, y: 0, clearProps: 'transform' }, Math.max(cascadeStart, midSnapAt));
+      // Defense-in-depth #2: snap at sceneDur - 0.01 — this fires regardless of
+      // any earlier math drift. Guarantees the last captured frame of the scene
+      // window has every letter at opacity:1, even if the runtime seek-skips
+      // intermediate tweens. Removes the dropped-letter failure mode entirely.
+      tl.set(letters, { opacity: 1, y: 0, clearProps: 'transform' }, Math.max(0, sceneDur - 0.01));
       // Subtext (stake/data/why) lands AFTER the title cascades, so the
       // viewer's eye reaches it second. Quick fade + small lift.
       var sub = s.querySelector('.hb-subtext');
